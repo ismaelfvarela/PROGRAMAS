@@ -1,7 +1,9 @@
 """PDF do pré-roteiro: HTML (Jinja2, autoescape) impresso pelo Microsoft Edge em modo headless."""
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -112,12 +114,22 @@ def html_to_pdf(html: str, out: Path, s: Settings, html_path: Path | None = None
     assert_writable(out, s)
     html_path = Path(html_path) if html_path else out.with_suffix(".html")
     safe_write_text(html_path, html, s)
-    cmd = [str(edge), "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
-           f"--print-to-pdf={out}", html_path.resolve().as_uri()]
+    tmp_pdf = out.with_suffix(".tmp.pdf")
+    assert_writable(tmp_pdf, s)
+    if tmp_pdf.exists():
+        tmp_pdf.unlink()
     try:
-        res = subprocess.run(cmd, capture_output=True, timeout=PDF_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("O Edge demorou demais para gerar o PDF do roteiro.") from None
-    if res.returncode != 0 or not out.exists():
-        detalhe = res.stderr.decode("utf-8", "replace").strip()[-300:]
-        raise RuntimeError(f"Não consegui gerar o PDF do roteiro com o Edge. {detalhe}")
+        with tempfile.TemporaryDirectory(prefix="roteiro-edge-", ignore_cleanup_errors=True) as prof:
+            cmd = [str(edge), "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
+                   "--no-first-run", "--no-default-browser-check", f"--user-data-dir={prof}",
+                   f"--print-to-pdf={tmp_pdf}", html_path.resolve().as_uri()]
+            try:
+                res = subprocess.run(cmd, capture_output=True, timeout=PDF_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("O Edge demorou demais para gerar o PDF do roteiro.") from None
+        if res.returncode != 0 or not tmp_pdf.exists():
+            detalhe = res.stderr.decode("utf-8", "replace").strip()[-300:]
+            raise RuntimeError(f"Não consegui gerar o PDF do roteiro com o Edge. {detalhe}")
+        os.replace(tmp_pdf, out)
+    finally:
+        tmp_pdf.unlink(missing_ok=True)

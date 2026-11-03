@@ -92,3 +92,57 @@ def test_pdf_gerado(tmp_path):
     if os.environ.get("SAMPLE_OUT"):
         Path(os.environ["SAMPLE_OUT"]).write_bytes(out.read_bytes())
         Path(os.environ["SAMPLE_OUT"]).with_suffix(".html").write_text(html, encoding="utf-8")
+
+
+class _Res:
+    returncode = 0
+    stderr = b""
+
+
+def _arg(cmd, prefix):
+    return next(a for a in cmd if a.startswith(prefix))
+
+
+def test_edge_usa_user_data_dir_temporario(tmp_path, monkeypatch):
+    from roteiro_ia.report import pdf as mod
+    monkeypatch.setattr(mod, "find_edge", lambda: Path("edge.exe"))
+    visto = {}
+
+    def fake_run(cmd, **kw):
+        d = Path(_arg(cmd, "--user-data-dir=").split("=", 1)[1])
+        visto["existe"] = d.is_dir()
+        visto["dir"] = d
+        assert "--no-first-run" in cmd and "--no-default-browser-check" in cmd
+        Path(_arg(cmd, "--print-to-pdf=").split("=", 1)[1]).write_bytes(b"%PDF-x")
+        return _Res()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    html_to_pdf("<p>x</p>", tmp_path / "r.pdf", Settings())
+    assert visto["existe"] and not visto["dir"].exists()
+
+
+def test_pdf_antigo_nao_mascara_falha(tmp_path, monkeypatch):
+    from roteiro_ia.report import pdf as mod
+    monkeypatch.setattr(mod, "find_edge", lambda: Path("edge.exe"))
+    monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: _Res())
+    out = tmp_path / "r.pdf"
+    out.write_bytes(b"%PDF-antigo")
+    with pytest.raises(RuntimeError):
+        html_to_pdf("<p>x</p>", out, Settings())
+    assert out.read_bytes() == b"%PDF-antigo"
+
+
+def test_pdf_novo_substitui_antigo(tmp_path, monkeypatch):
+    from roteiro_ia.report import pdf as mod
+    monkeypatch.setattr(mod, "find_edge", lambda: Path("edge.exe"))
+
+    def fake_run(cmd, **kw):
+        Path(_arg(cmd, "--print-to-pdf=").split("=", 1)[1]).write_bytes(b"%PDF-novo")
+        return _Res()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    out = tmp_path / "r.pdf"
+    out.write_bytes(b"%PDF-antigo")
+    html_to_pdf("<p>x</p>", out, Settings())
+    assert out.read_bytes() == b"%PDF-novo"
+    assert not out.with_suffix(".tmp.pdf").exists()
