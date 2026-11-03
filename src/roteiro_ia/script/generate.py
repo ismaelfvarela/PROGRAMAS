@@ -1,0 +1,352 @@
+"""Pré-roteiro em série gerado pelo Gemini a partir do catálogo analisado, com validação
+de toda referência de cena (mídia real + intervalo dentro da duração) e de trilha."""
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel
+
+from roteiro_ia.db import ProjectDB
+from roteiro_ia.gemini.style import StyleProfile
+from roteiro_ia.models import MediaInfo
+from roteiro_ia.music_index import MusicIndex
+
+CORRECTION_ROUNDS = 2
+DURATION_TOLERANCE_S = 0.5
+DERIVADOS = {"trailer", "teaser", "stories"}
+
+REGRAS_FOKUSS = """Regras de edição da Fokuss (siga todas):
+1. Narrativa em série: o casamento é contado em episódios. Cada episódio (menos o último) termina num GANCHO que só se resolve na ABERTURA do episódio seguinte; diga em gancho_resolve_em onde ele se resolve.
+2. Ordem não-cronológica controlada: a cronologia é a base, mas quando um trecho vai baixar a emoção, puxe um momento de outra parte do evento (preparação, despedida de solteiro, pré-wedding, lua de mel…) para manter a intensidade. Toda mistura não-cronológica precisa de um motivo, registrado em 'misturas' e no 'motivo' da cena.
+3. Áudio real como fio condutor: use as falas verdadeiras (votos, discursos, depoimentos) para contar a história; coloque a fala usada em 'fala'.
+4. Conteúdo acima da técnica: 1º a história — se só existe um take ruim de um momento importante, ele é usado; 2º a qualidade técnica, só para escolher entre opções equivalentes.
+5. Duração: cada episódio tem em média 360 s (6 min), com flexibilidade conforme o conteúdo.
+6. Cortes na trilha: músicas lentas → cortes nos tempos 1 e 3 (padrão "1-3"); músicas rápidas ou trechos de mais intensidade → tempos 2 e 4 (padrão "2-4"); use "misto" quando a peça alterna.
+7. Poucos efeitos: cor viva, transições suaves só quando necessário.
+8. Criatividade: você pode sugerir momentos de lembrança/flashback (marque lembranca=true; na edição terão outra tonalidade e áudio filtrado/reverb) e momentos extras fora da lista base.
+9. Trailer, teaser e stories/reels: mesma estrutura das peças, focados nos momentos de maior impacto, SEM entregar os ganchos dos episódios."""
+
+_FORMATO = """Formato das referências (obrigatório):
+- Cada cena (abertura, desenvolvimento, gancho) usa rel_path EXATAMENTE como aparece no catálogo e start_s/end_s em segundos RELATIVOS AO ARQUIVO, dentro do intervalo do segmento escolhido (início < fim).
+- Episódios: tipo "episodio", numero 1, 2, 3… em sequência. Derivados: tipo "trailer", "teaser" ou "stories", numero null.
+- curva_emocao: intensidade 0–10 ao longo da peça; duracao_estimada_s em segundos.
+- Trilhas por peça: 2–3 opções origem "biblioteca" com path EXATAMENTE como na lista de trilhas (BPM, clima, motivo, padrao_corte); termos de busca para Musicbed em termos_musicbed (origem "musicbed" se sugerir uma faixa de lá); músicas populares com origem "popular" e exige_licenca=true.
+- alertas: momentos importantes sem take bom ou qualquer ressalva para o editor."""
+
+_BPM_BANDS = ((0.0, 90.0), (90.0, 120.0), (120.0, float("inf")))
+_PERFIS = ("calma", "crescente", "intensa")
+
+
+class SceneRef(BaseModel):
+    rel_path: str
+    start_s: float
+    end_s: float
+    descricao: str
+    fala: str | None
+    motivo: str | None
+    lembranca: bool = False
+
+
+class MusicSuggestion(BaseModel):
+    origem: Literal["biblioteca", "musicbed", "popular"]
+    path: str | None
+    titulo: str
+    bpm: float | None
+    clima: str
+    motivo: str
+    padrao_corte: Literal["1-3", "2-4", "misto"]
+    exige_licenca: bool
+
+
+class Piece(BaseModel):
+    tipo: Literal["episodio", "trailer", "teaser", "stories"]
+    numero: int | None
+    titulo: str
+    tema: str
+    abertura: SceneRef
+    desenvolvimento: list[SceneRef]
+    gancho: SceneRef | None
+    gancho_resolve_em: str | None
+    curva_emocao: list[int]
+    duracao_estimada_s: float
+    misturas: list[str]
+    trilhas: list[MusicSuggestion]
+    termos_musicbed: list[str]
+
+
+class Roteiro(BaseModel):
+    arco: str
+    pecas: list[Piece]
+    alertas: list[str]
+
+
+# ---------------------------------------------------------------- catálogo e trilhas
+
+def _clean(text: str) -> str:
+    return " ".join(str(text).split()).replace("|", "/")
+
+
+def build_catalog(db: ProjectDB) -> str:
+    """Uma linha por segmento analisado, em ordem de dia e de linha do tempo
+    (mídias sem sincronia vão ao fim do seu dia). Tempos relativos ao arquivo."""
+    rows = []
+    medias = {m.id: m for m in db.list_media()}
+    syncs = {mid: db.get_sync(mid) for mid in medias}
+    for seg in db.list_segments():
+        a = db.get_analysis(seg.id)
+        m = medias.get(seg.media_id)
+        if a is None or m is None:
+            continue
+        sy = syncs.get(m.id)
+        day = sy.day_label if sy else m.day_label
+        key = ((day, 0, sy.timeline_start_s + seg.start_s, m.rel_path) if sy
+               else (day, 1, 0.0, m.rel_path))
+        momento = a.momento + (f" ({a.extra})" if a.extra else "")
+        falas = "; ".join(f'"{_clean(q.text)}" ({q.start_s:.1f}–{q.end_s:.1f})'
+                          for q in a.falas_chave) or "-"
+        gancho = "sim" + (f" ({_clean(a.motivo_gancho)})" if a.motivo_gancho else "") \
+            if a.potencial_gancho else "não"
+        extras = " | lembrança: sim" if a.sugestao_lembranca else ""
+        line = (f"{m.rel_path} | {seg.start_s:.1f}–{seg.end_s:.1f} s | dia {day} | "
+                f"momento {_clean(momento)} | emoção {a.emocao_intensidade} {_clean(a.emocao_tipo)} | "
+                f"qualidade {a.qualidade} | {_clean(a.descricao)} | falas: {falas} | "
+                f"gancho: {gancho}{extras}")
+        rows.append((key, seg.start_s, line))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return "\n".join(r[2] for r in rows)
+
+
+def _band(bpm: float) -> int:
+    for i, (lo, hi) in enumerate(_BPM_BANDS):
+        if lo <= bpm < hi:
+            return i
+    return len(_BPM_BANDS) - 1
+
+
+def music_shortlist(idx: MusicIndex, n: int = 80) -> str:
+    """Até n trilhas espalhadas por perfil e faixa de BPM (determinístico: round-robin
+    entre os grupos, cada grupo ordenado por caminho)."""
+    buckets: dict[tuple[int, int], list] = {}
+    for t in idx.all():
+        p = _PERFIS.index(t.perfil) if t.perfil in _PERFIS else len(_PERFIS)
+        buckets.setdefault((p, _band(t.bpm)), []).append(t)
+    queues = [sorted(buckets[k], key=lambda t: t.path) for k in sorted(buckets)]
+    picked = []
+    i = 0
+    while len(picked) < n and any(queues):
+        q = queues[i % len(queues)]
+        if q:
+            picked.append(q.pop(0))
+        i += 1
+    lines = []
+    for t in picked:
+        dur = int(round(t.duration_s))
+        lines.append(f"{t.path} | BPM {t.bpm:.1f} | perfil {t.perfil} | {dur // 60}:{dur % 60:02d} | "
+                     f"{'vocal' if t.has_vocals else 'instrumental'}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- validação
+
+def _norm(path: str) -> str:
+    return path.replace("/", "\\").strip().lower()
+
+
+def _media_map(db: ProjectDB) -> dict[str, MediaInfo]:
+    return {_norm(m.rel_path): m for m in db.list_media()}
+
+
+def _ref_problem(ref: SceneRef, media: dict[str, MediaInfo]) -> str | None:
+    """None se a referência é válida (e normaliza rel_path para a grafia do banco)."""
+    m = media.get(_norm(ref.rel_path))
+    if m is None:
+        return f"a mídia {ref.rel_path} não existe no catálogo"
+    ref.rel_path = m.rel_path
+    if not (0 <= ref.start_s < ref.end_s <= m.duration_s + DURATION_TOLERANCE_S):
+        return (f"intervalo {ref.start_s:.1f}–{ref.end_s:.1f} s inválido em {m.rel_path} "
+                f"(duração {m.duration_s:.1f} s)")
+    return None
+
+
+def _track_map(idx: MusicIndex) -> dict[str, str]:
+    return {_norm(t.path): t.path for t in idx.all()}
+
+
+def _track_problem(ms: MusicSuggestion, tracks: dict[str, str]) -> str | None:
+    if ms.origem == "popular":
+        ms.exige_licenca = True
+    if ms.origem != "biblioteca":
+        return None
+    real = tracks.get(_norm(ms.path or ""))
+    if real is None:
+        return f"a trilha '{ms.titulo}' ({ms.path}) não existe na biblioteca"
+    ms.path = real
+    return None
+
+
+def _label(p: Piece) -> str:
+    if p.tipo == "episodio":
+        return f"episódio {p.numero}"
+    return p.tipo + (f" {p.numero}" if p.numero is not None else "")
+
+
+def _episodes(r: Roteiro) -> list[Piece]:
+    return [p for p in r.pecas if p.tipo == "episodio"]
+
+
+def validate_refs(r: Roteiro, db: ProjectDB, idx: MusicIndex) -> list[str]:
+    """Lista de problemas (em português). Normaliza rel_path/path para a grafia real e
+    força exige_licenca nas sugestões populares."""
+    media, tracks = _media_map(db), _track_map(idx)
+    probs: list[str] = []
+    for p in r.pecas:
+        lab = _label(p)
+        scenes = [("abertura", p.abertura)] + [("desenvolvimento", s) for s in p.desenvolvimento]
+        if p.gancho is not None:
+            scenes.append(("gancho", p.gancho))
+        for where, s in scenes:
+            e = _ref_problem(s, media)
+            if e:
+                probs.append(f"{lab}, {where}: {e}")
+        for ms in p.trilhas:
+            e = _track_problem(ms, tracks)
+            if e:
+                probs.append(f"{lab}, trilhas: {e}")
+    eps = _episodes(r)
+    nums = [p.numero for p in eps]
+    if nums != list(range(1, len(eps) + 1)):
+        probs.append(f"episódios devem ser numerados 1..{len(eps)} em sequência (recebido {nums})")
+    for p in eps[:-1]:
+        if p.gancho is None:
+            probs.append(f"{_label(p)}: falta o gancho (só o último episódio pode ficar sem)")
+    return probs
+
+
+def _prune(r: Roteiro, db: ProjectDB, idx: MusicIndex) -> list[str]:
+    """Remove o que continua inválido e devolve a descrição de cada remoção."""
+    media, tracks = _media_map(db), _track_map(idx)
+    alertas: list[str] = []
+    kept: list[Piece] = []
+    for p in r.pecas:
+        lab = _label(p)
+        dev = []
+        for s in p.desenvolvimento:
+            e = _ref_problem(s, media)
+            if e:
+                alertas.append(f"{lab}: cena removida do desenvolvimento — {e}")
+            else:
+                dev.append(s)
+        p.desenvolvimento = dev
+        if p.gancho is not None:
+            e = _ref_problem(p.gancho, media)
+            if e:
+                alertas.append(f"{lab}: gancho removido — {e}")
+                p.gancho = None
+        e = _ref_problem(p.abertura, media)
+        if e:
+            if not p.desenvolvimento:
+                alertas.append(f"{lab}: peça removida (nenhuma cena válida) — {e}")
+                continue
+            p.abertura = p.desenvolvimento.pop(0)
+            alertas.append(f"{lab}: abertura substituída pela primeira cena válida do "
+                           f"desenvolvimento — {e}")
+        trilhas = []
+        for ms in p.trilhas:
+            e = _track_problem(ms, tracks)
+            if e:
+                alertas.append(f"{lab}: sugestão de trilha removida — {e}")
+            else:
+                trilhas.append(ms)
+        p.trilhas = trilhas
+        kept.append(p)
+    r.pecas = kept
+    eps = _episodes(r)
+    if [p.numero for p in eps] != list(range(1, len(eps) + 1)):
+        alertas.append(f"episódios renumerados em sequência (1..{len(eps)})")
+        for i, p in enumerate(eps, 1):
+            p.numero = i
+    for p in eps[:-1]:
+        if p.gancho is None:
+            alertas.append(f"{_label(p)}: sem gancho válido para o próximo episódio")
+    return alertas
+
+
+# ---------------------------------------------------------------- geração
+
+def _style_text(style: StyleProfile) -> str:
+    return "\n".join([
+        "Perfil de estilo da Fokuss (extraído dos vídeos publicados):",
+        f"- resumo: {style.resumo}",
+        f"- duração média do episódio: {style.duracao_media_episodio_s:.0f} s; "
+        f"ritmo médio de corte: {style.ritmo_corte_medio_s:.1f} s",
+        f"- aberturas: {'; '.join(style.padroes_abertura) or '-'}",
+        f"- ganchos: {'; '.join(style.padroes_gancho) or '-'}",
+        f"- uso de falas: {style.uso_falas}",
+        f"- trilhas: {style.trilhas}",
+        f"- cor: {style.cor}",
+        f"- teaser/trailer: {style.estrutura_teaser_trailer}",
+    ])
+
+
+def _context(db: ProjectDB, idx: MusicIndex, style: StyleProfile | None,
+             n_episodios: int | None, derivados: set[str]) -> str:
+    unknown = set(derivados) - DERIVADOS
+    if unknown:
+        raise ValueError(f"Derivados desconhecidos: {', '.join(sorted(unknown))}")
+    qtd = (f"Divida a série em {n_episodios} episódios." if n_episodios
+           else "Você decide a quantidade de episódios conforme o material.")
+    der = (f"Crie também estes derivados: {', '.join(sorted(derivados))}." if derivados
+           else "Não crie derivados (trailer, teaser ou stories).")
+    partes = [
+        "Você é o roteirista da produtora Fokuss, que edita casamentos como séries.",
+        "Escreva o PRÉ-ROTEIRO: o arco da série, cada episódio (título, tema, abertura, "
+        "desenvolvimento com cenas em ordem e falas-chave, gancho e onde ele se resolve, curva de "
+        "emoção, duração estimada, lembranças sugeridas, motivo de cada mistura não-cronológica) "
+        "e as trilhas de cada peça.",
+        qtd, der, "", REGRAS_FOKUSS, "", _FORMATO,
+    ]
+    if style is not None:
+        partes += ["", _style_text(style)]
+    partes += [
+        "", "CATÁLOGO DO MATERIAL (rel_path | início–fim do segmento | dia | momento | emoção | "
+        "qualidade | descrição | falas | gancho):", build_catalog(db) or "(vazio)",
+        "", "TRILHAS DA BIBLIOTECA (path | BPM | perfil | duração | voz):",
+        music_shortlist(idx) or "(nenhuma trilha indexada)",
+    ]
+    return "\n".join(partes)
+
+
+def generate_roteiro(db: ProjectDB, c, idx: MusicIndex, style: StyleProfile | None, model: str,
+                     n_episodios: int | None, derivados: set[str],
+                     pedido_ajuste: str | None = None) -> Roteiro:
+    """Gera (ou ajusta) o pré-roteiro, valida as referências com até 2 rodadas de correção,
+    remove o que sobrar inválido (listado em alertas) e grava no banco."""
+    base = _context(db, idx, style, n_episodios, derivados)
+    if pedido_ajuste:
+        anterior = db.latest_roteiro()
+        if anterior is None:
+            raise ValueError("Não há roteiro anterior para ajustar.")
+        prompt = "\n".join([
+            base, "", "ROTEIRO ANTERIOR (JSON):", anterior, "",
+            f"PEDIDO DE AJUSTE DO EDITOR: {pedido_ajuste}",
+            "Devolva o roteiro completo já ajustado, mantendo o que não foi pedido para mudar.",
+        ])
+    else:
+        prompt = base
+    r: Roteiro = c.generate_json(model, [], Roteiro, prompt)
+    probs = validate_refs(r, db, idx)
+    for _ in range(CORRECTION_ROUNDS):
+        if not probs:
+            break
+        fix = "\n".join([
+            base, "", "ROTEIRO ATUAL (JSON):", r.model_dump_json(), "",
+            "O roteiro acima tem estes problemas — corrija usando apenas mídias, intervalos e "
+            "trilhas que existem no catálogo e na lista de trilhas, e devolva o roteiro completo:",
+            *(f"- {p}" for p in probs),
+        ])
+        r = c.generate_json(model, [], Roteiro, fix)
+        probs = validate_refs(r, db, idx)
+    if probs:
+        r.alertas.extend(_prune(r, db, idx))
+    db.add_roteiro(r.model_dump_json())
+    return r
