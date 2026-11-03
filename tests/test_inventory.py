@@ -124,3 +124,17 @@ def test_media_info_cover_art_e_tempo(tmp_path):
         p.probe = orig
     assert m.kind == "audio" and m.width == 0 and m.fps_num == 0
     assert m.created_at.tzinfo is not None and m.timecode == "01:02:03:04"
+
+
+def test_scan_sem_ffprobe_levanta_erro_unico(tmp_path, db, monkeypatch):
+    from roteiro_ia import inventory
+
+    def boom():
+        raise RuntimeError("Não encontrei o 'ffprobe'.")
+    monkeypatch.setattr(inventory, "ffprobe_bin", boom)
+    src = tmp_path / "src"
+    (src / "A").mkdir(parents=True)
+    (src / "A" / "x.mp4").write_bytes(b"1")
+    with pytest.raises(RuntimeError, match="ffprobe"):
+        scan(src, _asg(("A", Role.camera)), db)
+    assert db.list_falhas() == []

@@ -4,18 +4,17 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-_WINGET_BIN = Path(
-    r"C:\Users\FOKUSS-TAYCAN\AppData\Local\Microsoft\WinGet\Packages"
-    r"\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin")
+_WINGET_REL = Path("AppData/Local/Microsoft/WinGet/Packages")
 
 
 def _find(name: str) -> str:
     found = shutil.which(name)
     if found:
         return found
-    cand = _WINGET_BIN / f"{name}.exe"
-    if cand.is_file():
-        return str(cand)
+    base = Path.home() / _WINGET_REL
+    matches = [c for c in base.glob(f"Gyan.FFmpeg*/**/bin/{name}.exe") if c.is_file()]
+    if matches:
+        return str(max(matches, key=lambda c: (c.stat().st_mtime, str(c))))
     raise RuntimeError(
         f"Não encontrei o '{name}'. Instale o FFmpeg e coloque-o no PATH do Windows.")
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.media import probe as _probe
+from roteiro_ia.media.tools import ffprobe_bin
 from roteiro_ia.models import FolderAssignment, Role
 
 VIDEO_EXTS = {".mp4", ".mov", ".mxf", ".mts", ".avi"}
@@ -60,6 +61,7 @@ def _iter_media(folder: Path) -> Iterator[Path]:
 
 def scan(source_dir: Path, assignments: list[FolderAssignment], db: ProjectDB,
          on_progress: Callable[[int, int], None] | None = None) -> int:
+    ffprobe_bin()  # falha cedo, com uma única mensagem clara, se não houver ffprobe
     source_dir = Path(source_dir)
     files: list[tuple[Path, FolderAssignment]] = []
     for a in assignments:
