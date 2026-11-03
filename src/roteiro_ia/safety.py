@@ -23,29 +23,70 @@ def _net_use_output() -> str:
     ).stdout
 
 
+STATIC_UNC_ROOTS = [
+    r"\\192.168.168.2\fokuss\r - editar time",
+    r"\\192.168.168.2\fokuss\m - musicas",
+]
+
+
+def _strip_win_prefix(p: str) -> str:
+    p = p.replace("/", "\\")
+    low = p.casefold()
+    if low.startswith("\\\\?\\unc\\"):
+        return "\\\\" + p[8:]
+    if p.startswith("\\\\?\\") or p.startswith("\\\\.\\"):
+        return p[4:]
+    return p
+
+
+def _clean_segments(p: str) -> str:
+    """Win32 descarta espaços/pontos finais de cada segmento."""
+    unc = p.startswith("\\\\")
+    segs = [s.rstrip(" .") for s in p.split("\\")]
+    segs = [s for s in segs if s]
+    return ("\\\\" if unc else "") + "\\".join(segs)
+
+
 def _norm(p: str) -> str:
-    return os.path.abspath(p).casefold()
+    return _clean_segments(os.path.abspath(_strip_win_prefix(p))).casefold()
+
+
+def _resolved(p: str) -> str:
+    """realpath do destino, via ancestral existente mais próximo."""
+    p = os.path.abspath(_strip_win_prefix(p))
+    tail: list[str] = []
+    cur = p
+    while not os.path.exists(cur):
+        parent, name = os.path.split(cur)
+        if parent == cur:
+            break
+        tail.insert(0, name)
+        cur = parent
+    return _norm(os.path.join(os.path.realpath(cur), *tail))
 
 
 def _unc_for_letters(letters: set[str]) -> list[str]:
     key = ",".join(sorted(letters))
-    if key not in _unc_cache:
-        found: list[str] = []
-        try:
-            for line in _net_use_output().splitlines():
-                m = re.search(r"\b([A-Za-z]:)\s+(\\\\\S.*?)(?:\s{2,}|$)", line)
-                if m and m.group(1)[0].casefold() in letters:
-                    found.append(m.group(2).strip().rstrip("\\").casefold())
-        except Exception:
-            found = []
-        _unc_cache[key] = found
-    return _unc_cache[key]
+    if key in _unc_cache:
+        return _unc_cache[key]
+    found: list[str] = []
+    try:
+        for line in _net_use_output().splitlines():
+            m = re.search(r"\b([A-Za-z]:)\s+(\\\\\S.*?)(?:\s{2,}|$)", line)
+            if m and m.group(1)[0].casefold() in letters:
+                found.append(_norm(m.group(2)))
+    except Exception:
+        return []  # falha não é cacheada: tenta de novo na próxima chamada
+    _unc_cache[key] = found
+    return found
 
 
 def protected_paths(s: Settings) -> list[str]:
     roots = [_norm(r) for r in s.protected_roots]
     letters = {r[0] for r in roots if len(r) >= 2 and r[1] == ":"}
-    return roots + _unc_for_letters(letters)
+    out = roots + _unc_for_letters(letters)
+    out += [u for u in STATIC_UNC_ROOTS if u not in out]
+    return out
 
 
 def _is_under(path: str, root: str) -> bool:
@@ -54,12 +95,12 @@ def _is_under(path: str, root: str) -> bool:
 
 
 def assert_writable(path: Path, s: Settings) -> Path:
-    norm = _norm(str(path))
+    candidates = {_norm(str(path)), _resolved(str(path))}
     for root in protected_paths(s):
-        if _is_under(norm, _norm(root)):
+        r = _norm(root)
+        if any(_is_under(c, r) for c in candidates):
             raise ProtectedPathError(f"Escrita bloqueada em caminho protegido: {path}")
     return path
-
 
 def safe_mkdir(path: Path, s: Settings) -> Path:
     assert_writable(path, s)

@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -76,7 +77,7 @@ def test_protected_paths_mapeia_net_use(monkeypatch, settings):
         safety._unc_cache.clear()
     assert r"\\192.168.168.2\fokuss\m - musicas" in paths
     assert r"\\192.168.168.2\fokuss\r - editar time" in paths
-    assert "r:\\" in paths
+    assert "r:" in paths
 
 
 def test_net_use_falha_so_letras(monkeypatch, settings):
@@ -86,6 +87,95 @@ def test_net_use_falha_so_letras(monkeypatch, settings):
     monkeypatch.setattr(safety, "_net_use_output", boom)
     safety._unc_cache.clear()
     try:
-        assert protected_paths(settings) == ["r:\\", "m:\\"]
+        assert protected_paths(settings)[:2] == ["r:", "m:"]
     finally:
         safety._unc_cache.clear()
+
+
+STATIC_UNC_ROOTS = [
+    r"\\192.168.168.2\fokuss\r - editar time",
+    r"\\192.168.168.2\fokuss\m - musicas",
+]
+
+
+@pytest.mark.parametrize(
+    "p",
+    [
+        r"\\?\R:\x.txt",
+        r"\\?\UNC\192.168.168.2\fokuss\M - MUSICAS\a.mp3",
+        r"\\.\R:\x.txt",
+        r"\\192.168.168.2\fokuss\M - MUSICAS \a.mp3",
+        r"\\192.168.168.2\fokuss\M - MUSICAS.\a.mp3",
+        r"R:\2023 \x.txt",
+        r"R:\2023.\x.txt",
+        "R:/2023/x.txt",
+        "//192.168.168.2/fokuss/M - MUSICAS/a.mp3",
+        r"R:\2023\..\x.txt",
+        r"M:\a\b\..\..\c.txt",
+    ],
+)
+def test_bypasses_bloqueados(p, settings, monkeypatch):
+    def boom():
+        raise OSError("sem net")
+
+    monkeypatch.setattr(safety, "_net_use_output", boom)
+    safety._unc_cache.clear()
+    with pytest.raises(ProtectedPathError):
+        assert_writable(Path(p), settings)
+
+
+def test_unc_estatico_mesmo_sem_net_use(monkeypatch, settings):
+    def boom():
+        raise OSError("sem net")
+
+    monkeypatch.setattr(safety, "_net_use_output", boom)
+    safety._unc_cache.clear()
+    paths = protected_paths(settings)
+    for u in STATIC_UNC_ROOTS:
+        assert u in paths
+
+
+def test_falha_net_use_nao_fica_em_cache(monkeypatch, settings):
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("falhou")
+        return "OK           M:        \\\\10.0.0.9\\share\\Outra  Microsoft Windows Network\n"
+
+    monkeypatch.setattr(safety, "_net_use_output", flaky)
+    safety._unc_cache.clear()
+    try:
+        protected_paths(settings)
+        assert r"\\10.0.0.9\share\outra" in protected_paths(settings)
+    finally:
+        safety._unc_cache.clear()
+
+
+def _junction(link: Path, target: Path) -> None:
+    r = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("sem permissão para criar junction/symlink")
+
+
+def test_junction_para_protegido_bloqueada(tmp_path):
+    prot = (tmp_path / "prot").resolve()
+    prot.mkdir()
+    link = tmp_path / "link"
+    _junction(link, prot)
+    s = Settings(protected_roots=[str(prot)])
+    for dest in (link / "x.txt", link / "novo" / "sub" / "x.txt"):
+        with pytest.raises(ProtectedPathError):
+            assert_writable(dest, s)
+    with pytest.raises(ProtectedPathError):
+        safe_write_text(link / "x.txt", "a", s)
+    assert not (prot / "x.txt").exists()
+    assert assert_writable(tmp_path / "livre" / "x.txt", s)
