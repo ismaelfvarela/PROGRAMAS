@@ -38,7 +38,10 @@ packages = ["src/roteiro_ia"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["gemini: teste real contra a API Gemini (requer chave)"]
+markers = [
+  "gemini: teste real contra a API Gemini (requer chave)",
+  "windows: teste que usa o Microsoft Edge instalado no Windows",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu124"
