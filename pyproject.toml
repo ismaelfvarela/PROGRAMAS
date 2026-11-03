@@ -11,13 +11,15 @@ dependencies = [
   "faster-whisper",
   "nvidia-cublas-cu12==12.4.5.8",
   "nvidia-cudnn-cu12==9.1.0.70",
-  "scenedetect", "opencv-python",
+  "scenedetect",
+  "opencv-python",
   "beat_this",
   "torch",
   "google-genai",
   "keyring",
   "jinja2",
   "PySide6",
+  "tzdata>=2026.6",
 ]
 
 [project.scripts]
@@ -35,6 +37,7 @@ packages = ["src/roteiro_ia"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["gemini: teste real contra a API Gemini (requer chave)"]
 
 [[tool.uv.index]]
 name = "pytorch-cu124"
