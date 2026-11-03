@@ -547,6 +547,7 @@ Algoritmo de `sync_event`, por `day_label`: (1) referência = mídia de áudio m
 - Consumes: `Pipeline`, `ProjectRequest`, `suggest_role`, `list_subfolders`, `GeminiClient`, `PRIVACY_NOTICE_PT`, `set_api_key`
 - Produces:
   - `PipelineWorker(QObject)`: sinais `progresso(str etapa, str msg, float fração)`, `terminou(str status)`, `erro(str msg)`; roda `Pipeline.run` numa `QThread`.
+  - **Visual (pedido do editor): moderno, limpo e prático.** Tema escuro por padrão (combina com o Premiere), uma fonte sem serifa, cantos arredondados, um único tom de destaque, espaçamento generoso, ícones de estado (✔ ▶ ⏸ ○ ✖) em vez de texto técnico, nada de jargão. Estilo via QSS em `src/roteiro_ia/ui/tema.qss`. O fluxo cabe numa tela sem rolagem em 1920×1080. O painel do Premiere (Task 18) usa o mesmo tema.
   - Janela em português:
     1. **Pasta do evento** (seletor iniciando em `R:\`) — mostra nome/data lidos; erro de nome sem data aparece em vermelho.
     2. **Disco de trabalho** (padrão `Y:`) e espaço livre.
