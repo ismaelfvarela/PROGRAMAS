@@ -25,6 +25,7 @@ TOKENS_PER_SECOND = 100
 _sleep = time.sleep
 _POLL_S = 2.0
 _UPLOAD_TIMEOUT_S = 600.0
+MAX_TRANSPORT_RETRIES = 5
 _EXCLUDE = ("lite", "image", "tts", "live", "audio", "embedding", "thinking-exp")
 
 
@@ -52,8 +53,30 @@ def _is_server(e: Exception) -> bool:
     return isinstance(e, errors.APIError) and isinstance(e.code, int) and 500 <= e.code < 600
 
 
+def _find_retry_info(obj) -> float | None:
+    if isinstance(obj, dict):
+        if str(obj.get("@type", "")).endswith("RetryInfo") and "retryDelay" in obj:
+            m = re.match(r"([\d.]+)", str(obj["retryDelay"]))
+            if m:
+                return float(m.group(1))
+        for v in obj.values():
+            r = _find_retry_info(v)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _find_retry_info(v)
+            if r is not None:
+                return r
+    return None
+
+
 def _retry_delay_s(e: errors.APIError) -> float:
-    m = re.search(r'"retryDelay"\s*:\s*"([\d.]+)s"', repr(getattr(e, "details", "")) .replace("'", '"'))
+    d = getattr(e, "details", None)
+    r = _find_retry_info(d)
+    if r is not None:
+        return r
+    m = re.search(r'retryDelay\W+([\d.]+)s', str(d))
     return float(m.group(1)) if m else 60.0
 
 
@@ -114,31 +137,37 @@ class GeminiClient:
             f = self.backend.files.get(name=f.name)
         return f
 
-    def _call(self, model: str, contents: list, config, max_retries: int):
+    def _call(self, model: str, contents: list, config):
+        """Uma chamada ao backend com retentativas de transporte (429 pago / 5xx), no máximo
+        MAX_TRANSPORT_RETRIES chamadas; esgotado, relança o erro."""
         attempts = 0
         while True:
             try:
                 return self.backend.models.generate_content(model=model, contents=contents, config=config)
             except Exception as e:  # noqa: BLE001
-                if _is_quota(e):
-                    if self.s.gemini_mode == "gratis":
-                        now = datetime.now(LA)
-                        if _is_daily(e):
-                            resume = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-                        else:
-                            resume = now + timedelta(seconds=_retry_delay_s(e))
-                        raise QuotaPaused(resume) from e
-                elif not _is_server(e):
+                quota = _is_quota(e)
+                if not quota and not _is_server(e):
                     raise
-                if self.s.gemini_mode != "pago":
-                    raise
+                if quota and self.s.gemini_mode == "gratis":
+                    now = datetime.now(LA)
+                    if _is_daily(e):
+                        resume = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    else:
+                        resume = now + timedelta(seconds=_retry_delay_s(e))
+                    raise QuotaPaused(resume) from e
                 attempts += 1
-                if attempts >= max_retries:
+                if attempts >= MAX_TRANSPORT_RETRIES:
                     raise
-                _sleep(min(2**attempts, 60))
+                wait = float(2**attempts)
+                if quota:
+                    wait = max(wait, _retry_delay_s(e))
+                _sleep(min(wait, 60.0))
 
     def generate_json(self, model: str, parts: list, schema: type[BaseModel], prompt: str,
                       max_retries: int = 3) -> BaseModel:
+        """Dois limites independentes: `max_retries` = tentativas por JSON inválido;
+        MAX_TRANSPORT_RETRIES (5) = chamadas por erro 5xx/429(pago) dentro de cada tentativa.
+        Esgotar o transporte levanta o erro na hora, sem multiplicar com as de JSON."""
         cfg = dict(response_mime_type="application/json", response_schema=schema)
         if any(_is_file_part(p) for p in parts):
             cfg["media_resolution"] = types.MediaResolution.MEDIA_RESOLUTION_LOW
@@ -146,7 +175,7 @@ class GeminiClient:
         contents = [*parts, prompt]
         last = ""
         for _ in range(max_retries):
-            resp = self._call(model, contents, config, max_retries)
+            resp = self._call(model, contents, config)
             parsed = getattr(resp, "parsed", None)
             if isinstance(parsed, schema):
                 return parsed

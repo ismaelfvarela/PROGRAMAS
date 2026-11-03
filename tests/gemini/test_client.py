@@ -94,16 +94,33 @@ def test_429_pago_retenta(monkeypatch):
     monkeypatch.setattr(gc, "_sleep", sleeps.append)
     c, be = mk([err429(), '{"ok": true}'], mode="pago")
     assert c.generate_json("m", [], Out, "p").ok
-    assert sleeps == [2]
+    assert sleeps == [37]
 
 
 def test_5xx_pago_esgota(monkeypatch):
     monkeypatch.setattr(gc, "_sleep", lambda s: None)
     e = errors.ServerError(503, {"error": {"code": 503, "message": "x"}})
-    c, be = mk([e, e, e], mode="pago")
+    c, be = mk([e] * 10, mode="pago")
     with pytest.raises(errors.ServerError):
         c.generate_json("m", [], Out, "p")
-    assert len(be.models.calls) == 3
+    assert len(be.models.calls) == gc.MAX_TRANSPORT_RETRIES
+
+
+def test_5xx_gratis_retenta(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(gc, "_sleep", sleeps.append)
+    e = errors.ServerError(503, {"error": {"code": 503, "message": "overloaded"}})
+    c, _ = mk([e, '{"ok": true}'], mode="gratis")
+    assert c.generate_json("m", [], Out, "p").ok
+    assert sleeps == [2]
+
+
+def test_429_pago_respeita_retry_delay(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(gc, "_sleep", sleeps.append)
+    c, _ = mk([err429(delay="37s"), err429(delay="120s"), '{"ok": true}'], mode="pago")
+    assert c.generate_json("m", [], Out, "p").ok
+    assert sleeps == [37, 60]
 
 
 def test_estimate_cost():
