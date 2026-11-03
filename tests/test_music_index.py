@@ -75,3 +75,68 @@ def test_perfil_crescente(tmp_path):
     sf.write(str(p), y, SR)
     t = analyze_track(p, tracker=LibrosaTracker())
     assert t.perfil == "crescente"
+
+
+def test_raiz_inexistente_levanta_e_preserva_indice(tmp_path):
+    import pytest
+
+    s = _settings(tmp_path)
+    root = tmp_path / "musicas"
+    root.mkdir()
+    _click(root / "a.wav", seconds=8)
+    idx = MusicIndex(tmp_path / "sis" / "trilhas.db", s)
+    update_index(s, idx, tracker=LibrosaTracker())
+    root_gone = s.model_copy(update={"music_root": str(tmp_path / "offline")})
+    with pytest.raises(FileNotFoundError, match="pasta de músicas"):
+        update_index(root_gone, idx, tracker=LibrosaTracker())
+    assert len(idx.all()) == 1
+
+
+def test_erro_no_walk_nao_apaga(tmp_path, monkeypatch):
+    import os as _os
+
+    s = _settings(tmp_path)
+    root = tmp_path / "musicas"
+    root.mkdir()
+    _click(root / "a.wav", seconds=8)
+    idx = MusicIndex(tmp_path / "sis" / "trilhas.db", s)
+    update_index(s, idx, tracker=LibrosaTracker())
+    real = _os.walk
+
+    def bad_walk(top, onerror=None, **kw):
+        if onerror:
+            onerror(OSError("rede caiu"))
+        return iter(())
+
+    monkeypatch.setattr("roteiro_ia.music_index.os.walk", bad_walk)
+    assert update_index(s, idx, tracker=LibrosaTracker()) == 0
+    assert len(idx.all()) == 1
+    monkeypatch.setattr("roteiro_ia.music_index.os.walk", real)
+
+
+def test_zero_arquivos_com_indice_nao_apaga(tmp_path):
+    s = _settings(tmp_path)
+    root = tmp_path / "musicas"
+    root.mkdir()
+    _click(root / "a.wav", seconds=8)
+    idx = MusicIndex(tmp_path / "sis" / "trilhas.db", s)
+    update_index(s, idx, tracker=LibrosaTracker())
+    (root / "a.wav").unlink()
+    update_index(s, idx, tracker=LibrosaTracker())
+    assert len(idx.all()) == 1
+
+
+def test_vocals_usa_trecho_central(tmp_path):
+    from roteiro_ia.music_index import VOCAL_EXCERPT_S, _has_vocals
+
+    y = np.zeros(SR * 200, dtype=np.float32)
+    seen = {}
+    import librosa
+
+    orig = librosa.effects.harmonic
+    librosa.effects.harmonic = lambda x, **k: (seen.setdefault("n", len(x)), orig(x, **k))[1]
+    try:
+        _has_vocals(y)
+    finally:
+        librosa.effects.harmonic = orig
+    assert seen["n"] <= VOCAL_EXCERPT_S * SR

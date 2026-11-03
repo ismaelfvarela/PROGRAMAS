@@ -15,6 +15,7 @@ dependencies = [
   "opencv-python",
   "beat_this",
   "torch",
+  "torchaudio==2.5.1",
   "google-genai",
   "keyring",
   "jinja2",
@@ -46,4 +47,5 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
 

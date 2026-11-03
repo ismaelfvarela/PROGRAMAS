@@ -26,6 +26,7 @@ CRESCENDO_RATIO = 1.3
 # Instrumentos melódicos também caem nessa faixa; serve só como sugestão, não como verdade.
 VOCAL_RATIO = 0.55
 VOCAL_BAND_HZ = (300.0, 3400.0)
+VOCAL_EXCERPT_S = 45  # HPSS só no trecho central: a faixa inteira seria lenta demais
 _SR = 22050
 _HOP = 128  # resolução fina (~6 ms) para o BPM não oscilar entre quadros
 
@@ -139,6 +140,10 @@ def _has_vocals(y: np.ndarray) -> bool:
 
     if len(y) < 2048:
         return False
+    n = VOCAL_EXCERPT_S * _SR
+    if len(y) > n:
+        mid = len(y) // 2
+        y = y[mid - n // 2: mid + n // 2]
     harm = librosa.effects.harmonic(y)
     spec = np.abs(librosa.stft(harm, n_fft=2048)) ** 2
     freqs = librosa.fft_frequencies(sr=_SR, n_fft=2048)
@@ -161,7 +166,7 @@ def analyze_track(path: Path, tracker: BeatTracker | None = None) -> TrackInfo:
     bpm = _bpm(beats)
     energy = _energy_per_second(y)
     return TrackInfo(
-        path=str(path.resolve()), bpm=bpm, beats_s=beats, downbeats_s=downbeats,
+        path=os.path.abspath(path), bpm=bpm, beats_s=beats, downbeats_s=downbeats,
         energy=energy, duration_s=len(y) / _SR, has_vocals=_has_vocals(y),
         perfil=_perfil(bpm, energy), mtime=path.stat().st_mtime,
     )
@@ -235,18 +240,25 @@ def update_index(s: Settings, idx: MusicIndex,
                  on_progress: Callable[[int, int, str], None] | None = None,
                  tracker: BeatTracker | None = None) -> int:
     """Varre music_root (somente leitura) e analisa só o que é novo ou foi alterado."""
-    files: list[Path] = []
-    for dirpath, _dirs, names in os.walk(s.music_root):
+    root = Path(s.music_root)
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"A pasta de músicas '{root}' não está acessível. Confira se o drive está conectado; "
+            "o índice não foi alterado.")
+    walk_errors: list[OSError] = []
+    files: list[tuple[Path, str]] = []
+    for dirpath, _dirs, names in os.walk(root, onerror=walk_errors.append):
         for n in names:
             if Path(n).suffix.lower() in AUDIO_EXTS:
-                files.append(Path(dirpath) / n)
-    existing = {str(f.resolve()) for f in files}
+                f = Path(dirpath) / n
+                files.append((f, os.path.abspath(f)))
+    existing = {key for _, key in files}
     done = 0
-    for i, f in enumerate(files, 1):
+    for i, (f, key) in enumerate(files, 1):
         if on_progress:
             on_progress(i, len(files), f.name)
         try:
-            old = idx.get(str(f.resolve()))
+            old = idx.get(key)
             if old is not None and old.mtime == f.stat().st_mtime:
                 continue
             if tracker is None:
@@ -255,5 +267,11 @@ def update_index(s: Settings, idx: MusicIndex,
             done += 1
         except Exception as e:
             log.warning("Não foi possível analisar a trilha '%s': %s", f.name, e)
-    idx.remove_missing(existing)
+    if walk_errors:
+        log.warning("Algumas pastas de músicas não puderam ser lidas (%d); "
+                    "nenhuma trilha foi removida do índice.", len(walk_errors))
+    elif not files and idx.all():
+        log.warning("Nenhuma trilha encontrada na pasta de músicas; o índice foi mantido.")
+    else:
+        idx.remove_missing(existing)
     return done
