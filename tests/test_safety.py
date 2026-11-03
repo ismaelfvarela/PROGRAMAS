@@ -179,3 +179,35 @@ def test_junction_para_protegido_bloqueada(tmp_path):
         safe_write_text(link / "x.txt", "a", s)
     assert not (prot / "x.txt").exists()
     assert assert_writable(tmp_path / "livre" / "x.txt", s)
+
+def test_safe_copy_atomico_sucesso(tmp_path, settings):
+    src = tmp_path / "s.bin"
+    src.write_bytes(b"conteudo")
+    dst = tmp_path / "out" / "d.bin"
+    assert safe_copy(src, dst, settings) == dst
+    assert dst.read_bytes() == b"conteudo"
+    assert not (tmp_path / "out" / "d.bin.part").exists()
+
+
+def test_safe_copy_falha_no_meio_nao_deixa_nada(tmp_path, settings, monkeypatch):
+    src = tmp_path / "s.bin"
+    src.write_bytes(b"conteudo")
+    dst = tmp_path / "out" / "d.bin"
+
+    def parcial(a, b):
+        Path(b).write_bytes(b"cont")
+        raise OSError("disco cheio")
+    monkeypatch.setattr(safety.shutil, "copy2", parcial)
+    with pytest.raises(OSError):
+        safe_copy(src, dst, settings)
+    assert not dst.exists()
+    assert not (tmp_path / "out" / "d.bin.part").exists()
+
+
+def test_safe_copy_substitui_destino_antigo(tmp_path, settings):
+    src = tmp_path / "s.bin"
+    src.write_bytes(b"novo")
+    dst = tmp_path / "d.bin"
+    dst.write_bytes(b"velho-truncado-e-maior")
+    safe_copy(src, dst, settings)
+    assert dst.read_bytes() == b"novo"

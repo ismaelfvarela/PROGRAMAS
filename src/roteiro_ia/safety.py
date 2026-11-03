@@ -122,6 +122,16 @@ def safe_write_bytes(path: Path, data: bytes, s: Settings) -> None:
 
 def safe_copy(src: Path, dst: Path, s: Settings) -> Path:
     assert_writable(dst, s)
+    part = dst.with_name(dst.name + ".part")
+    assert_writable(part, s)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    try:
+        shutil.copy2(src, part)
+        os.replace(part, dst)
+    except BaseException:
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return dst
