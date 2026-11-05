@@ -180,7 +180,7 @@ def test_selo_som_da_camera(tmp_path):
     assert "som da câmera" not in render_html(r, make_paths(tmp_path), [])
     ep = r.pecas[1]
     ep.desenvolvimento[0].usar_som_camera = True
-    assert render_html(r, make_paths(tmp_path), []).count("som da câmera") == 1
+    assert render_html(r, make_paths(tmp_path), []).count("som da câmera") == 2  # o trailer de exemplo compartilha as cenas
     ep.abertura.usar_som_camera = True
     ep.gancho.usar_som_camera = True
-    assert render_html(r, make_paths(tmp_path), []).count("som da câmera") == 3
+    assert render_html(r, make_paths(tmp_path), []).count("som da câmera") == 6
