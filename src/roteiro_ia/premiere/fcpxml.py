@@ -6,7 +6,9 @@
   partir do quadro 0. V2…Vn: ângulos alternativos sincronizados (até 5, desativados),
   só no trecho sobreposto e alinhados no tempo real (via SyncResult).
 - Áudio: mesa / áudio ambiente / lapelas sobrepostos à cena nas faixas de AUDIO_TRACKS;
-  sem mesa nem ambiente, o áudio da própria câmera vai para AMBIENTE. Cada clipe de áudio
+  sem mesa nem ambiente, o áudio da própria câmera vai para AMBIENTE. As faixas vêm em
+  pares L/R: fonte estéreo (≥2 canais) vira dois clipitems ligados (<link>), canal 1 na
+  faixa L e canal 2 na R; fonte mono usa só a L. Cada clipe de áudio
   recebe o filtro "Audio Levels" com 10^(ganho_dB/20), ganho de `gain_for`.
   Observação: o Premiere limita o nível de clipe a +12 dB (3,98109 linear), então o valor
   linear é limitado a 3,98109 mesmo quando `gain_for` pede mais (até +20 dB).
@@ -15,7 +17,10 @@
   os proxies são anexados depois pelo painel do Premiere.
 - Tempos: segundos → quadros com round(s * fps_real); start/end na taxa da sequência,
   in/out na taxa do próprio clipe. Arquivos só de áudio usam a taxa da sequência em que
-  aparecem pela primeira vez.
+  aparecem pela primeira vez. Quando a taxa do clipe é a da sequência, out = in + (end − start).
+- Cada <file> é definido por completo na sua primeira ocorrência na ORDEM DO DOCUMENTO
+  (preenchido numa passada final); as demais ocorrências são só `<file id="..."/>`.
+- Clipitems das sequências apontam (<masterclipid>) para o clip mestre do bin MATERIAL/TRILHAS.
 """
 from __future__ import annotations
 
@@ -34,7 +39,8 @@ from roteiro_ia.paths import EventPaths
 from roteiro_ia.safety import safe_write_text
 from roteiro_ia.script.generate import Piece, Roteiro, SceneRef
 
-AUDIO_TRACKS = ["MESA", "AMBIENTE", "LAPELA NOIVO", "LAPELA NOIVA", "MÚSICA"]
+_AUDIO_GROUPS = ["MESA", "AMBIENTE", "LAPELA NOIVO", "LAPELA NOIVA", "MÚSICA"]
+AUDIO_TRACKS = [f"{g} {side}" for g in _AUDIO_GROUPS for side in ("L", "R")]
 _ROLE_TRACK = {Role.mesa: "MESA", Role.audio_ambiente: "AMBIENTE",
                Role.lapela_noivo: "LAPELA NOIVO", Role.lapela_noiva: "LAPELA NOIVA"}
 MAX_ALTERNATES = 5
@@ -61,9 +67,11 @@ def timebase(fps_num: int, fps_den: int) -> tuple[int, bool]:
     """(30000, 1001) → (30, True); (25, 1) → (25, False)."""
     if fps_num <= 0 or fps_den <= 0:
         fps_num, fps_den = DEFAULT_RATE
-    if fps_den == 1001:
-        return round(fps_num / 1000), True
-    return round(fps_num / fps_den), False
+    fps = fps_num / fps_den
+    whole = round(fps)
+    if abs(fps - whole) > 1e-6 and abs(fps - whole * 1000 / 1001) < 0.01:
+        return whole, True
+    return whole, False
 
 
 def _real(rate: tuple[int, int]) -> float:
@@ -101,9 +109,20 @@ def _media_rate(m: MediaInfo) -> tuple[int, int] | None:
 # ------------------------------------------------------------------ contexto do documento
 
 @dataclass
+class _Src:
+    """Um arquivo de mídia pronto para virar <file>."""
+    fid: str
+    path: Path
+    duration_s: float
+    rate: tuple[int, int]
+    video: tuple[int, int] | None
+    channels: int
+
+
+@dataclass
 class _Ctx:
-    """Estado compartilhado por todo o documento: definição única de cada <file> e ids."""
-    defined: set[str] = field(default_factory=set)
+    """Estado compartilhado por todo o documento: arquivos usados, taxas e ids."""
+    files: dict[str, _Src] = field(default_factory=dict)
     file_rates: dict[str, tuple[int, int]] = field(default_factory=dict)
     music_ids: dict[str, str] = field(default_factory=dict)
     music_used: list[tuple[str, str, float]] = field(default_factory=list)  # id, caminho, dur
@@ -123,56 +142,59 @@ class _Ctx:
         return self.music_ids[path]
 
 
-def _file_el(parent: ET.Element, ctx: _Ctx, fid: str, path: Path, duration_s: float,
-             rate: tuple[int, int], video: tuple[int, int] | None, channels: int) -> None:
-    """Definição completa na primeira ocorrência; depois só a referência."""
-    f = _sub(parent, "file", id=fid)
-    if fid in ctx.defined:
-        return
-    ctx.defined.add(fid)
-    _sub(f, "name", PureWindowsPath(str(path)).name)
-    _sub(f, "pathurl", pathurl(path))
-    _rate_el(f, rate)
-    _sub(f, "duration", _frames(duration_s, rate))
+def _define_file(f: ET.Element, src: _Src) -> None:
+    _sub(f, "name", PureWindowsPath(str(src.path)).name)
+    _sub(f, "pathurl", pathurl(src.path))
+    _rate_el(f, src.rate)
+    _sub(f, "duration", _frames(src.duration_s, src.rate))
     media = _sub(f, "media")
-    if video is not None:
+    if src.video is not None:
         sc = _sub(_sub(media, "video"), "samplecharacteristics")
-        _rate_el(sc, rate)
-        _sub(sc, "width", video[0])
-        _sub(sc, "height", video[1])
+        _rate_el(sc, src.rate)
+        _sub(sc, "width", src.video[0])
+        _sub(sc, "height", src.video[1])
         _sub(sc, "anamorphic", "FALSE")
         _sub(sc, "pixelaspectratio", "square")
         _sub(sc, "fielddominance", "none")
-    if channels > 0:
+    if src.channels > 0:
         a = _sub(media, "audio")
         sc = _sub(a, "samplecharacteristics")
         _sub(sc, "depth", 16)
         _sub(sc, "samplerate", 48000)
-        _sub(a, "channelcount", channels)
+        _sub(a, "channelcount", src.channels)
 
 
-@dataclass
-class _Src:
-    """Um arquivo de mídia pronto para virar <file>."""
-    fid: str
-    path: Path
-    duration_s: float
-    rate: tuple[int, int]
-    video: tuple[int, int] | None
-    channels: int
+def _fill_files(root: ET.Element, ctx: _Ctx) -> None:
+    """Definição completa no primeiro <file> de cada id na ordem do documento."""
+    seen: set[str] = set()
+    for f in list(root.iter("file")):
+        fid = f.get("id")
+        if fid in seen or len(f):
+            seen.add(fid)
+            continue
+        seen.add(fid)
+        _define_file(f, ctx.files[fid])
 
 
 def _media_src(m: MediaInfo, ctx: _Ctx, source_root: Path, fallback: tuple[int, int]) -> _Src:
     fid = f"file-{m.id}"
     rate = ctx.rate_for(fid, _media_rate(m), fallback)
-    video = (m.width, m.height) if m.kind == "video" else None
+    video = None
+    if m.kind == "video":
+        video = (m.height, m.width) if m.rotation % 180 == 90 else (m.width, m.height)
     return _Src(fid, Path(source_root) / m.rel_path, m.duration_s, rate, video, m.audio_channels)
 
 
+def _master_id(fid: str) -> str:
+    return f"masterclip-{fid}"
+
+
 def _clipitem(track: ET.Element, ctx: _Ctx, src: _Src, name: str, start: int, end: int,
-              in_s: float, dur_s: float, audio: bool, enabled: bool = True,
+              in_s: float, dur_s: float, seq_rate: tuple[int, int],
+              audio_index: int | None = None, enabled: bool = True,
               level: float | None = None) -> ET.Element:
     ci = _sub(track, "clipitem", id=ctx.clip_id())
+    _sub(ci, "masterclipid", _master_id(src.fid))
     _sub(ci, "name", name)
     _sub(ci, "enabled", _bool(enabled))
     _sub(ci, "duration", _frames(src.duration_s, src.rate))
@@ -181,14 +203,45 @@ def _clipitem(track: ET.Element, ctx: _Ctx, src: _Src, name: str, start: int, en
     _sub(ci, "end", end)
     fin = _frames(in_s, src.rate)
     _sub(ci, "in", fin)
-    _sub(ci, "out", _frames(in_s + dur_s, src.rate))
-    _file_el(ci, ctx, src.fid, src.path, src.duration_s, src.rate, src.video, src.channels)
-    if audio:
+    if timebase(*src.rate) == timebase(*seq_rate):
+        fout = fin + (end - start)
+    else:
+        fout = _frames(in_s + dur_s, src.rate)
+    _sub(ci, "out", fout)
+    ctx.files.setdefault(src.fid, src)
+    _sub(ci, "file", id=src.fid)
+    if audio_index is not None:
         st = _sub(ci, "sourcetrack")
         _sub(st, "mediatype", "audio")
-        _sub(st, "trackindex", 1)
+        _sub(st, "trackindex", audio_index)
         _levels(ci, 1.0 if level is None else level)
     return ci
+
+
+def _link(items: list[tuple[ET.Element, str, int, int]]) -> None:
+    """Liga clipitems (padrão do export FCP7 do Premiere): cada um lista todos do grupo."""
+    for ci, *_ in items:
+        for other, mediatype, trackindex, clipindex in items:
+            ln = _sub(ci, "link")
+            _sub(ln, "linkclipref", other.get("id"))
+            _sub(ln, "mediatype", mediatype)
+            _sub(ln, "trackindex", trackindex)
+            _sub(ln, "clipindex", clipindex)
+
+
+def _place_audio(a_tracks: dict[str, ET.Element], group: str, ctx: _Ctx, src: _Src, name: str,
+                 start: int, end: int, in_s: float, dur_s: float, seq_rate: tuple[int, int],
+                 level: float) -> None:
+    """Fonte estéreo → par L/R ligado; mono → só L."""
+    items = []
+    for ch in range(2 if src.channels >= 2 else 1):
+        label = f"{group} {'LR'[ch]}"
+        tr = a_tracks[label]
+        ci = _clipitem(tr, ctx, src, name, start, end, in_s, dur_s, seq_rate,
+                       audio_index=ch + 1, level=level)
+        items.append((ci, "audio", AUDIO_TRACKS.index(label) + 1, len(tr.findall("clipitem"))))
+    if len(items) > 1:
+        _link(items)
 
 
 def _levels(ci: ET.Element, value: float) -> None:
@@ -264,6 +317,7 @@ def _overlaps(t0: float, t1: float, cands, syncs) -> list[tuple[float, float, fl
 def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map: dict[str, str],
                    source_root: Path, ctx: _Ctx | None = None,
                    name: str | None = None) -> ET.Element:
+    own_ctx = ctx is None
     ctx = ctx or _Ctx()
     name = name or piece_name(piece)
     all_media = db.list_media()
@@ -298,6 +352,7 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
     _sub(fmt_sc, "pixelaspectratio", "square")
     _sub(fmt_sc, "fielddominance", "none")
     audio = _sub(media, "audio")
+    _sub(audio, "numOutputChannels", 2)
     afmt = _sub(_sub(audio, "format"), "samplecharacteristics")
     _sub(afmt, "depth", 16)
     _sub(afmt, "samplerate", 48000)
@@ -313,7 +368,7 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
         cursor = end
         src = _media_src(m, ctx, source_root, rate)
         _clipitem(v_tracks[0], ctx, src, PureWindowsPath(m.rel_path).name, start, end,
-                  ref.start_s, dur, audio=False)
+                  ref.start_s, dur, rate)
         if kind == "abertura":
             markers.append(("ABERTURA", ref.descricao, start, None))
         elif kind == "gancho":
@@ -344,7 +399,7 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
                 while len(v_tracks) <= i:
                     v_tracks.append(ET.Element("track"))
                 _clipitem(v_tracks[i], ctx, _media_src(o, ctx, source_root, rate),
-                          PureWindowsPath(o.rel_path).name, s0, s1, ins, d, audio=False,
+                          PureWindowsPath(o.rel_path).name, s0, s1, ins, d, rate,
                           enabled=False)
             for role, tname in _ROLE_TRACK.items():
                 taken: list[tuple[int, int]] = []
@@ -355,17 +410,16 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
                         continue
                     taken.append((s0, s1))
                     level, noisy = _gain_level(db, o, role)
-                    _clipitem(a_tracks[tname], ctx, _media_src(o, ctx, source_root, rate),
-                              PureWindowsPath(o.rel_path).name, s0, s1, ins, d, audio=True,
-                              level=level)
+                    _place_audio(a_tracks, tname, ctx, _media_src(o, ctx, source_root, rate),
+                                 PureWindowsPath(o.rel_path).name, s0, s1, ins, d, rate, level)
                     if noisy:
                         markers.append(("RUÍDO", f"Ruído detectado em {o.rel_path}", s0, s1))
                     if role in (Role.mesa, Role.audio_ambiente):
                         has_room = True
         if not has_room and m.audio_channels > 0:
             level, noisy = _gain_level(db, m, m.role)
-            _clipitem(a_tracks["AMBIENTE"], ctx, src, PureWindowsPath(m.rel_path).name,
-                      start, end, ref.start_s, dur, audio=True, level=level)
+            _place_audio(a_tracks, "AMBIENTE", ctx, src, PureWindowsPath(m.rel_path).name,
+                         start, end, ref.start_s, dur, rate, level)
             if noisy:
                 markers.append(("RUÍDO", f"Ruído detectado em {m.rel_path}", start, end))
 
@@ -381,8 +435,8 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
             ctx.music_used.append((fid, mpath, info.duration_s))
         src = _Src(fid, Path(mpath), info.duration_s, mrate, None, 2)
         length = min(cursor, _frames(info.duration_s, rate))
-        _clipitem(a_tracks["MÚSICA"], ctx, src, PureWindowsPath(mpath).name, 0, length,
-                  0.0, length / _real(rate), audio=True, level=1.0)
+        _place_audio(a_tracks, "MÚSICA", ctx, src, PureWindowsPath(mpath).name, 0, length,
+                     0.0, length / _real(rate), rate, 1.0)
 
     for t in v_tracks:
         _sub(t, "enabled", "TRUE")
@@ -392,9 +446,12 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
         t = a_tracks[tname]
         _sub(t, "enabled", "TRUE")
         _sub(t, "locked", "FALSE")
+        _sub(t, "outputchannelindex", 1 if tname.endswith(" L") else 2)
         audio.append(t)
     for n, c, a, b in sorted(markers, key=lambda x: x[2]):
         _marker(seq, n, c, a, b)
+    if own_ctx:
+        _fill_files(seq, ctx)
     return seq
 
 
@@ -406,19 +463,30 @@ def _bin(parent: ET.Element, name: str) -> ET.Element:
     return _sub(b, "children")
 
 
-def _master_clip(parent: ET.Element, ctx: _Ctx, cid: str, name: str, src: _Src) -> None:
+def _master_clip(parent: ET.Element, ctx: _Ctx, name: str, src: _Src) -> None:
+    cid = _master_id(src.fid)
     clip = _sub(parent, "clip", id=cid)
+    _sub(clip, "masterclipid", cid)
+    _sub(clip, "ismasterclip", "TRUE")
     _sub(clip, "name", name)
     frames = _frames(src.duration_s, src.rate)
     _sub(clip, "duration", frames)
     _rate_el(clip, src.rate)
     media = _sub(clip, "media")
+    items = []
     if src.video is not None:
         track = _sub(_sub(media, "video"), "track")
-        _clipitem(track, ctx, src, name, 0, frames, 0.0, src.duration_s, audio=False)
-    elif src.channels > 0:
-        track = _sub(_sub(media, "audio"), "track")
-        _clipitem(track, ctx, src, name, 0, frames, 0.0, src.duration_s, audio=True)
+        ci = _clipitem(track, ctx, src, name, 0, frames, 0.0, src.duration_s, src.rate)
+        items.append((ci, "video", 1, 1))
+    if src.channels > 0:
+        audio = _sub(media, "audio")
+        for ch in range(min(src.channels, 2)):
+            track = _sub(audio, "track")
+            ci = _clipitem(track, ctx, src, name, 0, frames, 0.0, src.duration_s, src.rate,
+                           audio_index=ch + 1)
+            items.append((ci, "audio", ch + 1, 1))
+    if len(items) > 1:
+        _link(items)
 
 
 def build_xml(r: Roteiro, db: ProjectDB, idx: MusicIndex, music_path_map: dict[str, str],
@@ -448,14 +516,14 @@ def build_xml(r: Roteiro, db: ProjectDB, idx: MusicIndex, music_path_map: dict[s
         if m.folder not in folders:
             folders[m.folder] = _bin(mat, m.folder)
         src = _media_src(m, ctx, source_root, DEFAULT_RATE)
-        _master_clip(folders[m.folder], ctx, f"masterclip-{m.id}",
-                     PureWindowsPath(m.rel_path).name, src)
+        _master_clip(folders[m.folder], ctx, PureWindowsPath(m.rel_path).name, src)
 
     tri = _bin(children, "TRILHAS")
     for fid, mpath, dur in ctx.music_used:
         src = _Src(fid, Path(mpath), dur, ctx.file_rates[fid], None, 2)
-        _master_clip(tri, ctx, f"masterclip-{fid}", PureWindowsPath(mpath).name, src)
+        _master_clip(tri, ctx, PureWindowsPath(mpath).name, src)
 
+    _fill_files(root, ctx)
     ET.indent(root, space="  ")
     body = ET.tostring(root, encoding="unicode")
     return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n' + body + "\n"
