@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Roteiro - {{ evento }}</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  :root { --ink: #1d1d1f; --muted: #6e6e73; --accent: #b4542d; --line: #e4e1dc; --soft: #f6f4f1; }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: var(--ink); background: #fff; font: 10.5pt/1.5 "Segoe UI", Arial, sans-serif; }
+  h1, h2, h3 { margin: 0; font-weight: 600; }
+  .label { font-size: 8.5pt; letter-spacing: .12em; font-variant: small-caps; text-transform: lowercase;
+           color: var(--accent); font-weight: 600; margin: 22px 0 8px; }
+  .cover { min-height: 240mm; display: flex; flex-direction: column; justify-content: center; }
+  .cover .kicker { color: var(--accent); font-size: 9pt; letter-spacing: .2em; text-transform: uppercase; }
+  .cover h1 { font-size: 30pt; line-height: 1.15; margin: 10px 0 8px; }
+  .cover .date { color: var(--muted); font-size: 13pt; }
+  .cover .rule { width: 48px; height: 3px; background: var(--accent); margin: 28px 0; }
+  .arco { white-space: pre-wrap; }
+  .piece { break-before: page; }
+  .piece-head { border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+  .piece-head .tipo { color: var(--accent); font-size: 9pt; letter-spacing: .15em; text-transform: uppercase; }
+  .piece-head h2 { font-size: 20pt; margin-top: 2px; }
+  .piece-head .tema { color: var(--muted); }
+  .scene { margin: 0 0 12px; break-inside: avoid; }
+  .scene .n { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .pill { font-family: Consolas, "Courier New", monospace; font-size: 8.5pt; background: var(--soft);
+          border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
+  .badge { font-size: 7.5pt; font-weight: 600; color: var(--accent); border: 1px solid var(--accent);
+           border-radius: 8px; padding: 0 6px; margin-left: 4px; white-space: nowrap; }
+  .quote { margin: 3px 0 0 14px; padding-left: 10px; border-left: 2px solid var(--accent); font-style: italic; }
+  .why { color: var(--muted); font-size: 9.5pt; margin-top: 2px; }
+  .hook { background: var(--soft); border-left: 3px solid var(--accent); padding: 8px 12px; break-inside: avoid; }
+  .hook .resolve { color: var(--accent); font-weight: 600; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 9pt; break-inside: avoid; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 8pt; border-bottom: 1px solid var(--ink); padding: 4px 6px 4px 0; }
+  td { border-bottom: 1px solid var(--line); padding: 6px 6px 6px 0; vertical-align: top; }
+  ul { margin: 0; padding-left: 18px; }
+  .terms span { display: inline-block; background: var(--soft); border-radius: 10px; padding: 1px 10px; margin: 0 4px 4px 0; font-size: 9pt; }
+  .dur { margin-top: 18px; color: var(--muted); font-size: 9.5pt; }
+  .alerts { break-before: page; }
+  .alerts li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<section class="cover">
+  <div class="kicker">Pré-roteiro de edição</div>
+  <h1>{{ evento }}</h1>
+  <div class="date">{{ data }}</div>
+  <div class="rule"></div>
+  <div class="label" style="margin-top:0">Arco da série</div>
+  <div class="arco">{{ arco }}</div>
+</section>
+
+{% for it in itens %}{% set pc = it.peca %}
+<section class="piece">
+  <div class="piece-head">
+    <div class="tipo">{{ it.rotulo }}</div>
+    <h2>{{ pc.titulo }}</h2>
+    <div class="tema">{{ pc.tema }}</div>
+  </div>
+
+  <div class="label">Abertura</div>
+  <div class="scene">
+    <span class="pill">{{ ref(pc.abertura.rel_path, pc.abertura.start_s, pc.abertura.end_s) }}</span>
+    {% if pc.abertura.lembranca %}<span class="badge">lembrança</span>{% endif %}
+    <div>{{ pc.abertura.descricao }}</div>
+    {% if pc.abertura.fala %}<div class="quote">“{{ pc.abertura.fala }}”</div>{% endif %}
+    {% if pc.abertura.motivo %}<div class="why">{{ pc.abertura.motivo }}</div>{% endif %}
+  </div>
+
+  <div class="label">Desenvolvimento</div>
+  {% for sc in pc.desenvolvimento %}
+  <div class="scene">
+    <span class="n">{{ loop.index }}.</span><span class="pill">{{ ref(sc.rel_path, sc.start_s, sc.end_s) }}</span>
+    {% if sc.lembranca %}<span class="badge">lembrança</span>{% endif %}
+    <div>{{ sc.descricao }}</div>
+    {% if sc.fala %}<div class="quote">“{{ sc.fala }}”</div>{% endif %}
+    {% if sc.motivo %}<div class="why">{{ sc.motivo }}</div>{% endif %}
+  </div>
+  {% endfor %}
+
+  {% if pc.gancho %}
+  <div class="label">Gancho</div>
+  <div class="hook">
+    <span class="pill">{{ ref(pc.gancho.rel_path, pc.gancho.start_s, pc.gancho.end_s) }}</span>
+    <div>{{ pc.gancho.descricao }}</div>
+    {% if pc.gancho.fala %}<div class="quote">“{{ pc.gancho.fala }}”</div>{% endif %}
+    {% if pc.gancho_resolve_em %}<div class="resolve">Resolve em: {{ pc.gancho_resolve_em }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if it.svg %}<div class="label">Curva de emoção</div>{{ it.svg }}{% endif %}
+
+  {% if pc.trilhas %}
+  <div class="label">Trilhas</div>
+  <table>
+    <tr><th>Título</th><th>Origem</th><th>BPM</th><th>Clima</th><th>Corte</th><th>Licença</th><th>Motivo</th></tr>
+    {% for t in pc.trilhas %}
+    <tr>
+      <td>{{ t.titulo }}</td><td>{{ t.origem }}</td>
+      <td>{% if t.bpm %}{{ t.bpm|round|int }}{% else %}-{% endif %}</td>
+      <td>{{ t.clima }}</td><td>{{ t.padrao_corte }}</td>
+      <td>{% if t.exige_licenca %}<span class="badge" style="margin-left:0">exige licença</span>{% else %}-{% endif %}</td>
+      <td>{{ t.motivo }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if pc.termos_musicbed %}
+  <div class="label">Termos para o Musicbed</div>
+  <div class="terms">{% for t in pc.termos_musicbed %}<span>{{ t }}</span>{% endfor %}</div>
+  {% endif %}
+
+  {% if pc.misturas %}
+  <div class="label">Misturas</div>
+  <ul>{% for m in pc.misturas %}<li>{{ m }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  <div class="dur">Duração estimada: {{ it.duracao }}</div>
+</section>
+{% endfor %}
+
+{% if alertas %}
+<section class="alerts">
+  <div class="piece-head"><div class="tipo">Atenção</div><h2>Alertas</h2></div>
+  <ul style="margin-top:14px">{% for a in alertas %}<li>{{ a }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+</body>
+</html>
