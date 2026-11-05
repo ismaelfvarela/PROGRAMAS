@@ -8,8 +8,12 @@
 - Cena só-de-áudio (mesa/gravador/lapela; o roteiro não deveria trazer, mas pode): V1 recebe o
   vídeo sincronizado de maior sobreposição; sem nenhum, V1 fica vazio e entra o marcador
   SEM IMAGEM. O áudio da cena vai para a faixa do seu papel (AMBIENTE se não tiver uma).
-- Áudio: mesa / áudio ambiente / lapelas sobrepostos à cena nas faixas de AUDIO_TRACKS;
-  sem mesa nem ambiente, o áudio da própria câmera vai para AMBIENTE. As faixas vêm em
+- Áudio: mesa / áudio ambiente / lapelas sobrepostos à cena nas faixas de AUDIO_TRACKS.
+  O som da PRÓPRIA câmera do clipe de V1 (quando tem áudio) vai SEMPRE para o par SOM CÂMERA,
+  alinhado ao V1 e com ganho `gain_for(Role.camera, …)`; a faixa fica habilitada quando a
+  cena pede `usar_som_camera` (marcador SOM CÂMERA) ou quando não há mesa/ambiente
+  (realismo garantido sem outra fonte — antes esse áudio ia para AMBIENTE) e desabilitada
+  nos demais casos, pronta para o editor ativar. As faixas vêm em
   pares L/R: fonte estéreo (≥2 canais) vira dois clipitems ligados (<link>), canal 1 na
   faixa L e canal 2 na R; fonte mono usa só a L. Cada clipe de áudio
   recebe o filtro "Audio Levels" com 10^(ganho_dB/20), ganho de `gain_for`.
@@ -42,7 +46,7 @@ from roteiro_ia.paths import EventPaths
 from roteiro_ia.safety import safe_write_text
 from roteiro_ia.script.generate import Piece, Roteiro, SceneRef
 
-_AUDIO_GROUPS = ["MESA", "AMBIENTE", "LAPELA NOIVO", "LAPELA NOIVA", "MÚSICA"]
+_AUDIO_GROUPS = ["MESA", "AMBIENTE", "SOM CÂMERA", "LAPELA NOIVO", "LAPELA NOIVA", "MÚSICA"]
 AUDIO_TRACKS = [f"{g} {side}" for g in _AUDIO_GROUPS for side in ("L", "R")]
 _ROLE_TRACK = {Role.mesa: "MESA", Role.audio_ambiente: "AMBIENTE",
                Role.lapela_noivo: "LAPELA NOIVO", Role.lapela_noiva: "LAPELA NOIVA"}
@@ -234,14 +238,14 @@ def _link(items: list[tuple[ET.Element, str, int, int]]) -> None:
 
 def _place_audio(a_tracks: dict[str, ET.Element], group: str, ctx: _Ctx, src: _Src, name: str,
                  start: int, end: int, in_s: float, dur_s: float, seq_rate: tuple[int, int],
-                 level: float) -> None:
+                 level: float, enabled: bool = True) -> None:
     """Fonte estéreo → par L/R ligado; mono → só L."""
     items = []
     for ch in range(2 if src.channels >= 2 else 1):
         label = f"{group} {'LR'[ch]}"
         tr = a_tracks[label]
         ci = _clipitem(tr, ctx, src, name, start, end, in_s, dur_s, seq_rate,
-                       audio_index=ch + 1, level=level)
+                       audio_index=ch + 1, level=level, enabled=enabled)
         items.append((ci, "audio", AUDIO_TRACKS.index(label) + 1, len(tr.findall("clipitem"))))
     if len(items) > 1:
         _link(items)
@@ -377,13 +381,18 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
 
         src = _media_src(m, ctx, source_root, rate)
         so_audio = m.kind != "video"
+        cam = None  # clipe de V1 cujo áudio vira SOM CÂMERA: (mídia, src, início, fim, in_s, dur)
         if not so_audio:
             _clipitem(v_tracks[0], ctx, src, PureWindowsPath(m.rel_path).name, start, end,
                       ref.start_s, dur, rate)
+            cam = (m, src, start, end, ref.start_s, dur)
         if kind == "abertura":
             markers.append(("ABERTURA", ref.descricao, start, None))
         elif kind == "gancho":
             markers.append(("GANCHO", ref.descricao, start, None))
+        if ref.usar_som_camera:
+            markers.append(("SOM CÂMERA", "Som ambiente da câmera audível nesta cena (realismo)",
+                            start, end))
         if ref.fala:
             markers.append((f"FALA: {ref.fala}", ref.fala, start, end))
         if ref.lembranca:
@@ -412,9 +421,11 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
                     ov0, ov1, o0, o = vids[0]
                     s0, s1, ins, d = place(ov0, ov1, o0, t0)
                     if s1 > s0:
-                        _clipitem(v_tracks[0], ctx, _media_src(o, ctx, source_root, rate),
+                        osrc = _media_src(o, ctx, source_root, rate)
+                        _clipitem(v_tracks[0], ctx, osrc,
                                   PureWindowsPath(o.rel_path).name, s0, s1, ins, d, rate)
                         v1_id = o.id
+                        cam = (o, osrc, s0, s1, ins, d)
             alts = _overlaps(t0, t1, [o for o in day if o.kind == "video" and o.id != v1_id
                                       and o.role not in _ROLE_TRACK], syncs)[:MAX_ALTERNATES]
             for i, (ov0, ov1, o0, o) in enumerate(alts, start=1):
@@ -446,12 +457,14 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
         if so_audio and v1_id is None:
             markers.append(("SEM IMAGEM", f"Cena só de áudio ({m.rel_path}) sem vídeo "
                             "sincronizado: escolha uma imagem para cobrir a fala.", start, end))
-        if not has_room and m.audio_channels > 0:
-            level, noisy = _gain_level(db, m, m.role)
-            _place_audio(a_tracks, "AMBIENTE", ctx, src, PureWindowsPath(m.rel_path).name,
-                         start, end, ref.start_s, dur, rate, level)
-            if noisy:
-                markers.append(("RUÍDO", f"Ruído detectado em {m.rel_path}", start, end))
+        if cam is not None and cam[0].audio_channels > 0:
+            cm, csrc, c0, c1, cin, cdur = cam
+            on = ref.usar_som_camera or not has_room
+            level, noisy = _gain_level(db, cm, Role.camera)
+            _place_audio(a_tracks, "SOM CÂMERA", ctx, csrc, PureWindowsPath(cm.rel_path).name,
+                         c0, c1, cin, cdur, rate, level, enabled=on)
+            if noisy and on:
+                markers.append(("RUÍDO", f"Ruído detectado em {cm.rel_path}", c0, c1))
 
     dur_el.text = str(cursor)
 

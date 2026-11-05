@@ -110,8 +110,8 @@ def test_timebase_ntsc(num, den, exp):
 
 
 def test_audio_tracks():
-    assert AUDIO_TRACKS == ["MESA L", "MESA R", "AMBIENTE L", "AMBIENTE R", "LAPELA NOIVO L",
-                           "LAPELA NOIVO R", "LAPELA NOIVA L", "LAPELA NOIVA R", "MÚSICA L",
+    assert AUDIO_TRACKS == ["MESA L", "MESA R", "AMBIENTE L", "AMBIENTE R", "SOM CÂMERA L",
+                           "SOM CÂMERA R", "LAPELA NOIVO L", "LAPELA NOIVO R", "LAPELA NOIVA L", "LAPELA NOIVA R", "MÚSICA L",
                            "MÚSICA R"]
 
 
@@ -206,17 +206,56 @@ def test_ganho_mesa_aplicado(env):
                                                        str(round(115 * NTSC) + round(10 * NTSC)))
 
 
+def _som_camera(seq, side="L"):
+    return _tracks(seq, "audio")[AUDIO_TRACKS.index(f"SOM CÂMERA {side}")].findall("clipitem")
+
+
 def test_audio_da_camera_quando_sem_mesa(env):
     s, db, idx, ids = env
     seq = _seq(db, idx)
+    cam = _som_camera(seq)
+    files = [c.find("file").get("id") for c in cam]
+    assert files == [f"file-{ids[k]}" for k in "ACD"]  # toda cena de V1 com áudio
+    on = {f: c.findtext("enabled") for f, c in zip(files, cam)}
+    assert on[f"file-{ids['C']}"] == "TRUE"  # C sem sync: sem mesa/ambiente → habilitado
+    assert on[f"file-{ids['D']}"] == "TRUE"
+    assert on[f"file-{ids['A']}"] == "FALSE"  # A tem mesa sobreposta e não pediu o som
+    assert _level(cam[1]) == pytest.approx(10 ** (6 / 20), rel=1e-4)  # câmera −24 → alvo −18
+    assert _level(cam[2]) == pytest.approx(1.0)  # sem AudioStats → 0 dB
     amb = _tracks(seq, "audio")[AUDIO_TRACKS.index("AMBIENTE L")].findall("clipitem")
-    files = [c.find("file").get("id") for c in amb]
-    assert f"file-{ids['C']}" in files  # C sem sync: áudio da própria câmera
-    c = amb[files.index(f"file-{ids['C']}")]
-    assert _level(c) == pytest.approx(10 ** (6 / 20), rel=1e-4)  # câmera −24 → alvo −18
-    d = amb[files.index(f"file-{ids['D']}")]
-    assert _level(d) == pytest.approx(1.0)  # sem AudioStats → 0 dB
-    assert f"file-{ids['A']}" not in files  # A tem mesa sobreposta
+    assert amb == []  # a câmera não vai mais para AMBIENTE
+
+
+def test_usar_som_camera_habilita_e_marca(env):
+    s, db, idx, ids = env
+    p = _piece()
+    p.abertura.usar_som_camera = True
+    seq = _seq(db, idx, p)
+    cam = _som_camera(seq)
+    a = cam[0]
+    assert a.find("file").get("id") == f"file-{ids['A']}" and a.findtext("enabled") == "TRUE"
+    v1 = _tracks(seq, "video")[0].findall("clipitem")[0]
+    assert (a.findtext("start"), a.findtext("end"), a.findtext("in")) == (
+        v1.findtext("start"), v1.findtext("end"), v1.findtext("in"))
+    assert ("SOM CÂMERA", 0, round(10 * NTSC)) in _markers(seq)
+    assert [c.findtext("enabled") for c in _som_camera(seq, "R")][0] == "TRUE"
+
+
+def test_sem_flag_som_camera_presente_e_desabilitado(env):
+    s, db, idx, ids = env
+    seq = _seq(db, idx)
+    a = _som_camera(seq)[0]
+    assert a.find("file").get("id") == f"file-{ids['A']}" and a.findtext("enabled") == "FALSE"
+    assert "SOM CÂMERA" not in [n for n, _, _ in _markers(seq)]
+
+
+def test_cena_so_audio_som_camera_do_video_de_v1(env):
+    s, db, idx, ids = env
+    seq = _seq(db, idx, _piece_mesa(105, 115))
+    cam = _som_camera(seq)
+    assert [c.find("file").get("id") for c in cam] == [f"file-{ids['A']}"]
+    assert cam[0].findtext("enabled") == "FALSE"  # mesa cobre a cena
+    assert int(cam[0].findtext("in")) == round(5 * NTSC)
 
 
 def test_ganho_limitado_a_12db(env):
@@ -328,11 +367,11 @@ def test_estereo_em_pares_ligados(env):
     s, db, idx, ids = env
     seq = _seq(db, idx)
     at = _tracks(seq, "audio")
-    assert len(at) == 10
+    assert len(at) == 12
     assert seq.findtext("media/audio/numOutputChannels") == "2"
-    li, ri = AUDIO_TRACKS.index("AMBIENTE L"), AUDIO_TRACKS.index("AMBIENTE R")
+    li, ri = AUDIO_TRACKS.index("SOM CÂMERA L"), AUDIO_TRACKS.index("SOM CÂMERA R")
     left, right = at[li].findall("clipitem"), at[ri].findall("clipitem")
-    assert len(left) == len(right) == 2  # câmera C e drone D, estéreo
+    assert len(left) == len(right) == 3  # câmeras A e C e drone D, estéreo
     for k, (l, r) in enumerate(zip(left, right), start=1):
         assert l.findtext("sourcetrack/trackindex") == "1"
         assert r.findtext("sourcetrack/trackindex") == "2"
