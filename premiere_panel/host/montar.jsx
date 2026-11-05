@@ -31,15 +31,37 @@ function _ri_coletar(item, saida) {
     }
 }
 
+function _ri_resumo(msgs, falhou) {
+    var estado = falhou ? "erro" : "ok";
+    for (var i = 0; i < msgs.length; i++) {
+        if (!falhou && msgs[i].indexOf("aviso:") === 0) { estado = "aviso"; }
+    }
+    return estado + "|" + msgs.join("\n");
+}
+
+function _ri_contarCasados(mapa) {
+    var itens = [];
+    _ri_coletar(app.project.rootItem, itens);
+    var casados = 0;
+    for (var i = 0; i < itens.length; i++) {
+        var mp = "";
+        try { mp = itens[i].getMediaPath(); } catch (e) { mp = ""; }
+        if (mp && mapa.hasOwnProperty(_ri_norm(mp))) { casados++; }
+    }
+    return { itens: itens, total: itens.length, casados: casados };
+}
+
 function montarProjeto(job) {
     var msgs = [];
     try {
         if (!job || !job.prproj || !job.xml) {
-            return "erro|Job inválido: faltam os campos prproj ou xml.";
+            msgs.push("erro:Job inv\u00e1lido: faltam os campos prproj ou xml.");
+            return _ri_resumo(msgs, true);
         }
         var xmlFile = new File(job.xml);
         if (!xmlFile.exists) {
-            return "erro|XML do Premiere não encontrado: " + job.xml;
+            msgs.push("erro:XML do Premiere n\u00e3o encontrado: " + job.xml);
+            return _ri_resumo(msgs, true);
         }
 
         // 1. pastas
@@ -47,35 +69,53 @@ function montarProjeto(job) {
         if (job.backup_dir) { _ri_garantirPasta(job.backup_dir); }
         if (job.export_dir) {
             if (_ri_garantirPasta(job.export_dir)) {
-                msgs.push("Pasta de exportação pronta: " + job.export_dir);
+                msgs.push("ok:Pasta de exporta\u00e7\u00e3o pronta: " + job.export_dir);
             } else {
-                msgs.push("Não consegui criar a pasta de exportação: " + job.export_dir);
+                msgs.push("aviso:N\u00e3o consegui criar a pasta de exporta\u00e7\u00e3o: " + job.export_dir);
             }
         }
 
         // 2. projeto novo (nunca sobrescreve)
         var criado = app.newProject(job.prproj);
         if (criado === false) {
-            return "erro|O Premiere não conseguiu criar o projeto em " + job.prproj + ". Nada foi alterado.";
+            msgs.push("erro:O Premiere n\u00e3o conseguiu criar o projeto em " + job.prproj + ". Nada foi alterado.");
+            return _ri_resumo(msgs, true);
         }
-        msgs.push("Projeto criado: " + job.prproj);
+        msgs.push("ok:Projeto criado: " + job.prproj);
 
         // 3. importar XML
         var imp = app.project.importFiles([job.xml], true, app.project.rootItem, false);
         if (imp === false) {
-            return "erro|Falha ao importar o XML: " + job.xml;
+            msgs.push("erro:Falha ao importar o XML: " + job.xml);
+            return _ri_resumo(msgs, true);
         }
-        msgs.push("XML importado (sequências por episódio).");
 
-        // 4. proxies
         var mapa = {};
         var lista = job.proxies || [];
         var i;
         for (i = 0; i < lista.length; i++) {
             mapa[_ri_norm(lista[i].original)] = lista[i].proxy;
         }
-        var itens = [];
-        _ri_coletar(app.project.rootItem, itens);
+
+        // 3b. a importacao pode ser assincrona: espera a arvore do projeto popular
+        var estado = _ri_contarCasados(mapa);
+        var ultimo = estado.total, estavel = 0, tentativas = 0;
+        while (estado.casados === 0 && tentativas < 40) {
+            if (estado.total > 0 && estado.total === ultimo) { estavel++; } else { estavel = 0; }
+            if (estavel >= 3) { break; }
+            ultimo = estado.total;
+            $.sleep(500);
+            tentativas++;
+            estado = _ri_contarCasados(mapa);
+        }
+        if (estado.casados === 0) {
+            msgs.push("aviso:Nenhum clipe do XML encontrado ainda \u2014 use Proxy \u2192 Anexar proxies (plano B).");
+        } else {
+            msgs.push("ok:XML importado (sequ\u00eancias por epis\u00f3dio).");
+        }
+
+        // 4. proxies
+        var itens = estado.itens;
         var anexados = 0, falhas = 0, achados = {};
         var falhados = [];
         for (i = 0; i < itens.length; i++) {
@@ -100,18 +140,20 @@ function montarProjeto(job) {
         for (k in mapa) {
             if (mapa.hasOwnProperty(k) && !achados[k]) { naoAchados++; }
         }
-        msgs.push("Proxies anexados: " + anexados + " de " + lista.length + ".");
+        var nivel = (falhas > 0 || (anexados < lista.length && estado.casados > 0)) ? "aviso:" : "ok:";
+        if (estado.casados === 0 && lista.length > 0) { nivel = "aviso:"; }
+        msgs.push(nivel + "Proxies anexados: " + anexados + " de " + lista.length + ".");
         if (naoAchados > 0) {
-            msgs.push(naoAchados + " original(is) da lista não aparece(m) no projeto (não usados nas sequências).");
+            msgs.push("aviso:" + naoAchados + " original(is) da lista n\u00e3o aparece(m) no projeto (n\u00e3o usados nas sequ\u00eancias).");
         }
         if (falhas > 0) {
-            msgs.push("Falha ao anexar proxy em " + falhas + " clipe(s): " + falhados.slice(0, 10).join(", ")
+            msgs.push("aviso:Falha ao anexar proxy em " + falhas + " clipe(s): " + falhados.slice(0, 10).join(", ")
                 + ". Plano B: selecione a bin MATERIAL, Proxy > Anexar proxies, e aponte para a pasta PROXIES.");
         }
 
         // 5. salvar e backup
         app.project.save();
-        msgs.push("Projeto salvo.");
+        msgs.push("ok:Projeto salvo.");
         if (job.backup_dir) {
             var d = new Date();
             var base = decodeURI(new File(job.prproj).name).replace(/\.prproj$/i, "");
@@ -119,14 +161,14 @@ function montarProjeto(job) {
                 + " " + _ri_dois(d.getHours()) + "h" + _ri_dois(d.getMinutes()) + ".prproj";
             var destino = String(job.backup_dir).replace(/\\/g, "/").replace(/\/+$/, "") + "/" + nome;
             if (new File(job.prproj).copy(destino)) {
-                msgs.push("Backup copiado: " + destino);
+                msgs.push("ok:Backup copiado: " + destino);
             } else {
-                msgs.push("Não consegui copiar o backup para " + job.backup_dir + ".");
+                msgs.push("aviso:N\u00e3o consegui copiar o backup para " + job.backup_dir + ".");
             }
         }
-        return "ok|" + msgs.join("\n");
+        return _ri_resumo(msgs, false);
     } catch (e) {
-        msgs.push("Erro inesperado: " + e);
-        return "erro|" + msgs.join("\n");
+        msgs.push("erro:Erro inesperado: " + e);
+        return _ri_resumo(msgs, true);
     }
 }

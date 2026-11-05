@@ -27,6 +27,16 @@ def test_jsx_define_montar_projeto():
         assert termo in jsx
 
 
+def test_jsx_ascii_e_es3():
+    raw = (PANEL / "host" / "montar.jsx").read_bytes()
+    assert all(b < 128 for b in raw), "montar.jsx deve ser ASCII puro (use escapes \\u)"
+    jsx = raw.decode("ascii")
+    for token in ("=>", "let ", "const ", ".trim(", "JSON.", ".forEach(", "`"):
+        assert token not in jsx, token
+    for prefixo in ("ok:", "aviso:", "erro:"):
+        assert prefixo in jsx
+
+
 def test_main_js_chama_o_host():
     js = (PANEL / "main.js").read_text(encoding="utf-8")
     assert "__adobe_cep__.evalScript" in js and "montarProjeto(" in js

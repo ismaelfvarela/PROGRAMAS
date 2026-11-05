@@ -14,7 +14,7 @@
   function log(texto, tipo) {
     var p = document.createElement("div");
     p.className = "linha " + (tipo || "info");
-    var icone = tipo === "ok" ? "\u2714 " : tipo === "erro" ? "\u2716 " : "\u25B6 ";
+    var icone = tipo === "ok" ? "\u2714 " : tipo === "erro" ? "\u2716 " : tipo === "aviso" ? "\u26A0 " : "\u25B6 ";
     p.textContent = icone + texto;
     elLog.appendChild(p);
     elLog.scrollTop = elLog.scrollHeight;
@@ -61,10 +61,18 @@
       var i = res.indexOf("|");
       var estado = i >= 0 ? res.slice(0, i) : "erro";
       var corpo = i >= 0 ? res.slice(i + 1) : (res || "Sem resposta do Premiere.");
-      var tipo = estado === "ok" ? "ok" : "erro";
+      var titulo = estado === "ok" ? "Projeto montado"
+        : estado === "aviso" ? "Projeto montado com avisos" : "N\u00e3o foi poss\u00edvel montar";
+      log(titulo, estado === "ok" ? "ok" : estado === "aviso" ? "aviso" : "erro");
       var linhas = corpo.split("\n");
       for (var k = 0; k < linhas.length; k++) {
-        if (linhas[k]) log(linhas[k], tipo);
+        var l = linhas[k];
+        if (!l) continue;
+        var tipo = "info";
+        var m = /^(ok|aviso|erro):/.exec(l);
+        if (m) { tipo = m[1]; l = l.slice(m[0].length); }
+        else if (estado === "erro") { tipo = "erro"; }
+        log(l, tipo);
       }
     });
   }
