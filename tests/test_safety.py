@@ -77,7 +77,7 @@ def test_protected_paths_mapeia_net_use(monkeypatch, settings):
         safety._unc_cache.clear()
     assert r"\\192.168.168.2\fokuss\m - musicas" in paths
     assert r"\\192.168.168.2\fokuss\r - editar time" in paths
-    assert "r:" in paths
+    assert "r:\\" in paths
 
 
 def test_net_use_falha_so_letras(monkeypatch, settings):
@@ -87,7 +87,7 @@ def test_net_use_falha_so_letras(monkeypatch, settings):
     monkeypatch.setattr(safety, "_net_use_output", boom)
     safety._unc_cache.clear()
     try:
-        assert protected_paths(settings)[:2] == ["r:", "m:"]
+        assert protected_paths(settings)[:2] == ["r:\\", "m:\\"]
     finally:
         safety._unc_cache.clear()
 
@@ -211,3 +211,35 @@ def test_safe_copy_substitui_destino_antigo(tmp_path, settings):
     dst.write_bytes(b"velho-truncado-e-maior")
     safe_copy(src, dst, settings)
     assert dst.read_bytes() == b"novo"
+
+
+def test_raiz_de_unidade_mantem_barra_final():
+    assert safety._norm("R:\\") == "r:\\"
+
+def test_guarda_independe_do_diretorio_atual_raiz_de_unidade(tmp_path, monkeypatch):
+    # raiz protegida = a unidade inteira do tmp_path; cwd numa subpasta dela
+    monkeypatch.setattr(safety, "_net_use_output", lambda: "")
+    safety._unc_cache.clear()
+    drive = os.path.splitdrive(str(tmp_path))[0] + "\\"
+    sub = tmp_path / "cwd"
+    sub.mkdir()
+    monkeypatch.chdir(sub)
+    s = Settings(protected_roots=[drive])
+    try:
+        with pytest.raises(ProtectedPathError):
+            assert_writable(tmp_path / "outra" / "x.txt", s)
+        # outra unidade (só checagem, nada é gravado)
+        outra = "Q:\\" if not drive.upper().startswith("Q") else "P:\\"
+        assert assert_writable(Path(outra) / "livre" / "x.txt", s)
+    finally:
+        safety._unc_cache.clear()
+
+
+def test_guarda_independe_do_diretorio_atual_subpasta(tmp_path, monkeypatch):
+    prot = tmp_path / "prot"
+    (prot / "a").mkdir(parents=True)
+    monkeypatch.chdir(prot / "a")
+    s = Settings(protected_roots=[str(prot)])
+    with pytest.raises(ProtectedPathError):
+        assert_writable(prot / "b" / "x.txt", s)
+    assert assert_writable(tmp_path / "fora" / "x.txt", s)

@@ -44,7 +44,10 @@ def _clean_segments(p: str) -> str:
     unc = p.startswith("\\\\")
     segs = [s.rstrip(" .") for s in p.split("\\")]
     segs = [s for s in segs if s]
-    return ("\\\\" if unc else "") + "\\".join(segs)
+    out = ("\\\\" if unc else "") + "\\".join(segs)
+    if not unc and len(out) == 2 and out[1] == ":":
+        out += "\\"  # "r:" puro é relativo ao diretório atual do drive; a raiz é "r:\"
+    return out
 
 
 def _norm(p: str) -> str:
@@ -96,9 +99,10 @@ def _is_under(path: str, root: str) -> bool:
 
 def assert_writable(path: Path, s: Settings) -> Path:
     candidates = {_norm(str(path)), _resolved(str(path))}
+    # as raízes de protected_paths já vêm normalizadas: re-normalizar "r:\" com
+    # abspath dependeria do diretório atual do processo
     for root in protected_paths(s):
-        r = _norm(root)
-        if any(_is_under(c, r) for c in candidates):
+        if any(_is_under(c, root) for c in candidates):
             raise ProtectedPathError(f"Escrita bloqueada em caminho protegido: {path}")
     return path
 
