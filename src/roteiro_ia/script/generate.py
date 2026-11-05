@@ -29,7 +29,8 @@ REGRAS_FOKUSS = """Regras de edição da Fokuss (siga todas):
 7. Poucos efeitos: cor viva, transições suaves só quando necessário.
 8. Criatividade: você pode sugerir momentos de lembrança/flashback (marque lembranca=true; na edição terão outra tonalidade e áudio filtrado/reverb) e momentos extras fora da lista base.
 9. Trailer, teaser e stories/reels: mesma estrutura das peças, focados nos momentos de maior impacto, SEM entregar os ganchos dos episódios.
-10. Mídias marcadas [só áudio] no catálogo (mesa, gravador, lapela) não têm imagem: use-as só como 'fala' sobre uma cena de vídeo do mesmo momento, NUNCA como rel_path de uma cena."""
+10. Mídias marcadas [só áudio] no catálogo (mesa, gravador, lapela) não têm imagem: use-as só como 'fala' sobre uma cena de vídeo do mesmo momento, NUNCA como rel_path de uma cena.
+11. Som ambiente da câmera: o som ambiente da câmera (risos, aplausos, emoção, falas ao fundo; veja 'som:' no catálogo, ★ = útil) pode ser usado para dar realismo; marque usar_som_camera=true nas cenas em que ele deve ficar audível junto da mesa/ambiente."""
 
 _FORMATO = """Formato das referências (obrigatório):
 - Cada cena (abertura, desenvolvimento, gancho) usa rel_path EXATAMENTE como aparece no catálogo e start_s/end_s em segundos RELATIVOS AO ARQUIVO, dentro do intervalo do segmento escolhido (início < fim).
@@ -50,6 +51,7 @@ class SceneRef(BaseModel):
     fala: str | None
     motivo: str | None
     lembranca: bool = False
+    usar_som_camera: bool = False
 
 
 class MusicSuggestion(BaseModel):
@@ -95,7 +97,7 @@ def _fraco(a) -> bool:
     """Trecho que pode sair do catálogo compactado: pouca emoção, pouca qualidade, sem fala-chave
     e sem gancho."""
     return (a.emocao_intensidade <= 2 and a.qualidade <= 3 and not a.falas_chave
-            and not a.potencial_gancho)
+            and not a.potencial_gancho and not a.som_ambiente_util)
 
 
 def build_catalog(db: ProjectDB, compact: bool = False) -> str:
@@ -132,6 +134,8 @@ def build_catalog(db: ProjectDB, compact: bool = False) -> str:
         gancho = "sim" + (f" ({_clean(a.motivo_gancho)})" if a.motivo_gancho else "") \
             if a.potencial_gancho else "não"
         extras = " | lembrança: sim" if a.sugestao_lembranca else ""
+        if a.som_ambiente:
+            extras += f" | som: {_clean(a.som_ambiente)}" + (" ★" if a.som_ambiente_util else "")
         if m.kind != "video":
             extras += f" | {SO_AUDIO}"
         desc = _clean(a.descricao)
@@ -241,6 +245,12 @@ def validate_refs(r: Roteiro, db: ProjectDB, idx: MusicIndex) -> list[str]:
             e = _ref_problem(s, media)
             if e:
                 probs.append(f"{lab}, {where}: {e}")
+            elif s.usar_som_camera and media[_norm(s.rel_path)].audio_channels <= 0:
+                s.usar_som_camera = False
+                aviso = (f"{lab}, {where}: usar_som_camera ignorado — {s.rel_path} "
+                         "não tem áudio (som da câmera indisponível)")
+                if aviso not in r.alertas:
+                    r.alertas.append(aviso)
         for ms in p.trilhas:
             e = _track_problem(ms, tracks)
             if e:

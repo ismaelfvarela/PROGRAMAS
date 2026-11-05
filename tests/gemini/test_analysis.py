@@ -269,3 +269,27 @@ def test_pausa_diaria_nao_conta_e_sucesso_zera(env):
         analyze_event(db, FakeClient(exc=mpause()), None, "m")
     analyze_event(db, FakeClient([FileAnalysis(segmentos=[sa(ids[0]), sa(ids[1])])]), None, "m")
     assert db.list_falhas() == [] and db.get_analysis(ids[1]) is not None
+
+
+def test_prompt_video_pede_som_ambiente(env):
+    db, mid, _ = env
+    segs = db.list_segments(mid)
+    pr = build_prompt(db.get_media(mid), segs, {})
+    assert "som_ambiente" in pr and "som_ambiente_util" in pr
+
+
+def test_prompt_so_audio_nao_pede_som_ambiente(tmp_path):
+    db = new_db(tmp_path)
+    mid = db.add_media(mi("M\G1.WAV", role=Role.mesa, kind="audio"))
+    ids = db.add_segments([Segment(media_id=mid, start_s=0, end_s=10)])
+    pr = build_prompt(db.get_media(mid), db.list_segments(mid), {})
+    assert "som_ambiente" not in pr
+
+
+def test_analise_antiga_sem_som_ambiente_valida():
+    a = sa(1)
+    antigo = a.model_dump()
+    antigo.pop("som_ambiente", None)
+    antigo.pop("som_ambiente_util", None)
+    b = SceneAnalysis.model_validate(antigo)
+    assert b.som_ambiente == "" and b.som_ambiente_util is False

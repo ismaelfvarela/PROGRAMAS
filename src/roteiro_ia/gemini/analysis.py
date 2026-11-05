@@ -91,6 +91,12 @@ def build_prompt(media: MediaInfo, segments: list[Segment], transcripts: dict[in
         "- potencial_gancho: true se serve para abrir um teaser/episódio, com motivo_gancho; "
         "sugestao_lembranca: true se funciona como flashback/lembrança.",
     ]
+    if media.kind != "audio":
+        partes.append(
+            "- som_ambiente: o que se ouve no áudio da PRÓPRIA câmera naquele trecho (risos, "
+            "aplausos, choro, falas ao fundo, música ao vivo, vento, sinos…), em português e curto; "
+            "string vazia se não houver nada relevante. som_ambiente_util: true se esse som serve "
+            "para dar realismo à cena.")
     if style is not None:
         partes.append(_style_text(style))
     return "\n".join(partes)

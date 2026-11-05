@@ -106,6 +106,8 @@ class SceneAnalysis(BaseModel):
     potencial_gancho: bool
     motivo_gancho: str | None = None
     sugestao_lembranca: bool
+    som_ambiente: str = ""
+    som_ambiente_util: bool = False
 
 
 class TrackInfo(BaseModel):
