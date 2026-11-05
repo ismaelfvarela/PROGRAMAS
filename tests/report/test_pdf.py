@@ -183,4 +183,4 @@ def test_selo_som_da_camera(tmp_path):
     assert render_html(r, make_paths(tmp_path), []).count("som da câmera") == 2  # o trailer de exemplo compartilha as cenas
     ep.abertura.usar_som_camera = True
     ep.gancho.usar_som_camera = True
-    assert render_html(r, make_paths(tmp_path), []).count("som da câmera") == 6
+    assert render_html(r, make_paths(tmp_path), []).count("som da câmera") == 5  # trailer sem gancho
