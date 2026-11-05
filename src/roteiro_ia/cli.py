@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
 from pathlib import Path
 
@@ -20,6 +21,12 @@ _ROLES = ", ".join(r.value for r in Role)
 
 class CliError(Exception):
     pass
+
+
+def _pasta(arg: str) -> Path:
+    """Caminho absoluto da pasta do evento ("." vira a pasta atual). abspath, e não resolve():
+    resolve() trocaria R:\\ pelo caminho UNC do NAS, mudando os caminhos gravados no projeto."""
+    return Path(os.path.abspath(arg))
 
 
 def _print_event(stage: str, msg: str, frac: float) -> None:
@@ -100,7 +107,7 @@ def _paths_and_request(src: Path, s: Settings, disco: str | None) -> ProjectRequ
 
 
 def _cmd_novo(a, s: Settings, cfg: Path) -> int:
-    src = Path(a.pasta)
+    src = _pasta(a.pasta)
     if not src.is_dir():
         raise CliError(f"A pasta '{src}' não existe ou não está acessível.")
     derivados = set(DERIVADOS)
@@ -122,7 +129,7 @@ def _cmd_novo(a, s: Settings, cfg: Path) -> int:
 
 
 def _cmd_continuar(a, s: Settings, cfg: Path) -> int:
-    src = Path(a.pasta)
+    src = _pasta(a.pasta)
     req = _paths_and_request(src, s, a.disco)
     pipe = Pipeline(req, s, None, None, _print_event, settings_path=cfg)
     try:
@@ -136,7 +143,7 @@ def _cmd_continuar(a, s: Settings, cfg: Path) -> int:
 
 
 def _cmd_ajustar(a, s: Settings, cfg: Path) -> int:
-    src = Path(a.pasta)
+    src = _pasta(a.pasta)
     req = _paths_and_request(src, s, a.disco)
     pipe = Pipeline(req, s, None, None, _print_event, settings_path=cfg)
     try:

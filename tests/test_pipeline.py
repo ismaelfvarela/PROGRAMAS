@@ -561,3 +561,15 @@ def test_pdf_aberto_avisa(tmp_path, sleeps, monkeypatch):
     pipe._st_pdf()
     assert any("O PDF anterior está aberto; salvei como" in e[1] and alt.name in e[1] for e in events)
     pipe.close()
+
+
+def test_cli_pasta_relativa_resolvida(cli_env, monkeypatch):
+    cfg, src = cli_env
+    monkeypatch.chdir(src)
+    assert cli.main(["--config", str(cfg), "novo", ".", "--papel", "A=camera"]) == 0
+    req = FakePipe.instances[-1].req
+    assert Path(req.source_dir) == src.resolve() and Path(req.source_dir).is_absolute()
+    p = pipeline.build_event_paths(src, load_settings(cfg), load_settings(cfg).work_drive)
+    req.save(p.analysis_dir / "projeto.json", load_settings(cfg))
+    assert cli.main(["--config", str(cfg), "continuar", "."]) == 0
+    assert cli.main(["--config", str(cfg), "ajustar", ".", "x"]) == 0
