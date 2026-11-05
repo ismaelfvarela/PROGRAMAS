@@ -2,6 +2,7 @@
 de toda referência de cena (mídia real + intervalo dentro da duração) e de trilha."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
@@ -14,6 +15,9 @@ from roteiro_ia.music_index import MusicIndex
 CORRECTION_ROUNDS = 2
 DURATION_TOLERANCE_S = 0.5
 DERIVADOS = {"trailer", "teaser", "stories"}
+MAX_PROMPT_TOKENS = 300_000  # acima disso o catálogo é compactado
+COMPACT_DESC_CHARS = 120
+SO_AUDIO = "[só áudio]"
 
 REGRAS_FOKUSS = """Regras de edição da Fokuss (siga todas):
 1. Narrativa em série: o casamento é contado em episódios. Cada episódio (menos o último) termina num GANCHO que só se resolve na ABERTURA do episódio seguinte; diga em gancho_resolve_em onde ele se resolve.
@@ -24,7 +28,8 @@ REGRAS_FOKUSS = """Regras de edição da Fokuss (siga todas):
 6. Cortes na trilha: músicas lentas → cortes nos tempos 1 e 3 (padrão "1-3"); músicas rápidas ou trechos de mais intensidade → tempos 2 e 4 (padrão "2-4"); use "misto" quando a peça alterna.
 7. Poucos efeitos: cor viva, transições suaves só quando necessário.
 8. Criatividade: você pode sugerir momentos de lembrança/flashback (marque lembranca=true; na edição terão outra tonalidade e áudio filtrado/reverb) e momentos extras fora da lista base.
-9. Trailer, teaser e stories/reels: mesma estrutura das peças, focados nos momentos de maior impacto, SEM entregar os ganchos dos episódios."""
+9. Trailer, teaser e stories/reels: mesma estrutura das peças, focados nos momentos de maior impacto, SEM entregar os ganchos dos episódios.
+10. Mídias marcadas [só áudio] no catálogo (mesa, gravador, lapela) não têm imagem: use-as só como 'fala' sobre uma cena de vídeo do mesmo momento, NUNCA como rel_path de uma cena."""
 
 _FORMATO = """Formato das referências (obrigatório):
 - Cada cena (abertura, desenvolvimento, gancho) usa rel_path EXATAMENTE como aparece no catálogo e start_s/end_s em segundos RELATIVOS AO ARQUIVO, dentro do intervalo do segmento escolhido (início < fim).
@@ -86,30 +91,55 @@ def _clean(text: str) -> str:
     return " ".join(str(text).split()).replace("|", "/")
 
 
-def build_catalog(db: ProjectDB) -> str:
-    """Uma linha por segmento analisado, em ordem de dia e de linha do tempo
-    (mídias sem sincronia vão ao fim do seu dia). Tempos relativos ao arquivo."""
+def _fraco(a) -> bool:
+    """Trecho que pode sair do catálogo compactado: pouca emoção, pouca qualidade, sem fala-chave
+    e sem gancho."""
+    return (a.emocao_intensidade <= 2 and a.qualidade <= 3 and not a.falas_chave
+            and not a.potencial_gancho)
+
+
+def build_catalog(db: ProjectDB, compact: bool = False) -> str:
+    """Uma linha por segmento analisado, com os dias em ordem cronológica (pela mídia mais antiga
+    de cada dia; dias sem data vão ao fim) e cada dia na ordem da linha do tempo (mídias sem
+    sincronia vão ao fim do seu dia). Tempos relativos ao arquivo. `compact` descarta trechos
+    fracos e encurta as descrições."""
     rows = []
     medias = {m.id: m for m in db.list_media()}
     syncs = {mid: db.get_sync(mid) for mid in medias}
+    first: dict[str, datetime] = {}
+    for m in medias.values():
+        sy = syncs.get(m.id)
+        day = sy.day_label if sy else m.day_label
+        if m.created_at is not None:
+            ca = m.created_at.replace(tzinfo=None)
+            if day not in first or ca < first[day]:
+                first[day] = ca
     for seg in db.list_segments():
         a = db.get_analysis(seg.id)
         m = medias.get(seg.media_id)
         if a is None or m is None:
             continue
+        if compact and _fraco(a):
+            continue
         sy = syncs.get(m.id)
         day = sy.day_label if sy else m.day_label
-        key = ((day, 0, sy.timeline_start_s + seg.start_s, m.rel_path) if sy
-               else (day, 1, 0.0, m.rel_path))
+        dkey = (0, first[day], day) if day in first else (1, datetime.max, day)
+        key = ((dkey, 0, sy.timeline_start_s + seg.start_s, m.rel_path) if sy
+               else (dkey, 1, 0.0, m.rel_path))
         momento = a.momento + (f" ({a.extra})" if a.extra else "")
         falas = "; ".join(f'"{_clean(q.text)}" ({q.start_s:.1f}–{q.end_s:.1f})'
                           for q in a.falas_chave) or "-"
         gancho = "sim" + (f" ({_clean(a.motivo_gancho)})" if a.motivo_gancho else "") \
             if a.potencial_gancho else "não"
         extras = " | lembrança: sim" if a.sugestao_lembranca else ""
+        if m.kind != "video":
+            extras += f" | {SO_AUDIO}"
+        desc = _clean(a.descricao)
+        if compact:
+            desc = desc[:COMPACT_DESC_CHARS]
         line = (f"{m.rel_path} | {seg.start_s:.1f}–{seg.end_s:.1f} s | dia {day} | "
                 f"momento {_clean(momento)} | emoção {a.emocao_intensidade} {_clean(a.emocao_tipo)} | "
-                f"qualidade {a.qualidade} | {_clean(a.descricao)} | falas: {falas} | "
+                f"qualidade {a.qualidade} | {desc} | falas: {falas} | "
                 f"gancho: {gancho}{extras}")
         rows.append((key, seg.start_s, line))
     rows.sort(key=lambda r: (r[0], r[1]))
@@ -162,6 +192,9 @@ def _ref_problem(ref: SceneRef, media: dict[str, MediaInfo]) -> str | None:
     if m is None:
         return f"a mídia {ref.rel_path} não existe no catálogo"
     ref.rel_path = m.rel_path
+    if m.kind != "video":
+        return (f"a mídia {m.rel_path} é só de áudio (sem imagem) — não pode ser cena; "
+                "use como fala sobre uma cena de vídeo")
     if not (0 <= ref.start_s < ref.end_s <= m.duration_s + DURATION_TOLERANCE_S):
         return (f"intervalo {ref.start_s:.1f}–{ref.end_s:.1f} s inválido em {m.rel_path} "
                 f"(duração {m.duration_s:.1f} s)")
@@ -242,6 +275,7 @@ def _prune(r: Roteiro, db: ProjectDB, idx: MusicIndex) -> list[str]:
             if e:
                 alertas.append(f"{lab}: gancho removido — {e}")
                 p.gancho = None
+                p.gancho_resolve_em = None
         e = _ref_problem(p.abertura, media)
         if e:
             if not p.desenvolvimento:
@@ -289,7 +323,7 @@ def _style_text(style: StyleProfile) -> str:
 
 
 def _context(db: ProjectDB, idx: MusicIndex, style: StyleProfile | None,
-             n_episodios: int | None, derivados: set[str]) -> str:
+             n_episodios: int | None, derivados: set[str], compact: bool = False) -> str:
     unknown = set(derivados) - DERIVADOS
     if unknown:
         raise ValueError(f"Derivados desconhecidos: {', '.join(sorted(unknown))}")
@@ -308,8 +342,9 @@ def _context(db: ProjectDB, idx: MusicIndex, style: StyleProfile | None,
     if style is not None:
         partes += ["", _style_text(style)]
     partes += [
-        "", "CATÁLOGO DO MATERIAL (rel_path | início–fim do segmento | dia | momento | emoção | "
-        "qualidade | descrição | falas | gancho):", build_catalog(db) or "(vazio)",
+        "", "CATÁLOGO DO MATERIAL (dias em ordem cronológica; rel_path | início–fim do segmento | "
+        "dia | momento | emoção | qualidade | descrição | falas | gancho):",
+        build_catalog(db, compact=compact) or "(vazio)",
         "", "TRILHAS DA BIBLIOTECA (path | BPM | perfil | duração | voz):",
         music_shortlist(idx) or "(nenhuma trilha indexada)",
     ]
@@ -321,18 +356,30 @@ def generate_roteiro(db: ProjectDB, c, idx: MusicIndex, style: StyleProfile | No
                      pedido_ajuste: str | None = None) -> Roteiro:
     """Gera (ou ajusta) o pré-roteiro, valida as referências com até 2 rodadas de correção,
     remove o que sobrar inválido (listado em alertas) e grava no banco."""
-    base = _context(db, idx, style, n_episodios, derivados)
-    if pedido_ajuste:
+    def montar(compact: bool) -> tuple[str, str]:
+        base = _context(db, idx, style, n_episodios, derivados, compact=compact)
+        if not pedido_ajuste:
+            return base, base
         anterior = db.latest_roteiro()
         if anterior is None:
             raise ValueError("Não há roteiro anterior para ajustar.")
-        prompt = "\n".join([
+        return base, "\n".join([
             base, "", "ROTEIRO ANTERIOR (JSON):", anterior, "",
             f"PEDIDO DE AJUSTE DO EDITOR: {pedido_ajuste}",
             "Devolva o roteiro completo já ajustado, mantendo o que não foi pedido para mudar.",
         ])
-    else:
-        prompt = base
+
+    base, prompt = montar(False)
+    avisos: list[str] = []
+    contar = getattr(c, "count_tokens", None)
+    if contar is not None:
+        n = contar(model, prompt)
+        if n > MAX_PROMPT_TOKENS:
+            base, prompt = montar(True)
+            avisos.append(
+                f"Catálogo compactado para caber no Gemini ({n} tokens > {MAX_PROMPT_TOKENS}): "
+                "trechos com emoção ≤ 2 e qualidade ≤ 3, sem fala-chave nem gancho, ficaram de fora "
+                f"e as descrições foram encurtadas a {COMPACT_DESC_CHARS} caracteres.")
     r: Roteiro = c.generate_json(model, [], Roteiro, prompt)
     probs = validate_refs(r, db, idx)
     for _ in range(CORRECTION_ROUNDS):
@@ -343,10 +390,12 @@ def generate_roteiro(db: ProjectDB, c, idx: MusicIndex, style: StyleProfile | No
             "O roteiro acima tem estes problemas — corrija usando apenas mídias, intervalos e "
             "trilhas que existem no catálogo e na lista de trilhas, e devolva o roteiro completo:",
             *(f"- {p}" for p in probs),
+            *([f"Lembre-se do PEDIDO DE AJUSTE DO EDITOR: {pedido_ajuste}"] if pedido_ajuste else []),
         ])
         r = c.generate_json(model, [], Roteiro, fix)
         probs = validate_refs(r, db, idx)
     if probs:
         r.alertas.extend(_prune(r, db, idx))
+    r.alertas.extend(avisos)
     db.add_roteiro(r.model_dump_json())
     return r

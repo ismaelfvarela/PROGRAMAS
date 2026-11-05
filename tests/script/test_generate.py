@@ -218,3 +218,96 @@ def test_ajuste_reaproveita_sem_reanalisar(env):
     pr = c.calls[0][3]
     assert "ARCO ANTERIOR" in pr and "encurtar o episódio 1" in pr
     assert c.uploads == [] and c.calls[0][1] == []
+
+
+# ------------------------------------------------------------------ revisão final
+
+
+def _audio(rel, dur=100.0):
+    return mi(rel, dur).model_copy(update={"kind": "audio", "role": Role.mesa, "width": 0,
+                                           "height": 0})
+
+
+def test_catalogo_marca_so_audio_e_regra(env):
+    db, idx = env
+    m = db.add_media(_audio(r"E - H4\ZOOM0001.WAV"))
+    sid = db.add_segments([Segment(media_id=m, start_s=0, end_s=10)])
+    db.set_analysis(sa(sid[0], "votos", fala="sim"))
+    linha = next(l for l in build_catalog(db).splitlines() if l.startswith(r"E - H4\ZOOM0001.WAV"))
+    assert "[só áudio]" in linha
+    assert "[só áudio]" in REGRAS_FOKUSS and "fala" in REGRAS_FOKUSS
+
+
+def test_validate_cena_so_audio(env):
+    db, idx = env
+    db.add_media(_audio(r"E - H4\ZOOM0001.WAV"))
+    r = rot(piece(numero=1, dev=[ref(r"E - H4\ZOOM0001.WAV", 0, 5)], gancho=None))
+    probs = validate_refs(r, db, idx)
+    assert any("use como fala sobre uma cena de vídeo" in p for p in probs)
+
+
+def test_dias_em_ordem_cronologica(tmp_path):
+    from datetime import datetime
+    s = Settings(system_dir=str(tmp_path / "sys"), protected_roots=[])
+    db = ProjectDB(tmp_path / "p.db", s)
+    for rel, day, quando in ((r"A\Z.MP4", "zz casamento", datetime(2023, 9, 9, 15)),
+                             (r"B\P.MP4", "aa pre-wedding", datetime(2023, 8, 1, 10)),
+                             (r"C\S.MP4", "mm sem data", None),
+                             (r"D\L.MP4", "bb lua de mel", datetime(2023, 9, 20, 10))):
+        m = db.add_media(mi(rel, day=day).model_copy(update={"created_at": quando}))
+        sid = db.add_segments([Segment(media_id=m, start_s=0, end_s=5)])
+        db.set_analysis(sa(sid[0]))
+    dias = [l.split(" | dia ")[1].split(" | ")[0] for l in build_catalog(db).splitlines()]
+    assert dias == ["aa pre-wedding", "zz casamento", "bb lua de mel", "mm sem data"]
+    c = FakeClient([rot(piece(numero=1, abertura=ref(r"A\Z.MP4", 0, 1), dev=[], gancho=None))])
+    generate_roteiro(db, c, MusicIndex(tmp_path / "t.db", s), None, "m", None, set())
+    assert "dias em ordem cronológica" in c.calls[0][3]
+
+
+class TokenClient(FakeClient):
+    def __init__(self, responses, tokens):
+        super().__init__(responses)
+        self.tokens = tokens
+        self.contados = []
+
+    def count_tokens(self, model, text):
+        self.contados.append(text)
+        return self.tokens
+
+
+def test_prompt_grande_compacta_catalogo(env):
+    db, idx = env
+    a = db.media_by_rel("A\\C0001.MP4").id
+    fraco, longo = db.add_segments([Segment(media_id=a, start_s=30, end_s=40),
+                                    Segment(media_id=a, start_s=40, end_s=50)])
+    db.set_analysis(sa(fraco, "extra").model_copy(update={"emocao_intensidade": 1, "qualidade": 2}))
+    db.set_analysis(sa(longo, "pista").model_copy(update={"descricao": "x" * 500}))
+    good = rot(piece(numero=1, gancho=None))
+    c = TokenClient([good], tokens=400_000)
+    r = generate_roteiro(db, c, idx, None, "m", None, set())
+    pr = c.calls[0][3]
+    assert "30.0–40.0" not in pr  # emoção ≤ 2 e qualidade ≤ 3, sem fala e sem gancho: fora
+    assert "x" * 120 in pr and "x" * 121 not in pr
+    assert any("compact" in al.lower() for al in r.alertas)
+    c2 = TokenClient([good], tokens=1000)
+    r2 = generate_roteiro(db, c2, idx, None, "m", None, set())
+    assert "30.0–40.0" in c2.calls[0][3] and not any("compact" in al.lower() for al in r2.alertas)
+
+
+def test_gancho_removido_zera_resolve_em(env):
+    db, idx = env
+    p = piece(numero=1, gancho=ref("Z\\RUIM.MP4", 0, 1))
+    p.gancho_resolve_em = "abertura do episódio 2"
+    c = FakeClient([rot(p, piece(numero=2, gancho=None))])
+    r = generate_roteiro(db, c, idx, None, "m", None, set())
+    assert r.pecas[0].gancho is None and r.pecas[0].gancho_resolve_em is None
+
+
+def test_correcao_no_ajuste_inclui_pedido(env):
+    db, idx = env
+    db.add_roteiro(rot(piece(numero=1, gancho=None)).model_dump_json())
+    bad = rot(piece(numero=1, dev=[ref("Z\\RUIM.MP4", 0, 3)], gancho=None))
+    good = rot(piece(numero=1, gancho=None))
+    c = FakeClient([bad, good])
+    generate_roteiro(db, c, idx, None, "m", None, set(), pedido_ajuste="mais votos no ep 1")
+    assert len(c.calls) == 2 and "mais votos no ep 1" in c.calls[1][3]
