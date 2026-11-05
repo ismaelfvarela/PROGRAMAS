@@ -19,6 +19,15 @@ function _ri_pai(pathStr) {
     return String(pathStr).replace(/\\/g, "/").replace(/\/[^\/]*$/, "");
 }
 
+// mesma regra do Python (next_free_prproj): X.prproj, X_v2.prproj, X_v3.prproj...
+function _ri_prprojLivre(pathStr) {
+    if (!new File(pathStr).exists) { return pathStr; }
+    var base = String(pathStr).replace(/\.prproj$/i, "");
+    var n = 2;
+    while (new File(base + "_v" + n + ".prproj").exists) { n++; }
+    return base + "_v" + n + ".prproj";
+}
+
 function _ri_coletar(item, saida) {
     var n = item.children ? item.children.numItems : 0;
     for (var i = 0; i < n; i++) {
@@ -76,12 +85,16 @@ function montarProjeto(job) {
         }
 
         // 2. projeto novo (nunca sobrescreve)
-        var criado = app.newProject(job.prproj);
+        var prproj = _ri_prprojLivre(job.prproj);
+        if (prproj !== job.prproj) {
+            msgs.push("aviso:O projeto " + job.prproj + " j\u00e1 existia; criei uma nova vers\u00e3o sem mexer nele.");
+        }
+        var criado = app.newProject(prproj);
         if (criado === false) {
-            msgs.push("erro:O Premiere n\u00e3o conseguiu criar o projeto em " + job.prproj + ". Nada foi alterado.");
+            msgs.push("erro:O Premiere n\u00e3o conseguiu criar o projeto em " + prproj + ". Nada foi alterado.");
             return _ri_resumo(msgs, true);
         }
-        msgs.push("ok:Projeto criado: " + job.prproj);
+        msgs.push("ok:Projeto criado: " + prproj);
 
         // 3. importar XML
         var imp = app.project.importFiles([job.xml], true, app.project.rootItem, false);
@@ -156,11 +169,11 @@ function montarProjeto(job) {
         msgs.push("ok:Projeto salvo.");
         if (job.backup_dir) {
             var d = new Date();
-            var base = decodeURI(new File(job.prproj).name).replace(/\.prproj$/i, "");
+            var base = decodeURI(new File(prproj).name).replace(/\.prproj$/i, "");
             var nome = base + " - backup " + d.getFullYear() + "-" + _ri_dois(d.getMonth() + 1) + "-" + _ri_dois(d.getDate())
                 + " " + _ri_dois(d.getHours()) + "h" + _ri_dois(d.getMinutes()) + ".prproj";
             var destino = String(job.backup_dir).replace(/\\/g, "/").replace(/\/+$/, "") + "/" + nome;
-            if (new File(job.prproj).copy(destino)) {
+            if (new File(prproj).copy(destino)) {
                 msgs.push("ok:Backup copiado: " + destino);
             } else {
                 msgs.push("aviso:N\u00e3o consegui copiar o backup para " + job.backup_dir + ".");

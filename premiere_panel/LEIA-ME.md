@@ -20,7 +20,7 @@ Para remover: `instalar_painel.ps1 -Desinstalar`.
 1. Rode o pipeline até o fim (gera `ultimo_job.json` em `Y:\SISTEMA ROTEIRO`).
 2. No painel, confira o job (padrão `Y:\SISTEMA ROTEIRO\ultimo_job.json`) ou use **Escolher job**.
 3. Clique em **Montar projeto** e aguarde. O log mostra cada etapa com ✔ / ✖.
-4. Se o `.prproj` já existir, o job já traz um nome livre (`_v2`, `_v3`...). Nada é sobrescrito.
+4. Se o `.prproj` já existir (ex.: o painel foi clicado duas vezes), o painel cria o próximo nome livre (`_v2`, `_v3`...). Nada é sobrescrito.
 
 ## Configurar o cache de mídia (faça uma vez)
 

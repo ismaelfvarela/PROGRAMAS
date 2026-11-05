@@ -40,3 +40,15 @@ def test_jsx_ascii_e_es3():
 def test_main_js_chama_o_host():
     js = (PANEL / "main.js").read_text(encoding="utf-8")
     assert "__adobe_cep__.evalScript" in js and "montarProjeto(" in js
+
+
+def test_jsx_nunca_sobrescreve_prproj():
+    jsx = (PANEL / "host" / "montar.jsx").read_text(encoding="utf-8")
+    corpo = jsx[jsx.index("function montarProjeto"):]
+    i_new = corpo.index("app.newProject(")
+    # o caminho do projeto passa por uma checagem .exists antes do newProject
+    assert "_ri_prprojLivre(" in corpo[:i_new]
+    livre = jsx[jsx.index("function _ri_prprojLivre"):]
+    livre = livre[:livre.index("\n}\n")]
+    assert ".exists" in livre and "_v" in livre
+    assert "app.newProject(job.prproj)" not in jsx
