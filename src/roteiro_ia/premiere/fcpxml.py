@@ -5,6 +5,9 @@
 - V1: as cenas do roteiro em ordem (abertura, desenvolvimento…, gancho), encostadas a
   partir do quadro 0. V2…Vn: ângulos alternativos sincronizados (até 5, desativados),
   só no trecho sobreposto e alinhados no tempo real (via SyncResult).
+- Cena só-de-áudio (mesa/gravador/lapela; o roteiro não deveria trazer, mas pode): V1 recebe o
+  vídeo sincronizado de maior sobreposição; sem nenhum, V1 fica vazio e entra o marcador
+  SEM IMAGEM. O áudio da cena vai para a faixa do seu papel (AMBIENTE se não tiver uma).
 - Áudio: mesa / áudio ambiente / lapelas sobrepostos à cena nas faixas de AUDIO_TRACKS;
   sem mesa nem ambiente, o áudio da própria câmera vai para AMBIENTE. As faixas vêm em
   pares L/R: fonte estéreo (≥2 canais) vira dois clipitems ligados (<link>), canal 1 na
@@ -366,9 +369,17 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
         dur = ref.end_s - ref.start_s
         start, end = cursor, cursor + _frames(dur, rate)
         cursor = end
+
+        def place(ov0: float, ov1: float, o0: float, t0: float):
+            s0 = min(end, start + _frames(ov0 - t0, rate))
+            s1 = min(end, start + _frames(ov1 - t0, rate))
+            return s0, s1, ov0 - o0, ov1 - ov0
+
         src = _media_src(m, ctx, source_root, rate)
-        _clipitem(v_tracks[0], ctx, src, PureWindowsPath(m.rel_path).name, start, end,
-                  ref.start_s, dur, rate)
+        so_audio = m.kind != "video"
+        if not so_audio:
+            _clipitem(v_tracks[0], ctx, src, PureWindowsPath(m.rel_path).name, start, end,
+                      ref.start_s, dur, rate)
         if kind == "abertura":
             markers.append(("ABERTURA", ref.descricao, start, None))
         elif kind == "gancho":
@@ -379,18 +390,32 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
             markers.append((f"LEMBRANÇA: {ref.descricao}",
                             "Lembrança: outra tonalidade e áudio filtrado/reverb", start, end))
 
-        def place(ov0: float, ov1: float, o0: float, t0: float):
-            s0 = min(end, start + _frames(ov0 - t0, rate))
-            s1 = min(end, start + _frames(ov1 - t0, rate))
-            return s0, s1, ov0 - o0, ov1 - ov0
-
         sm = syncs.get(m.id)
         has_room = False
+        v1_id = None
+        if so_audio:
+            tname_m = _ROLE_TRACK.get(m.role, "AMBIENTE")
+            if m.audio_channels > 0:
+                level, noisy = _gain_level(db, m, m.role)
+                _place_audio(a_tracks, tname_m, ctx, src, PureWindowsPath(m.rel_path).name,
+                             start, end, ref.start_s, dur, rate, level)
+                if noisy:
+                    markers.append(("RUÍDO", f"Ruído detectado em {m.rel_path}", start, end))
+            has_room = True  # o próprio áudio da cena já está na faixa
         if sm is not None:
             t0 = sm.timeline_start_s + ref.start_s
             t1 = t0 + dur
             day = [o for o in synced if o.id != m.id and syncs[o.id].day_label == sm.day_label]
-            alts = _overlaps(t0, t1, [o for o in day if o.kind == "video"
+            if so_audio:
+                vids = _overlaps(t0, t1, [o for o in day if o.kind == "video"], syncs)
+                if vids:
+                    ov0, ov1, o0, o = vids[0]
+                    s0, s1, ins, d = place(ov0, ov1, o0, t0)
+                    if s1 > s0:
+                        _clipitem(v_tracks[0], ctx, _media_src(o, ctx, source_root, rate),
+                                  PureWindowsPath(o.rel_path).name, s0, s1, ins, d, rate)
+                        v1_id = o.id
+            alts = _overlaps(t0, t1, [o for o in day if o.kind == "video" and o.id != v1_id
                                       and o.role not in _ROLE_TRACK], syncs)[:MAX_ALTERNATES]
             for i, (ov0, ov1, o0, o) in enumerate(alts, start=1):
                 s0, s1, ins, d = place(ov0, ov1, o0, t0)
@@ -402,7 +427,9 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
                           PureWindowsPath(o.rel_path).name, s0, s1, ins, d, rate,
                           enabled=False)
             for role, tname in _ROLE_TRACK.items():
-                taken: list[tuple[int, int]] = []
+                taken: list[tuple[int, int]] = (
+                    [(start, end)] if so_audio and _ROLE_TRACK.get(m.role, "AMBIENTE") == tname
+                    else [])
                 for ov0, ov1, o0, o in _overlaps(t0, t1, [o for o in day if o.role == role],
                                                  syncs):
                     s0, s1, ins, d = place(ov0, ov1, o0, t0)
@@ -416,6 +443,9 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
                         markers.append(("RUÍDO", f"Ruído detectado em {o.rel_path}", s0, s1))
                     if role in (Role.mesa, Role.audio_ambiente):
                         has_room = True
+        if so_audio and v1_id is None:
+            markers.append(("SEM IMAGEM", f"Cena só de áudio ({m.rel_path}) sem vídeo "
+                            "sincronizado: escolha uma imagem para cobrir a fala.", start, end))
         if not has_room and m.audio_channels > 0:
             level, noisy = _gain_level(db, m, m.role)
             _place_audio(a_tracks, "AMBIENTE", ctx, src, PureWindowsPath(m.rel_path).name,

@@ -391,3 +391,43 @@ def test_rotacao_troca_largura_altura(env):
     f = next(f for f in seq.iter("file") if f.get("id") == f"file-{mid}")
     sc = f.find("media/video/samplecharacteristics")
     assert (sc.findtext("width"), sc.findtext("height")) == ("1080", "1920")
+
+
+# ------------------------------------------------------------------ revisão final: cena só-de-áudio
+
+
+def _piece_mesa(a, b):
+    p = _piece(trilhas=[])
+    p.abertura = _ref("MESA\\MESA.WAV", a, b, desc="votos na mesa")
+    p.desenvolvimento, p.gancho = [], None
+    return p
+
+
+def test_cena_so_audio_usa_video_sincronizado_em_v1(env):
+    s, db, idx, ids = env
+    seq = _seq(db, idx, _piece_mesa(105, 115))  # A cobre 100–160 (10 s), B 110–170 (5 s)
+    v = _tracks(seq, "video")
+    v1 = v[0].findall("clipitem")
+    assert [c.findtext("name") for c in v1] == ["C0001.MP4"]
+    fps = NTSC
+    assert int(v1[0].findtext("in")) == round(5 * fps)  # 105 − 100
+    assert int(v1[0].findtext("start")) == 0 and int(v1[0].findtext("end")) == round(10 * fps)
+    alt = [c.findtext("name") for t in v[1:] for c in t.findall("clipitem")]
+    assert alt == ["C0100.MP4"]
+    mesa_l = _tracks(seq, "audio")[AUDIO_TRACKS.index("MESA L")].findall("clipitem")
+    assert [c.findtext("name") for c in mesa_l] == ["MESA.WAV"]
+    assert int(mesa_l[0].findtext("in")) == round(105 * fps)
+    amb = _tracks(seq, "audio")[AUDIO_TRACKS.index("AMBIENTE L")].findall("clipitem")
+    assert amb == []
+    assert "SEM IMAGEM" not in [m.findtext("name") for m in seq.findall("marker")]
+
+
+def test_cena_so_audio_sem_video_marca_sem_imagem(env):
+    s, db, idx, ids = env
+    seq = _seq(db, idx, _piece_mesa(10, 20))  # nenhuma câmera cobre 10–20 s
+    assert _tracks(seq, "video")[0].findall("clipitem") == []
+    nomes = [m.findtext("name") for m in seq.findall("marker")]
+    assert "SEM IMAGEM" in nomes
+    mesa_l = _tracks(seq, "audio")[AUDIO_TRACKS.index("MESA L")].findall("clipitem")
+    assert [c.findtext("name") for c in mesa_l] == ["MESA.WAV"]
+    assert int(seq.findtext("duration")) == round(10 * NTSC)
