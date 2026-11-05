@@ -41,6 +41,7 @@ testpaths = ["tests"]
 markers = [
   "gemini: teste real contra a API Gemini (requer chave)",
   "windows: teste que usa o Microsoft Edge instalado no Windows",
+  "integracao: evento sintético completo (ffmpeg, Edge, Gemini/Whisper falsos)",
 ]
 
 [[tool.uv.index]]
