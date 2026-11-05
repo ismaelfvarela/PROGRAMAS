@@ -3,6 +3,7 @@ quedas de rede/disco (NAS). O estado de cada etapa fica em `stages` do banco do 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -35,8 +36,9 @@ from roteiro_ia.transcribe import transcribe_event
 _sleep = time.sleep  # patchável nos testes
 RETRY_WAITS_S = (10, 20, 40, 80, 160)
 
-STAGES = ["inventario", "proxies", "audio", "sync", "transcricao", "cenas", "estilo",
-          "analise", "trilhas", "roteiro", "pdf", "premiere"]
+# trilhas antes de estilo/análise: o índice local aproveita o tempo em que o Gemini estaria pausado
+STAGES = ["inventario", "proxies", "audio", "sync", "transcricao", "cenas", "trilhas", "estilo",
+          "analise", "roteiro", "pdf", "premiere"]
 STAGE_LABELS = {
     "inventario": "inventário das mídias",
     "proxies": "proxies 480p",
@@ -56,6 +58,10 @@ GEMINI_STAGES = {"estilo", "analise", "roteiro"}
 FALHA_STAGES = {"inventario", "proxies", "audio", "sync", "transcricao", "cenas", "analise"}
 FALHAS_PREFIX = "falhas="
 PROJECT_FILE = "projeto.json"
+LOG_FILE = "log.txt"
+# o custo da análise (vídeo) ganha +20% para cobrir o perfil de estilo e o roteiro (texto)
+TEXT_STAGES_MARGIN = 1.2
+_log = logging.getLogger("roteiro_ia")
 
 Events = Callable[[str, str, float], None]
 
@@ -188,6 +194,7 @@ class Pipeline:
 
     # ------------------------------------------------------------ eventos
     def _emit(self, stage: str, msg: str, frac: float) -> None:
+        _log.info("[%s] %s", stage, msg)
         if self._events:
             self._events(stage, msg, frac)
 
@@ -201,9 +208,15 @@ class Pipeline:
 
     # ------------------------------------------------------------ custo
     def estimate_cost(self) -> float:
+        """Custo estimado em US$: análise do vídeo (100 tokens/s) + 20% para estilo e roteiro."""
         total = sum(m.duration_s for m in self.db.list_media()
                     if m.role not in (Role.ignorar, Role.outro_dia))
-        return GeminiClient(self.s, backend=object()).estimate_cost_usd(total)
+        return GeminiClient(self.s, backend=object()).estimate_cost_usd(total) * TEXT_STAGES_MARGIN
+
+    def _check_price(self) -> None:
+        if self.s.gemini_mode == "pago" and self.s.price_usd_per_mtok <= 0:
+            raise PipelineError("Modo pago do Gemini sem preço: defina o preço por milhão de tokens "
+                                "em Configurações antes de começar.")
 
     def _check_cost(self) -> None:
         if self.s.gemini_mode == "pago" and not self._aprovado:
@@ -215,42 +228,77 @@ class Pipeline:
     def _project_file(self) -> Path:
         return Path(self.p.analysis_dir) / PROJECT_FILE
 
+    def _open_log(self) -> logging.Handler:
+        """ANALISE\\log.txt: eventos e avisos desta execução (anexados ao arquivo)."""
+        path = Path(self.p.analysis_dir) / LOG_FILE
+        assert_writable(path, self.s)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        h = logging.FileHandler(path, encoding="utf-8")
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s",
+                                         "%Y-%m-%d %H:%M:%S"))
+        h.setLevel(logging.INFO)
+        _log.addHandler(h)
+        if _log.level == logging.NOTSET or _log.level > logging.INFO:
+            _log.setLevel(logging.INFO)
+        return h
+
+    @staticmethod
+    def _close_log(h: logging.Handler) -> None:
+        _log.removeHandler(h)
+        h.close()
+
     def prepare(self) -> tuple[EventPaths, float]:
+        self._check_price()
         self.req.save(self._project_file(), self.s)
         self._run_stage("inventario")
         return self.p, self.estimate_cost()
 
-    def run(self, aprovado_custo: bool = False) -> Literal["concluido", "pausado"]:
+    def run(self, aprovado_custo: bool = False,
+            refazer_falhas: bool = True) -> Literal["concluido", "pausado"]:
+        """`refazer_falhas=False` (retomadas automáticas): etapas já feitas com falhas por
+        arquivo não são refeitas; True (Iniciar/Continuar explícitos) refaz essas etapas."""
+        self._check_price()
         self._aprovado = aprovado_custo
         if not self._project_file().is_file():
             self.req.save(self._project_file(), self.s)
+        h = self._open_log()
         try:
             for name in STAGES:
-                self._run_stage(name)
+                self._run_stage(name, refazer_falhas=refazer_falhas)
         except QuotaPaused:
             return "pausado"
+        finally:
+            self._close_log(h)
         return "concluido"
 
     def revise(self, pedido: str, aprovado_custo: bool = False) -> None:
         """Regera roteiro, PDF e XML a partir do banco; nunca refaz etapas de mídia."""
         if self.db.stage_status("analise") != "feito":
             raise PipelineError("Rode o processamento completo antes de pedir ajustes no roteiro.")
+        self._check_price()
         self._aprovado = aprovado_custo
         self._pedido = pedido
+        h = self._open_log()
         try:
-            self._run_stage("roteiro", force=True)
+            try:
+                self._run_stage("roteiro", force=True)
+            finally:
+                self._pedido = None
+            self._run_stage("pdf", force=True)
+            self._run_stage("premiere", force=True)
         finally:
-            self._pedido = None
-        self._run_stage("pdf", force=True)
-        self._run_stage("premiere", force=True)
+            self._close_log(h)
 
-    def _run_stage(self, name: str, force: bool = False) -> None:
+    def _run_stage(self, name: str, force: bool = False, refazer_falhas: bool = True) -> None:
         db = self.db
-        if (not force and db.stage_status(name) == "feito"
-                and not db.stage_detail(name).startswith(FALHAS_PREFIX)):
+        status = db.stage_status(name)
+        if (not force and status == "feito"
+                and (not refazer_falhas or not db.stage_detail(name).startswith(FALHAS_PREFIX))):
             return
         if name in GEMINI_STAGES:
             self._check_cost()
+        if name == "analise" and status != "pausado":
+            db.clear_quota_strikes()  # a contagem de pausas seguidas só vale entre retomadas
         label = STAGE_LABELS[name]
         self._emit(name, f"Iniciando: {label}", 0.0)
         db.set_stage(name, "rodando")
@@ -260,7 +308,7 @@ class Pipeline:
                 if name in FALHA_STAGES:
                     db.clear_falhas(name)  # cada tentativa registra as suas: sem duplicatas
                 detail = self.impl[name]() or ""
-                if not os.path.isdir(self.source):
+                if name in FALHA_STAGES and not os.path.isdir(self.source):
                     # NAS caiu no meio da etapa: os arquivos perdidos viraram falhas; repete
                     raise OSError(f"Pasta de origem inacessível: {self.source}")
                 n_falhas = db.count_falhas(name) if name in FALHA_STAGES else 0
@@ -302,11 +350,18 @@ class Pipeline:
     def _st_inventario(self) -> str:
         create_event_folders(self.p, self.s)
         n = scan(self.source, self.req.assignments, self.db, on_progress=self._progress("inventario"))
-        total = sum(m.duration_s for m in self.db.list_media() if m.kind == "video")
-        check_free_space(self.p, estimate_proxy_gb(total))
         return f"{n} arquivos"
 
     def _st_proxies(self) -> None:
+        falta = 0.0  # só os vídeos que ainda não têm proxy
+        for m in self.db.list_media():
+            if m.kind != "video":
+                continue
+            prx = self.db.proxy_for(m.id)
+            if not (prx and Path(prx).is_file()):
+                falta += m.duration_s
+        if falta > 0:
+            check_free_space(self.p, estimate_proxy_gb(falta))
         make_proxies(self.db, self.p, self.s, self.source, on_progress=self._progress("proxies"))
 
     def _st_audio(self) -> None:
@@ -364,7 +419,11 @@ class Pipeline:
 
     def _st_pdf(self) -> None:
         html = render_html(self._roteiro(), self.p, collect_technical_alerts(self.db))
-        html_to_pdf(html, self.p.pdf_path, self.s, html_path=Path(self.p.analysis_dir) / "roteiro.html")
+        out = html_to_pdf(html, self.p.pdf_path, self.s,
+                          html_path=Path(self.p.analysis_dir) / "roteiro.html")
+        if out is not None and Path(out) != Path(self.p.pdf_path):
+            msg = f"O PDF anterior está aberto; salvei como {Path(out).name}."
+            self._emit("pdf", msg, 1.0)
 
     def _st_premiere(self) -> None:
         r = self._roteiro()

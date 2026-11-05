@@ -66,7 +66,7 @@ class PipelineWorker(_Base):
     retomar_em = Signal(object)  # datetime com fuso
 
     def __init__(self, factory: PipelineFactory, acao: str = "run", aprovado_custo: bool = False,
-                 pedido: str | None = None):
+                 pedido: str | None = None, refazer_falhas: bool = True):
         super().__init__()
         if acao not in ("prepare", "run", "revise"):
             raise ValueError(f"Ação desconhecida: {acao}")
@@ -74,6 +74,7 @@ class PipelineWorker(_Base):
         self.acao = acao
         self.aprovado_custo = aprovado_custo
         self.pedido = pedido
+        self.refazer_falhas = refazer_falhas  # False nas retomadas automáticas
 
     def _emit_estados(self, pipe) -> None:
         try:
@@ -95,7 +96,7 @@ class PipelineWorker(_Base):
             if self.acao == "revise":
                 pipe.revise(self.pedido or "", aprovado_custo=self.aprovado_custo)
                 return "ajustado"
-            status = pipe.run(aprovado_custo=self.aprovado_custo)
+            status = pipe.run(aprovado_custo=self.aprovado_custo, refazer_falhas=self.refazer_falhas)
             if status == "pausado":
                 self.retomar_em.emit(pipe.resume_at)
             return status
@@ -175,7 +176,11 @@ class Runner(QObject):
     def wait_all(self, ms: int = -1) -> bool:
         """Espera as tarefas em andamento (o laço da thread sai assim que o worker termina)."""
         ok = True
-        for th, _w in list(self._ativos):
+        for par in list(self._ativos):
+            th = par[0]
             th.quit()
-            ok = (th.wait() if ms < 0 else th.wait(ms)) and ok
+            fim = th.wait() if ms < 0 else th.wait(ms)
+            if fim and par in self._ativos:
+                self._ativos.remove(par)  # já terminou: não conta mais como ativa
+            ok = fim and ok
         return ok

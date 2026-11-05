@@ -21,7 +21,7 @@ class FakePipeline:
         self.events("inventario", "Concluído: inventário das mídias", 1.0)
         return None, 1.25
 
-    def run(self, aprovado_custo=False):
+    def run(self, aprovado_custo=False, refazer_falhas=True):
         self.chamadas.append(("run", aprovado_custo))
         if self.falha:
             raise self.falha
@@ -128,3 +128,21 @@ def test_tarefa_worker_resultado_e_progresso(qtbot):
     qtbot.waitUntil(lambda: not runner.ativo(), timeout=5000)
     assert prog == [(1, 2, "a.mp3"), (2, 2, "b.mp3")]
     assert res == [42]
+
+
+def test_worker_repassa_refazer_falhas(qtbot):
+    criados = []
+
+    class P(FakePipeline):
+        def run(self, aprovado_custo=False, refazer_falhas=True):
+            self.refazer = refazer_falhas
+            return super().run(aprovado_custo)
+
+    def factory(events):
+        criados.append(P(events))
+        return criados[-1]
+
+    assert _rodar(qtbot, PipelineWorker(factory, refazer_falhas=False)) == "concluido"
+    assert criados[-1].refazer is False
+    assert _rodar(qtbot, PipelineWorker(factory)) == "concluido"
+    assert criados[-1].refazer is True

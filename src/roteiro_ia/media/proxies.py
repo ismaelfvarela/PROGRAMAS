@@ -6,6 +6,7 @@ O Premiere só troca proxy <-> original quando fps, proporção e número de can
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +20,11 @@ from roteiro_ia.paths import EventPaths
 from roteiro_ia.safety import ProtectedPathError, assert_writable, safe_copy, safe_mkdir
 
 TARGET = 480
+MIN_FREE_GB = 2.0  # abaixo disso a etapa pausa/repete em vez de virar falha por arquivo
+
+
+def _free_gb(path: Path) -> float:
+    return shutil.disk_usage(path).free / 1024**3
 _FORCE_CPU = False  # gancho de teste: força libx264
 
 
@@ -114,10 +120,16 @@ def make_proxies(db: ProjectDB, p: EventPaths, s: Settings, source_root: Path,
     total = len(todo)
     for i, m in enumerate(todo, 1):
         final = proxy_path(m, p)
+        existing = db.proxy_for(m.id)
+        if existing and Path(existing).is_file():
+            if on_progress:
+                on_progress(i, total)
+            continue
+        livre = _free_gb(p.proxies_dir)
+        if livre < MIN_FREE_GB:
+            raise OSError(f"Disco de trabalho cheio: só {livre:.1f} GB livres em {p.proxies_dir} "
+                          f"(mínimo {MIN_FREE_GB:.0f} GB). Libere espaço; a etapa será repetida.")
         try:
-            existing = db.proxy_for(m.id)
-            if existing and Path(existing).is_file():
-                continue
             assert_writable(final, s)
             safe_mkdir(final.parent, s)
             src = Path(source_root) / m.rel_path.replace("\\", "/")

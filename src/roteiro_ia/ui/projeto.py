@@ -114,12 +114,13 @@ class ProjetoTab(QWidget):
         self.status.log_line(f"Evento: {req.source_dir}")
         self._start("prepare" if req.gemini_mode == "pago" else "run")
 
-    def _start(self, acao: str, aprovado: bool = False, pedido: str | None = None) -> None:
+    def _start(self, acao: str, aprovado: bool = False, pedido: str | None = None,
+               refazer_falhas: bool = True) -> None:
         req, s, factory = self._req, self.s, self._factory
         if acao != "prepare":
             self._ultima = (acao, aprovado, pedido)
         w = PipelineWorker(lambda eventos: factory(req, s, eventos), acao=acao,
-                           aprovado_custo=aprovado, pedido=pedido)
+                           aprovado_custo=aprovado, pedido=pedido, refazer_falhas=refazer_falhas)
         w.progresso.connect(self.status.on_progresso)
         w.estados.connect(self.status.on_estados)
         w.log.connect(self.status.on_log)
@@ -200,7 +201,8 @@ class ProjetoTab(QWidget):
             return
         acao, aprovado, pedido = self._ultima
         self.status.log_line("Retomando após o limite gratuito do Gemini.")
-        self._start(acao, aprovado, pedido)
+        # retomada automática: não refaz etapas que já terminaram com falhas por arquivo
+        self._start(acao, aprovado, pedido, refazer_falhas=False)
 
     # ------------------------------------------------------------ ações finais
     def _paths(self):

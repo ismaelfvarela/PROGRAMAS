@@ -206,6 +206,7 @@ class FormularioEvento(QWidget):
 
         self.cards = [c1, c2, c3, c4, c5]
         (self.btn_pago if s.gemini_mode == "pago" else self.btn_gratis).setChecked(True)
+        self.atualizar_preco()
         self.grupo_modo.buttonToggled.connect(lambda *_: self._atualizar_modo())
         self.btn_escolher.clicked.connect(self._escolher)
         self.btn_continuar.clicked.connect(self.continuar.emit)
@@ -286,6 +287,17 @@ class FormularioEvento(QWidget):
     # ------------------------------------------------------------ gemini
     def modo(self) -> str:
         return "pago" if self.btn_pago.isChecked() else "gratis"
+
+    def atualizar_preco(self) -> None:
+        """O modo pago só fica disponível com o preço por milhão de tokens configurado."""
+        tem_preco = self.s.price_usd_per_mtok > 0
+        self.btn_pago.setEnabled(tem_preco)
+        self.btn_pago.setToolTip("" if tem_preco else
+                                 "Defina o preço por milhão de tokens em Configurações para "
+                                 "usar o modo pago.")
+        if not tem_preco and self.btn_pago.isChecked():
+            self.btn_gratis.setChecked(True)
+            self._atualizar_modo()
 
     def _atualizar_modo(self) -> None:
         gratis = self.modo() == "gratis"

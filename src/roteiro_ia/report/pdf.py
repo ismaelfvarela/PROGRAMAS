@@ -106,9 +106,19 @@ def find_edge() -> Path:
                        "Instale o Edge para gerar o PDF do roteiro.")
 
 
-def html_to_pdf(html: str, out: Path, s: Settings, html_path: Path | None = None) -> None:
+def _next_numbered(out: Path) -> Path:
+    n = 2
+    while True:
+        cand = out.with_name(f"{out.stem} ({n}){out.suffix}")
+        if not cand.exists():
+            return cand
+        n += 1
+
+
+def html_to_pdf(html: str, out: Path, s: Settings, html_path: Path | None = None) -> Path:
     """Grava o HTML (por padrão ao lado do PDF; o pipeline passa ANALISE/roteiro.html) e
-    imprime em PDF com o Edge."""
+    imprime em PDF com o Edge. Se o PDF anterior estiver aberto (travado no visualizador),
+    grava como "<nome> (2).pdf" (próximo número livre). Devolve o caminho efetivo."""
     edge = find_edge()
     out = Path(out)
     assert_writable(out, s)
@@ -130,6 +140,12 @@ def html_to_pdf(html: str, out: Path, s: Settings, html_path: Path | None = None
         if res.returncode != 0 or not tmp_pdf.exists():
             detalhe = res.stderr.decode("utf-8", "replace").strip()[-300:]
             raise RuntimeError(f"Não consegui gerar o PDF do roteiro com o Edge. {detalhe}")
-        os.replace(tmp_pdf, out)
+        try:
+            os.replace(tmp_pdf, out)
+        except PermissionError:
+            out = _next_numbered(out)
+            assert_writable(out, s)
+            os.replace(tmp_pdf, out)
     finally:
         tmp_pdf.unlink(missing_ok=True)
+    return out

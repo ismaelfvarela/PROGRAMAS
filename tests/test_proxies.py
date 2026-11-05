@@ -152,3 +152,18 @@ def test_audio_ignorado(env, monkeypatch):
     db.add_media(_m("B\\a.wav", kind="audio", ch=1))
     monkeypatch.setattr(px, "_run", lambda *a, **k: pytest.fail("x"))
     make_proxies(db, p, s, src)
+
+
+def test_disco_de_trabalho_cheio_pausa_sem_falha(env, monkeypatch):
+    s, p, db, src = env
+    db.add_media(_m(r"A\C0001.MP4"))
+    db.add_media(_m(r"A\C0002.MP4"))
+    chamadas = []
+    monkeypatch.setattr(px, "_run", lambda cmd, timeout: chamadas.append(cmd) or (False, "x"))
+    livre = iter([10.0, 1.5])
+    monkeypatch.setattr(px, "_free_gb", lambda path: next(livre))
+    with pytest.raises(OSError) as ei:
+        make_proxies(db, p, s, src)
+    assert "Disco de trabalho cheio" in str(ei.value)
+    # o 1º arquivo foi tentado (e falhou no ffmpeg); o 2º não começou
+    assert [f.rel_path for f in db.list_falhas()] == [r"A\C0001.MP4"]

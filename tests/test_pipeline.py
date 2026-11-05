@@ -62,8 +62,8 @@ def mk_pipe(tmp_path, mode="gratis", settings=None, gemini=None):
 
 
 def test_ordem_das_etapas(tmp_path, sleeps):
-    assert STAGES == ["inventario", "proxies", "audio", "sync", "transcricao", "cenas", "estilo",
-                      "analise", "trilhas", "roteiro", "pdf", "premiere"]
+    assert STAGES == ["inventario", "proxies", "audio", "sync", "transcricao", "cenas", "trilhas",
+                      "estilo", "analise", "roteiro", "pdf", "premiere"]
     pipe, calls, events = mk_pipe(tmp_path)
     assert pipe.run() == "concluido"
     assert calls == STAGES
@@ -140,7 +140,7 @@ def test_quota_pausa_e_continua(tmp_path, sleeps):
 
 
 def test_pago_exige_aprovacao(tmp_path, sleeps):
-    pipe, calls, _ = mk_pipe(tmp_path, mode="pago")
+    pipe, calls, _ = mk_pipe(tmp_path, mode="pago", settings=mk_settings(tmp_path, price_usd_per_mtok=1.0))
     with pytest.raises(RuntimeError) as ei:
         pipe.run()
     assert "custo" in str(ei.value).lower()
@@ -163,7 +163,7 @@ def test_prepare_grava_projeto_e_estima_custo(tmp_path):
     pipe.impl["inventario"] = inv
     p, cost = pipe.prepare()
     assert calls == ["inventario"]
-    assert cost == pytest.approx(3600 * 100 / 1e6 * 2.0)
+    assert cost == pytest.approx(3600 * 100 / 1e6 * 2.0 * 1.2)  # +20% estilo/roteiro
     proj = p.analysis_dir / "projeto.json"
     data = json.loads(proj.read_text(encoding="utf-8"))
     assert data["derivados"] == ["teaser", "trailer"]
@@ -429,4 +429,135 @@ def test_revise_antes_da_analise_erro(tmp_path, sleeps):
         pipe.revise("mais emoção")
     assert "processamento completo" in str(ei.value)
     assert calls == []
+    pipe.close()
+
+
+# ------------------------------------------------------------------ revisão final
+
+
+def test_retomada_automatica_nao_refaz_falhas(tmp_path, sleeps):
+    pipe, calls, _ = mk_pipe(tmp_path)
+    n = {"x": 0}
+
+    def audio():
+        n["x"] += 1
+        calls.append("audio")
+        if n["x"] == 1:
+            pipe.db.add_falha("audio", r"A\C1.MP4", "erro 1")
+    pipe.impl["audio"] = audio
+    assert pipe.run() == "concluido"
+    calls.clear()
+    assert pipe.run(refazer_falhas=False) == "concluido"
+    assert calls == []  # etapa feita com falhas não é refeita na retomada automática
+    assert pipe.db.stage_detail("audio") == "falhas=1"
+    assert pipe.run(refazer_falhas=True) == "concluido"
+    assert calls == ["audio"]
+    pipe.close()
+
+
+def test_origem_so_verificada_em_etapas_de_falha(tmp_path, sleeps):
+    pipe, calls, _ = mk_pipe(tmp_path)
+    src = pipe.req.source_dir
+    hidden = tmp_path / "R" / "escondida"
+
+    def trilhas():
+        calls.append("trilhas")
+        if not hidden.exists():
+            src.rename(hidden)  # NAS cai depois das etapas de mídia
+    pipe.impl["trilhas"] = trilhas
+    pipe.impl["inventario"] = lambda: calls.append("inventario")
+    for n in ("proxies", "audio", "sync", "transcricao", "cenas"):
+        pipe.db.set_stage(n, "feito")
+    pipe.db.set_stage("analise", "feito")
+    pipe.db.set_stage("inventario", "feito")
+    assert pipe.run() == "concluido"  # trilhas/estilo/roteiro/pdf/premiere não dependem da origem
+    assert sleeps == []
+    hidden.rename(src)
+    pipe.close()
+
+
+def test_ordem_trilhas_antes_do_estilo():
+    assert STAGES.index("trilhas") < STAGES.index("estilo") < STAGES.index("analise")
+
+
+def test_pago_sem_preco_erro(tmp_path, sleeps):
+    s = mk_settings(tmp_path, price_usd_per_mtok=0.0)
+    pipe, calls, _ = mk_pipe(tmp_path, mode="pago", settings=s)
+    with pytest.raises(pipeline.PipelineError, match="preço por milhão de tokens"):
+        pipe.prepare()
+    with pytest.raises(pipeline.PipelineError, match="preço por milhão de tokens"):
+        pipe.run(aprovado_custo=True)
+    assert calls == []
+    pipe.close()
+
+
+def test_estimativa_inclui_20_porcento(tmp_path):
+    s = mk_settings(tmp_path, price_usd_per_mtok=1.0)
+    pipe, _, _ = mk_pipe(tmp_path, mode="pago", settings=s)
+    pipe.db.add_media(MediaInfo(rel_path=r"A\C1.MP4", folder="A", role=Role.camera,
+                                day_label="principal", kind="video", duration_s=1000,
+                                fps_num=30, fps_den=1, width=1, height=1, rotation=0,
+                                audio_channels=2))
+    assert pipe.estimate_cost() == pytest.approx(1000 * 100 / 1e6 * 1.0 * 1.2)
+    pipe.close()
+
+
+def test_log_txt_durante_run(tmp_path, sleeps):
+    import logging
+    pipe, calls, _ = mk_pipe(tmp_path)
+
+    def audio():
+        calls.append("audio")
+        logging.getLogger("roteiro_ia.media.audio").warning("aviso de teste ç")
+    pipe.impl["audio"] = audio
+    antes = list(logging.getLogger("roteiro_ia").handlers)
+    assert pipe.run() == "concluido"
+    log = Path(pipe.p.analysis_dir) / "log.txt"
+    txt = log.read_text(encoding="utf-8")
+    assert "Iniciando: análise de áudio" in txt and "aviso de teste ç" in txt
+    assert logging.getLogger("roteiro_ia").handlers == antes  # handler removido ao fim
+    pipe.close()
+
+
+def test_strikes_zerados_ao_iniciar_analise_sem_pausa(tmp_path, sleeps):
+    pipe, calls, _ = mk_pipe(tmp_path)
+    vistos = []
+    pipe.impl["analise"] = lambda: vistos.append(pipe.db.quota_strikes("1:1"))
+    pipe.db.bump_quota_strike("1:1")
+    pipe.db.set_stage("analise", "pausado")
+    assert pipe.run() == "concluido"
+    assert vistos == [1]  # retomada de pausa: mantém a contagem
+    pipe.db.set_stage("analise", "feito", "falhas=1")
+    pipe.run(refazer_falhas=True)
+    assert vistos == [1, 0]  # refazer explícito: começa do zero
+    pipe.close()
+
+
+def test_proxies_verifica_espaco_so_do_que_falta(tmp_path, sleeps, monkeypatch):
+    pipe, _, _ = mk_pipe(tmp_path)
+    for i, dur in enumerate((3600.0, 7200.0)):
+        pipe.db.add_media(MediaInfo(rel_path=f"A\\C{i}.MP4", folder="A", role=Role.camera,
+                                    day_label="principal", kind="video", duration_s=dur,
+                                    fps_num=30, fps_den=1, width=1, height=1, rotation=0,
+                                    audio_channels=2))
+    prx = tmp_path / "prx.mp4"
+    prx.write_bytes(b"x")
+    pipe.db.set_proxy(1, str(prx), "gerado")
+    pedidos = []
+    monkeypatch.setattr(pipeline, "check_free_space", lambda p, gb: pedidos.append(gb))
+    monkeypatch.setattr(pipeline, "make_proxies", lambda *a, **k: None)
+    pipe._st_proxies()
+    assert pedidos == [pytest.approx(pipeline.estimate_proxy_gb(7200.0))]
+    pipe.close()
+
+
+def test_pdf_aberto_avisa(tmp_path, sleeps, monkeypatch):
+    pipe, _, events = mk_pipe(tmp_path)
+    monkeypatch.setattr(pipeline, "render_html", lambda *a: "<p/>")
+    monkeypatch.setattr(pipeline, "collect_technical_alerts", lambda db: [])
+    monkeypatch.setattr(pipe, "_roteiro", lambda: None)
+    alt = Path(str(pipe.p.pdf_path).replace(".pdf", " (2).pdf"))
+    monkeypatch.setattr(pipeline, "html_to_pdf", lambda *a, **k: alt)
+    pipe._st_pdf()
+    assert any("O PDF anterior está aberto; salvei como" in e[1] and alt.name in e[1] for e in events)
     pipe.close()

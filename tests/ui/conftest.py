@@ -24,3 +24,12 @@ def evento(tmp_path):
     for sub in ("A", "B", "E - H4", "TRILHAS"):
         (ev / sub).mkdir(parents=True)
     return ev
+
+
+@pytest.fixture(autouse=True)
+def _sem_dialogos_modais(monkeypatch):
+    """Um QMessageBox.question real trava o teste sem tela (ex.: o fechamento da janela com uma
+    tarefa auxiliar ainda ativa); responde "Sim" por padrão. Testes que precisam de outra
+    resposta fazem o próprio monkeypatch."""
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)

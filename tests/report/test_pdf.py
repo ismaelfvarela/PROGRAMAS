@@ -146,3 +146,30 @@ def test_pdf_novo_substitui_antigo(tmp_path, monkeypatch):
     html_to_pdf("<p>x</p>", out, Settings())
     assert out.read_bytes() == b"%PDF-novo"
     assert not out.with_suffix(".tmp.pdf").exists()
+
+
+def test_pdf_aberto_grava_com_numero(tmp_path, monkeypatch):
+    from roteiro_ia.report import pdf as mod
+    monkeypatch.setattr(mod, "find_edge", lambda: Path("edge.exe"))
+
+    def fake_run(cmd, **kw):
+        Path(_arg(cmd, "--print-to-pdf=").split("=", 1)[1]).write_bytes(b"%PDF-novo")
+        return _Res()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    out = tmp_path / "EV - ROTEIRO.pdf"
+    out.write_bytes(b"%PDF-aberto")
+    (tmp_path / "EV - ROTEIRO (2).pdf").write_bytes(b"%PDF-outro")
+    real_replace = os.replace
+
+    def travado(a, b):
+        if Path(b) == out:
+            raise PermissionError("arquivo em uso")
+        return real_replace(a, b)
+    monkeypatch.setattr(mod.os, "replace", travado)
+    got = html_to_pdf("<p>x</p>", out, Settings())
+    assert got == tmp_path / "EV - ROTEIRO (3).pdf"
+    assert got.read_bytes() == b"%PDF-novo" and out.read_bytes() == b"%PDF-aberto"
+    assert not out.with_suffix(".tmp.pdf").exists()
+    monkeypatch.setattr(mod.os, "replace", real_replace)
+    assert html_to_pdf("<p>x</p>", out, Settings()) == out

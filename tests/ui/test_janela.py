@@ -85,6 +85,8 @@ def test_pedido_reflete_entregas_e_modo(janela, evento):
     pj.form.chk_livre.setChecked(False)
     pj.form.spin_episodios.setValue(3)
     pj.form.chk_teaser.setChecked(False)
+    janela.s.price_usd_per_mtok = 0.3  # o modo pago só fica disponível com preço configurado
+    pj.form.atualizar_preco()
     pj.form.btn_pago.click()
     req = pj.form.build_request()
     assert (req.n_episodios, req.derivados, req.gemini_mode) == (3, {"trailer", "stories"}, "pago")
@@ -131,7 +133,7 @@ class _PipeFalso:
         self.chamadas.append("prepare")
         return None, 3.5
 
-    def run(self, aprovado_custo=False):
+    def run(self, aprovado_custo=False, refazer_falhas=True):
         self.chamadas.append(("run", aprovado_custo))
         if self.falha:
             raise self.falha
@@ -155,6 +157,7 @@ def test_modo_pago_confirma_custo_e_roda_aprovado(qtbot, settings_tmp, tmp_path,
         pedidos.append(req)
         return _PipeFalso(chamadas)
 
+    settings_tmp.price_usd_per_mtok = 0.3
     w = _janela_com(qtbot, settings_tmp, tmp_path, factory)
     pj = w.projeto
     custos = []
@@ -182,3 +185,40 @@ def test_caminho_protegido_mostra_faixa_vermelha(qtbot, settings_tmp, tmp_path, 
     assert pj.status.banner_erro.text().startswith("Bloqueado por segurança: ")
     assert "Bloqueado por segurança" in pj.status.log.toPlainText()
     qtbot.waitUntil(lambda: pj.btn_iniciar.isEnabled(), timeout=5000)
+
+
+# ------------------------------------------------------------------ revisão final
+
+
+def test_pago_desabilitado_sem_preco(janela):
+    form = janela.projeto.form
+    assert janela.s.price_usd_per_mtok == 0
+    assert not form.btn_pago.isEnabled()
+    assert "preço por milhão de tokens" in form.btn_pago.toolTip()
+    assert form.modo() == "gratis"
+    janela.s.price_usd_per_mtok = 0.5
+    janela._config_salva()
+    assert form.btn_pago.isEnabled()
+
+
+def test_retomada_automatica_nao_refaz_falhas(janela, evento):
+    pj = janela.projeto
+    pj.set_event_folder(evento)
+    pj._req = pj.form.build_request()
+    pj._ultima = ("run", False, None)
+    visto = []
+    pj._start = lambda *a, **k: visto.append((a, k))
+    pj._retomar()
+    assert visto == [(("run", False, None), {"refazer_falhas": False})]
+
+
+def test_fechar_com_tarefa_auxiliar_pergunta(janela, monkeypatch):
+    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtWidgets import QMessageBox
+    perguntas = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: perguntas.append(a) or QMessageBox.No)
+    monkeypatch.setattr(janela.runner, "ativo", lambda: True)  # ex.: índice de trilhas rodando
+    e = QCloseEvent()
+    janela.closeEvent(e)
+    assert perguntas and not e.isAccepted()

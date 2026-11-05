@@ -14,6 +14,8 @@ from roteiro_ia.ui.abas import ConfigTab, EstiloTab, TrilhasTab
 from roteiro_ia.ui.projeto import PipelineFactory, ProjetoTab
 from roteiro_ia.ui.worker import Runner
 
+WAIT_ON_EXIT_MS = 5000
+
 
 def load_theme() -> str:
     """QSS do pacote, com {ICONES} trocado pela pasta dos ícones SVG (url() precisa de caminho)."""
@@ -60,14 +62,16 @@ class MainWindow(QMainWindow):
 
     def _config_salva(self) -> None:
         self.trilhas.textos()
+        self.projeto.form.atualizar_preco()
         if not self.projeto.rodando:
             self.projeto.form.combo_disco.setCurrentText(self.s.work_drive)
 
     def closeEvent(self, e) -> None:
-        if self.projeto.rodando or self.projeto.timer_retomar.isActive():
+        # runner.ativo(): também tarefas auxiliares (índice de trilhas, estilo, estimativa)
+        if self.projeto.rodando or self.projeto.timer_retomar.isActive() or self.runner.ativo():
             r = QMessageBox.question(
                 self, "Fechar o Roteiro IA",
-                "O processamento está em andamento. Fechar mesmo assim?\n\nDa próxima vez, use "
+                "Há um processamento em andamento. Fechar mesmo assim?\n\nDa próxima vez, use "
                 "\"Continuar projeto existente…\" para seguir de onde parou.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r != QMessageBox.Yes:
@@ -94,7 +98,8 @@ def main() -> int:
         if w.sair_com_tarefas:
             # o pipeline é retomável: encerra sem esperar a etapa atual terminar
             os._exit(code)
-        w.runner.wait_all()
+        if not w.runner.wait_all(WAIT_ON_EXIT_MS):
+            os._exit(code)  # não trava a saída esperando uma tarefa presa
     return code
 
 
