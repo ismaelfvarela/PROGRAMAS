@@ -25,9 +25,13 @@ dependencies = [
 
 [project.scripts]
 roteiro-ia = "roteiro_ia.cli:main"
+roteiro-ia-janela = "roteiro_ia.ui.app:main"
 
 [dependency-groups]
-dev = ["pytest"]
+dev = [
+    "pytest",
+    "pytest-qt>=4.5.0",
+]
 
 [build-system]
 requires = ["hatchling"]
