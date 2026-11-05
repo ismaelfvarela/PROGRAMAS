@@ -183,3 +183,84 @@ def test_real_json_simples():
     c = GeminiClient(s)
     flash, _ = c.pick_default_models()
     assert c.generate_json(flash, [], Out, 'Responda {"ok": true}').ok is True
+
+
+# ------------------------------------------------------------------ revisão final
+
+
+def test_erro_de_transporte_retenta(monkeypatch):
+    import httpx
+    sleeps = []
+    monkeypatch.setattr(gc, "_sleep", sleeps.append)
+    c, be = mk([httpx.ConnectError("rede caiu"), httpx.ReadTimeout("lento"), ConnectionError("x"),
+                '{"ok": true}'])
+    assert c.generate_json("m", [], Out, "p").ok
+    assert sleeps == [2, 4, 8] and len(be.models.calls) == 4
+
+
+def test_erro_de_transporte_esgota(monkeypatch):
+    import httpx
+    monkeypatch.setattr(gc, "_sleep", lambda s: None)
+    c, be = mk([httpx.ConnectError("rede")] * 10)
+    with pytest.raises(httpx.ConnectError):
+        c.generate_json("m", [], Out, "p")
+    assert len(be.models.calls) == gc.MAX_TRANSPORT_RETRIES
+
+
+def test_quota_diaria_marcada():
+    c, _ = mk([err429("Quota exceeded PerDay")])
+    with pytest.raises(QuotaPaused) as e:
+        c.generate_json("m", [], Out, "p")
+    assert e.value.daily is True
+    c2, _ = mk([err429()])
+    with pytest.raises(QuotaPaused) as e2:
+        c2.generate_json("m", [], Out, "p")
+    assert e2.value.daily is False
+
+
+class FilesComErro:
+    def __init__(self, first):
+        self.first = list(first)
+        self.deleted = []
+
+    def upload(self, *, file, config=None):
+        if self.first:
+            raise self.first.pop(0)
+        return SimpleNamespace(name="files/abc", state="ACTIVE", uri="u")
+
+    def delete(self, *, name, config=None):
+        self.deleted.append(name)
+        raise RuntimeError("já apagado")
+
+
+def test_upload_429_gratis_pausa(tmp_path):
+    c, _ = mk([], files=FilesComErro([err429()]))
+    with pytest.raises(QuotaPaused):
+        c.upload(tmp_path / "a.mp4")
+
+
+def test_upload_transporte_retenta(monkeypatch, tmp_path):
+    import httpx
+    monkeypatch.setattr(gc, "_sleep", lambda s: None)
+    c, _ = mk([], files=FilesComErro([httpx.ConnectError("x")]))
+    assert c.upload(tmp_path / "a.mp4").name == "files/abc"
+
+
+def test_delete_file_ignora_erros():
+    f = FilesComErro([])
+    c, _ = mk([], files=f)
+    c.delete_file(SimpleNamespace(name="files/abc"))
+    assert f.deleted == ["files/abc"]
+    c.delete_file("sem nome")  # nada a apagar, sem erro
+
+
+def test_count_tokens():
+    class M(FakeModels):
+        def count_tokens(self, *, model, contents, config=None):
+            self.calls.append((model, contents))
+            return SimpleNamespace(total_tokens=1234)
+    s = Settings()
+    be = SimpleNamespace(models=M([]), files=None)
+    c = GeminiClient(s, backend=be)
+    assert c.count_tokens("pro", "texto") == 1234
+    assert be.models.calls == [("pro", "texto")]

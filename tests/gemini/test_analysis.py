@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,10 +30,14 @@ class FakeClient:
         self.exc = exc
         self.calls = []
         self.uploads = []
+        self.deleted = []
 
     def upload(self, path):
         self.uploads.append(path)
-        return f"file:{path}"
+        return SimpleNamespace(name=f"files/{len(self.uploads)}", uri=f"file:{path}", mime_type="video/mp4")
+
+    def delete_file(self, f):
+        self.deleted.append(f.name)
 
     def generate_json(self, model, parts, schema, prompt, max_retries=3):
         self.calls.append((model, parts, schema, prompt))
@@ -165,3 +170,102 @@ def test_lotes_de_40(tmp_path):
     c = FakeClient([FileAnalysis(segmentos=[sa(i) for i in ids[k:k + 40]]) for k in (0, 40, 80)])
     analyze_event(db, c, None, "m")
     assert len(c.calls) == 3 and len(c.uploads) == 1
+
+
+# ------------------------------------------------------------------ revisão final
+
+
+def mpause(daily=False):
+    return QuotaPaused(datetime.now(), daily=daily)
+
+
+def test_erro_qualquer_vira_falha_e_segue(tmp_path):
+    from google.genai import errors
+    db = new_db(tmp_path)
+    a = db.add_media(mi(r"A\C1.MP4"))
+    b = db.add_media(mi(r"A\C2.MP4"))
+    for mid in (a, b):
+        db.set_proxy(mid, "p.mp4", "gerado")
+    sa_ = db.add_segments([Segment(media_id=a, start_s=0, end_s=5)])
+    sb = db.add_segments([Segment(media_id=b, start_s=0, end_s=5)])
+    c = FakeClient([errors.ClientError(400, {"error": {"code": 400, "message": "ruim"}}),
+                    FileAnalysis(segmentos=[sa(sb[0])])])
+    analyze_event(db, c, None, "m")
+    f = db.list_falhas()
+    assert [x.rel_path for x in f] == [r"A\C1.MP4"] and "ruim" in f[0].msg
+    assert db.get_analysis(sb[0]) is not None and db.get_analysis(sa_[0]) is None
+
+
+def test_erro_de_rede_vira_falha_e_segue(tmp_path):
+    import httpx
+    db = new_db(tmp_path)
+    a = db.add_media(mi(r"A\C1.MP4"))
+    b = db.add_media(mi(r"B\C2.MP4"))
+    for mid in (a, b):
+        db.set_proxy(mid, "p.mp4", "gerado")
+    db.add_segments([Segment(media_id=a, start_s=0, end_s=5)])
+    sb = db.add_segments([Segment(media_id=b, start_s=0, end_s=5)])
+    c = FakeClient([httpx.ConnectError("sem rede"), FileAnalysis(segmentos=[sa(sb[0])])])
+    analyze_event(db, c, None, "m")
+    assert [x.rel_path for x in db.list_falhas()] == [r"A\C1.MP4"]
+    assert db.get_analysis(sb[0]) is not None
+
+
+def test_lote_envia_so_o_intervalo(tmp_path):
+    db = new_db(tmp_path)
+    mid = db.add_media(mi(r"A\C1.MP4", dur=1000))
+    db.set_proxy(mid, "p.mp4", "gerado")
+    ids = db.add_segments([Segment(media_id=mid, start_s=i * 10, end_s=i * 10 + 8) for i in range(45)])
+    c = FakeClient([FileAnalysis(segmentos=[sa(i) for i in ids[k:k + 40]]) for k in (0, 40)])
+    analyze_event(db, c, None, "m")
+    p1, p2 = c.calls[0][1][0], c.calls[1][1][0]
+    assert p1.file_data.file_uri == "file:p.mp4" and p1.file_data.mime_type == "video/mp4"
+    assert (p1.video_metadata.start_offset, p1.video_metadata.end_offset) == ("0.00s", "398.00s")
+    assert (p2.video_metadata.start_offset, p2.video_metadata.end_offset) == ("400.00s", "448.00s")
+    assert "400.00s" in c.calls[1][3]
+
+
+def test_apaga_arquivo_enviado_ao_terminar(env):
+    db, mid, ids = env
+    c = FakeClient([FileAnalysis(segmentos=[sa(ids[0]), sa(ids[1])])])
+    analyze_event(db, c, None, "m")
+    assert c.deleted == ["files/1"]
+    c2 = FakeClient(exc=RuntimeError("x"))
+    db2_ids = ids
+    db.add_segments([Segment(media_id=mid, start_s=20, end_s=30)])
+    analyze_event(db, c2, None, "m")
+    assert c2.deleted == ["files/1"]  # apaga mesmo quando o lote falha
+
+
+def test_tres_pausas_por_minuto_na_mesma_requisicao_viram_falha(env):
+    db, mid, ids = env
+    for _ in range(2):
+        with pytest.raises(QuotaPaused):
+            analyze_event(db, FakeClient(exc=mpause()), None, "m")
+    assert db.list_falhas() == []
+    c = FakeClient(exc=mpause())
+    analyze_event(db, c, None, "m")  # 3ª: registra falha e segue, sem pausar
+    f = db.list_falhas()
+    assert len(f) == 1 and "cota por minuto" in f[0].msg
+    # numa retomada da mesma etapa a requisição desistida não é refeita
+    db.clear_falhas("analise")
+    c4 = FakeClient(exc=mpause())
+    analyze_event(db, c4, None, "m")
+    assert c4.calls == [] and len(db.list_falhas()) == 1
+    db.clear_quota_strikes()
+    c5 = FakeClient([FileAnalysis(segmentos=[sa(ids[0]), sa(ids[1])])])
+    analyze_event(db, c5, None, "m")
+    assert db.get_analysis(ids[0]) is not None
+
+
+def test_pausa_diaria_nao_conta_e_sucesso_zera(env):
+    db, mid, ids = env
+    for _ in range(4):
+        with pytest.raises(QuotaPaused):
+            analyze_event(db, FakeClient(exc=mpause(daily=True)), None, "m")
+    with pytest.raises(QuotaPaused):
+        analyze_event(db, FakeClient(exc=mpause()), None, "m")
+    with pytest.raises(QuotaPaused):
+        analyze_event(db, FakeClient(exc=mpause()), None, "m")
+    analyze_event(db, FakeClient([FileAnalysis(segmentos=[sa(ids[0]), sa(ids[1])])]), None, "m")
+    assert db.list_falhas() == [] and db.get_analysis(ids[1]) is not None

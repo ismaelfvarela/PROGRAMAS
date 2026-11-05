@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import httpx
 import keyring
 from google import genai
 from google.genai import errors, types
@@ -38,8 +39,9 @@ def set_api_key(k: str) -> None:
 
 
 class QuotaPaused(Exception):
-    def __init__(self, resume_at: datetime, message: str = ""):
+    def __init__(self, resume_at: datetime, message: str = "", daily: bool = False):
         self.resume_at = resume_at
+        self.daily = daily  # limite diário (True) ou por minuto (False)
         super().__init__(message or f"Cota do Gemini esgotada; retomar em {resume_at:%d/%m/%Y %H:%M}.")
 
 
@@ -51,6 +53,11 @@ def _is_quota(e: Exception) -> bool:
 
 def _is_server(e: Exception) -> bool:
     return isinstance(e, errors.APIError) and isinstance(e.code, int) and 500 <= e.code < 600
+
+
+def _is_transport(e: Exception) -> bool:
+    """Queda de rede/timeout: tentada de novo com o mesmo backoff do 5xx."""
+    return isinstance(e, (httpx.TransportError, ConnectionError, TimeoutError))
 
 
 def _find_retry_info(obj) -> float | None:
@@ -125,7 +132,7 @@ class GeminiClient:
         return best("flash"), best("pro")
 
     def upload(self, path: Path):
-        f = self.backend.files.upload(file=str(path))
+        f = self._retrying(lambda: self.backend.files.upload(file=str(path)))
         waited = 0.0
         while str(getattr(f.state, "name", f.state)) != "ACTIVE":
             if str(getattr(f.state, "name", f.state)) == "FAILED":
@@ -137,24 +144,39 @@ class GeminiClient:
             f = self.backend.files.get(name=f.name)
         return f
 
-    def _call(self, model: str, contents: list, config):
-        """Uma chamada ao backend com retentativas de transporte (429 pago / 5xx), no máximo
-        MAX_TRANSPORT_RETRIES chamadas; esgotado, relança o erro."""
+    def delete_file(self, f) -> None:
+        """Apaga do Gemini um arquivo enviado; erros são ignorados (ele expira sozinho em 48 h)."""
+        name = getattr(f, "name", None)
+        if not name:
+            return
+        try:
+            self.backend.files.delete(name=name)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def count_tokens(self, model: str, text: str) -> int:
+        resp = self._retrying(lambda: self.backend.models.count_tokens(model=model, contents=text))
+        return int(getattr(resp, "total_tokens", 0) or 0)
+
+    def _retrying(self, fn):
+        """Executa `fn` com retentativas de transporte (429 pago / 5xx / rede), no máximo
+        MAX_TRANSPORT_RETRIES chamadas; esgotado, relança o erro. 429 no modo grátis → QuotaPaused."""
         attempts = 0
         while True:
             try:
-                return self.backend.models.generate_content(model=model, contents=contents, config=config)
+                return fn()
             except Exception as e:  # noqa: BLE001
                 quota = _is_quota(e)
-                if not quota and not _is_server(e):
+                if not quota and not _is_server(e) and not _is_transport(e):
                     raise
                 if quota and self.s.gemini_mode == "gratis":
                     now = datetime.now(LA)
-                    if _is_daily(e):
+                    daily = _is_daily(e)
+                    if daily:
                         resume = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
                     else:
                         resume = now + timedelta(seconds=_retry_delay_s(e))
-                    raise QuotaPaused(resume) from e
+                    raise QuotaPaused(resume, daily=daily) from e
                 attempts += 1
                 if attempts >= MAX_TRANSPORT_RETRIES:
                     raise
@@ -162,6 +184,10 @@ class GeminiClient:
                 if quota:
                     wait = max(wait, _retry_delay_s(e))
                 _sleep(min(wait, 60.0))
+
+    def _call(self, model: str, contents: list, config):
+        return self._retrying(
+            lambda: self.backend.models.generate_content(model=model, contents=contents, config=config))
 
     def generate_json(self, model: str, parts: list, schema: type[BaseModel], prompt: str,
                       max_retries: int = 3) -> BaseModel:

@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS stages(
   name TEXT PRIMARY KEY, status TEXT NOT NULL, detail TEXT DEFAULT '', updated_at TEXT);
 CREATE TABLE IF NOT EXISTS falhas(
   id INTEGER PRIMARY KEY AUTOINCREMENT, etapa TEXT, rel_path TEXT, msg TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS quota_strikes(
+  chave TEXT PRIMARY KEY, n INTEGER NOT NULL);
 """
 
 _MEDIA_COLS = [
@@ -227,6 +229,25 @@ class ProjectDB:
 
     def count_falhas(self, etapa: str) -> int:
         return self._c.execute("SELECT COUNT(*) FROM falhas WHERE etapa=?", (etapa,)).fetchone()[0]
+
+    # --- pausas por minuto seguidas na mesma requisição do Gemini
+    def quota_strikes(self, chave: str) -> int:
+        r = self._c.execute("SELECT n FROM quota_strikes WHERE chave=?", (chave,)).fetchone()
+        return int(r["n"]) if r else 0
+
+    def bump_quota_strike(self, chave: str) -> int:
+        n = self.quota_strikes(chave) + 1
+        self._c.execute("INSERT OR REPLACE INTO quota_strikes(chave,n) VALUES(?,?)", (chave, n))
+        self._c.commit()
+        return n
+
+    def clear_quota_strike(self, chave: str) -> None:
+        self._c.execute("DELETE FROM quota_strikes WHERE chave=?", (chave,))
+        self._c.commit()
+
+    def clear_quota_strikes(self) -> None:
+        self._c.execute("DELETE FROM quota_strikes")
+        self._c.commit()
 
     def list_falhas(self) -> list[Falha]:
         rows = self._c.execute("SELECT * FROM falhas ORDER BY id").fetchall()

@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from google.genai import types
 from pydantic import BaseModel
 
 from roteiro_ia.db import ProjectDB
@@ -18,6 +19,9 @@ MOMENTOS = ["preparação noiva", "preparação noivo", "first look", "entrada",
             "despedida", "pré-wedding", "despedida de solteiro", "lua de mel", "extra"]
 BATCH = 40
 MAX_ATTEMPTS = 3
+MAX_MINUTE_PAUSES = 3  # pausas por minuto seguidas na mesma requisição antes de desistir dela
+_MSG_MINUTO = ("O Gemini pausou 3 vezes seguidas por cota por minuto neste trecho; "
+               "a mídia ficou sem análise (será tentada de novo ao clicar em Continuar).")
 _BETTER = (Role.mesa, Role.lapela_noivo, Role.lapela_noiva, Role.audio_ambiente)
 
 
@@ -61,7 +65,8 @@ def _style_text(style: StyleProfile) -> str:
 
 
 def build_prompt(media: MediaInfo, segments: list[Segment], transcripts: dict[int, str],
-                 style: StyleProfile | None = None) -> str:
+                 style: StyleProfile | None = None,
+                 clip: tuple[float, float] | None = None) -> str:
     linhas = []
     for s in segments:
         fala = transcripts.get(s.id) or "(sem fala transcrita)"
@@ -71,6 +76,8 @@ def build_prompt(media: MediaInfo, segments: list[Segment], transcripts: dict[in
     partes = [
         "Você é um assistente de edição de vídeos de casamento da produtora Fokuss.",
         f"{fonte} Arquivo: {media.rel_path} (duração {media.duration_s:.1f}s).",
+        *([f"O vídeo enviado é só o trecho de {clip[0]:.2f}s a {clip[1]:.2f}s do arquivo; "
+           "mesmo assim, responda com tempos relativos ao arquivo inteiro."] if clip else []),
         "Analise cada segmento abaixo e devolva EXATAMENTE um item por segmento, usando o mesmo segment_id.",
         "Segmentos:", *linhas,
         "Regras:",
@@ -122,6 +129,50 @@ def _ask(c, model: str, parts: list, prompt: str, ids: list[int]) -> tuple[FileA
     return None, msg
 
 
+def _clip_part(f, start_s: float, end_s: float):
+    """Só o intervalo do lote: o Gemini não reprocessa o vídeo inteiro a cada chamada."""
+    return types.Part(
+        file_data=types.FileData(file_uri=getattr(f, "uri", None) or str(f),
+                                 mime_type=getattr(f, "mime_type", None) or "video/mp4"),
+        video_metadata=types.VideoMetadata(start_offset=f"{start_s:.2f}s", end_offset=f"{end_s:.2f}s"))
+
+
+def _analyze_media(db: ProjectDB, c, m: MediaInfo, todo: list[Segment], uploaded, model: str,
+                   style: StyleProfile | None) -> None:
+    for k in range(0, len(todo), BATCH):
+        batch = todo[k:k + BATCH]
+        key = f"{m.id}:{batch[0].id}"
+        if db.quota_strikes(key) >= MAX_MINUTE_PAUSES:
+            db.add_falha("analise", m.rel_path, _MSG_MINUTO)
+            return
+        clip = (batch[0].start_s, batch[-1].end_s) if uploaded is not None else None
+        parts = [_clip_part(uploaded, *clip)] if clip else []
+        speech = {s.id: segment_speech(db, m, s) for s in batch}
+        prompt = build_prompt(m, batch, speech, style, clip=clip)
+        try:
+            resp, msg = _ask(c, model, parts, prompt, [s.id for s in batch])
+        except QuotaPaused as e:
+            if e.daily or db.bump_quota_strike(key) < MAX_MINUTE_PAUSES:
+                raise
+            db.add_falha("analise", m.rel_path, _MSG_MINUTO)
+            return
+        except Exception as e:  # noqa: BLE001 — erro da API/rede: falha desta mídia, segue
+            db.clear_quota_strike(key)
+            db.add_falha("analise", m.rel_path, f"Falha na análise pelo Gemini: {e}")
+            return
+        db.clear_quota_strike(key)
+        if resp is None:
+            db.add_falha("analise", m.rel_path,
+                         f"O Gemini não devolveu uma análise válida após {MAX_ATTEMPTS} tentativas: {msg}")
+            return
+        by_id = {s.id: s for s in batch}
+        for a in resp.segmentos:
+            seg = by_id[a.segment_id]
+            db.set_analysis(a.model_copy(update={
+                "melhores_trechos": _clamp(a.melhores_trechos, seg),
+                "falas_chave": _clamp(a.falas_chave, seg)}))
+
+
 def analyze_event(db: ProjectDB, c, p: EventPaths, model: str, style: StyleProfile | None = None,
                   on_progress: Callable[[int, int, str], None] | None = None) -> None:
     medias = [m for m in db.list_media() if m.role not in (Role.ignorar, Role.outro_dia)]
@@ -132,31 +183,25 @@ def analyze_event(db: ProjectDB, c, p: EventPaths, model: str, style: StyleProfi
         todo = [s for s in db.list_segments(m.id) if db.get_analysis(s.id) is None]
         if not todo:
             continue
-        parts: list = []
+        uploaded = None
         if m.kind == "video":
             proxy = db.proxy_for(m.id)
             if not proxy:
                 db.add_falha("analise", m.rel_path, "Não foi possível analisar: sem proxy para este vídeo.")
                 continue
             try:
-                parts = [c.upload(Path(proxy))]
+                uploaded = c.upload(Path(proxy))
             except QuotaPaused:
                 raise
             except Exception as e:  # noqa: BLE001
                 db.add_falha("analise", m.rel_path, f"Falha ao enviar o vídeo ao Gemini: {e}")
                 continue
-        for k in range(0, len(todo), BATCH):
-            batch = todo[k:k + BATCH]
-            speech = {s.id: segment_speech(db, m, s) for s in batch}
-            prompt = build_prompt(m, batch, speech, style)
-            resp, msg = _ask(c, model, parts, prompt, [s.id for s in batch])
-            if resp is None:
-                db.add_falha("analise", m.rel_path,
-                             f"O Gemini não devolveu uma análise válida após {MAX_ATTEMPTS} tentativas: {msg}")
-                break
-            by_id = {s.id: s for s in batch}
-            for a in resp.segmentos:
-                seg = by_id[a.segment_id]
-                db.set_analysis(a.model_copy(update={
-                    "melhores_trechos": _clamp(a.melhores_trechos, seg),
-                    "falas_chave": _clamp(a.falas_chave, seg)}))
+        try:
+            _analyze_media(db, c, m, todo, uploaded, model, style)
+        finally:
+            delete = getattr(c, "delete_file", None)
+            if uploaded is not None and delete is not None:
+                try:
+                    delete(uploaded)
+                except Exception:  # noqa: BLE001
+                    pass
