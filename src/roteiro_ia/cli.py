@@ -226,6 +226,9 @@ _CMDS = {"novo": _cmd_novo, "continuar": _cmd_continuar, "ajustar": _cmd_ajustar
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):  # console cp850/cp1252: não quebra com acentos
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     a = build_parser().parse_args(argv)
     cfg = Path(a.config)
     try:

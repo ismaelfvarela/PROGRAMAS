@@ -34,6 +34,8 @@ def load_settings(path: Path | None = None) -> Settings:
 
 
 def save_settings(s: Settings, path: Path | None = None) -> None:
-    path = path or DEFAULT_CONFIG_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(s.model_dump_json(indent=2), encoding="utf-8")
+    from .safety import safe_mkdir, safe_write_text  # import tardio: safety importa config
+
+    path = Path(path or DEFAULT_CONFIG_PATH)
+    safe_mkdir(path.parent, s)
+    safe_write_text(path, s.model_dump_json(indent=2), s)

@@ -353,3 +353,80 @@ def test_cli_continuar_sem_projeto_erro(cli_env, capsys):
     cfg, src = cli_env
     assert cli.main(["--config", str(cfg), "continuar", str(src)]) == 1
     assert "novo" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ falhas por arquivo / rede
+
+
+def test_origem_some_durante_etapa_repete(tmp_path, sleeps):
+    pipe, calls, _ = mk_pipe(tmp_path)
+    src = pipe.req.source_dir
+    hidden = tmp_path / "R" / "escondida"
+    n = {"x": 0}
+
+    def proxies():
+        n["x"] += 1
+        if n["x"] == 1:  # NAS cai no meio: falha registrada por arquivo e a origem some
+            pipe.db.add_falha("proxies", "A\C1.MP4", "rede caiu")
+            src.rename(hidden)
+            pipe._restore = lambda: hidden.rename(src)
+        calls.append("proxies")
+
+    def fake_sleep(sec):
+        sleeps.append(sec)
+        pipe._restore()  # a origem volta antes da nova tentativa
+    pipeline._sleep = fake_sleep
+    pipe.impl["proxies"] = proxies
+    assert pipe.run() == "concluido"
+    assert sleeps == [10] and n["x"] == 2
+    assert pipe.db.stage_status("proxies") == "feito" and pipe.db.stage_detail("proxies") == ""
+    assert pipe.db.list_falhas() == []
+    pipe.close()
+
+
+def test_etapa_com_falhas_roda_de_novo(tmp_path, sleeps):
+    pipe, calls, _ = mk_pipe(tmp_path)
+    n = {"x": 0}
+
+    def audio():
+        n["x"] += 1
+        calls.append("audio")
+        if n["x"] == 1:
+            pipe.db.add_falha("audio", "A\C1.MP4", "erro 1")
+            pipe.db.add_falha("audio", "A\C2.MP4", "erro 2")
+    pipe.impl["audio"] = audio
+    assert pipe.run() == "concluido"
+    assert pipe.db.stage_status("audio") == "feito"
+    assert pipe.db.stage_detail("audio") == "falhas=2"
+    calls.clear()
+    assert pipe.run() == "concluido"
+    assert calls == ["audio"]  # só a etapa com falhas é refeita
+    assert pipe.db.stage_detail("audio") == "" and pipe.db.list_falhas() == []
+    pipe.close()
+
+
+def test_falhas_nao_duplicam_entre_tentativas(tmp_path, sleeps):
+    pipe, calls, _ = mk_pipe(tmp_path)
+    n = {"x": 0}
+
+    def sync():
+        n["x"] += 1
+        pipe.db.add_falha("sync", "B\C1.MP4", "sem sincronia")
+        if n["x"] < 3:
+            raise OSError("rede")
+    pipe.db.add_falha("gemini", "A\\C1.MP4", "de outra etapa")
+    pipe.impl["sync"] = sync
+    assert pipe.run() == "concluido"
+    assert sorted((f.etapa, f.msg) for f in pipe.db.list_falhas()) == [
+        ("gemini", "de outra etapa"), ("sync", "sem sincronia")]
+    assert pipe.db.stage_detail("sync") == "falhas=1"
+    pipe.close()
+
+
+def test_revise_antes_da_analise_erro(tmp_path, sleeps):
+    pipe, calls, _ = mk_pipe(tmp_path)
+    with pytest.raises(RuntimeError) as ei:
+        pipe.revise("mais emoção")
+    assert "processamento completo" in str(ei.value)
+    assert calls == []
+    pipe.close()

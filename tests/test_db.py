@@ -85,3 +85,11 @@ def test_proxy_e_falhas(db):
 def test_db_em_R_bloqueado():
     with pytest.raises(ProtectedPathError):
         ProjectDB(Path("R:\\projeto\\p.db"), Settings())
+
+
+def test_clear_falhas_por_etapa(db):
+    db.add_falha("proxies", "A\1.MP4", "x")
+    db.add_falha("proxies", "A\2.MP4", "y")
+    db.add_falha("audio", "A\1.MP4", "z")
+    db.clear_falhas("proxies")
+    assert [(f.etapa, f.msg) for f in db.list_falhas()] == [("audio", "z")]

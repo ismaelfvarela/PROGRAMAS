@@ -3,6 +3,7 @@ quedas de rede/disco (NAS). O estado de cada etapa fica em `stages` do banco do 
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -51,6 +52,9 @@ STAGE_LABELS = {
     "premiere": "XML e job do Premiere",
 }
 GEMINI_STAGES = {"estilo", "analise", "roteiro"}
+# etapas que registram falhas por arquivo (o nome da etapa é o `etapa` da falha)
+FALHA_STAGES = {"inventario", "proxies", "audio", "sync", "transcricao", "cenas", "analise"}
+FALHAS_PREFIX = "falhas="
 PROJECT_FILE = "projeto.json"
 
 Events = Callable[[str, str, float], None]
@@ -229,6 +233,8 @@ class Pipeline:
 
     def revise(self, pedido: str, aprovado_custo: bool = False) -> None:
         """Regera roteiro, PDF e XML a partir do banco; nunca refaz etapas de mídia."""
+        if self.db.stage_status("analise") != "feito":
+            raise PipelineError("Rode o processamento completo antes de pedir ajustes no roteiro.")
         self._aprovado = aprovado_custo
         self._pedido = pedido
         try:
@@ -240,7 +246,8 @@ class Pipeline:
 
     def _run_stage(self, name: str, force: bool = False) -> None:
         db = self.db
-        if not force and db.stage_status(name) == "feito":
+        if (not force and db.stage_status(name) == "feito"
+                and not db.stage_detail(name).startswith(FALHAS_PREFIX)):
             return
         if name in GEMINI_STAGES:
             self._check_cost()
@@ -250,7 +257,15 @@ class Pipeline:
         attempt = 0
         while True:
             try:
+                if name in FALHA_STAGES:
+                    db.clear_falhas(name)  # cada tentativa registra as suas: sem duplicatas
                 detail = self.impl[name]() or ""
+                if not os.path.isdir(self.source):
+                    # NAS caiu no meio da etapa: os arquivos perdidos viraram falhas; repete
+                    raise OSError(f"Pasta de origem inacessível: {self.source}")
+                n_falhas = db.count_falhas(name) if name in FALHA_STAGES else 0
+                if n_falhas:
+                    detail = f"{FALHAS_PREFIX}{n_falhas}"
                 break
             except QuotaPaused as e:
                 self.resume_at = e.resume_at

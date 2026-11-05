@@ -221,6 +221,13 @@ class ProjectDB:
             (etapa, rel_path, msg, _now()))
         self._c.commit()
 
+    def clear_falhas(self, etapa: str) -> None:
+        self._c.execute("DELETE FROM falhas WHERE etapa=?", (etapa,))
+        self._c.commit()
+
+    def count_falhas(self, etapa: str) -> int:
+        return self._c.execute("SELECT COUNT(*) FROM falhas WHERE etapa=?", (etapa,)).fetchone()[0]
+
     def list_falhas(self) -> list[Falha]:
         rows = self._c.execute("SELECT * FROM falhas ORDER BY id").fetchall()
         return [Falha(**dict(r)) for r in rows]
