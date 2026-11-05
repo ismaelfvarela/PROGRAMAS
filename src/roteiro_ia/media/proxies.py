@@ -13,7 +13,7 @@ from pathlib import Path
 
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
-from roteiro_ia.media.probe import _fraction, _rotation, probe
+from roteiro_ia.media.probe import _rotation, _video_fps, probe
 from roteiro_ia.media.tools import ffmpeg_bin
 from roteiro_ia.models import MediaInfo
 from roteiro_ia.paths import EventPaths
@@ -72,7 +72,7 @@ def lrf_compatible(lrf: Path, m: MediaInfo) -> bool:
         dur = float(info.get("format", {}).get("duration") or 0)
     except Exception:  # noqa: BLE001 - arquivo ilegível = incompatível
         return False
-    num, den = _fraction(v.get("r_frame_rate"))
+    num, den = _video_fps(v)  # mesma regra de FPS do inventário
     if num * (m.fps_den or 1) != m.fps_num * den:
         return False
     w, h = int(v.get("width", 0)), int(v.get("height", 0))

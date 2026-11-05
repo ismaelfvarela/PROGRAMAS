@@ -138,3 +138,41 @@ def test_scan_sem_ffprobe_levanta_erro_unico(tmp_path, db, monkeypatch):
     with pytest.raises(RuntimeError, match="ffprobe"):
         scan(src, _asg(("A", Role.camera)), db)
     assert db.list_falhas() == []
+
+
+# --- revisão final: ffprobe com tempo limite e FPS de r_frame_rate suspeito
+
+
+def test_ffprobe_tem_tempo_limite(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    from roteiro_ia.media import probe as pr
+    visto = {}
+
+    def fake_run(cmd, **kw):
+        visto.update(kw)
+        raise sp.TimeoutExpired(cmd, kw.get("timeout"))
+    monkeypatch.setattr(pr.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="ffprobe"):
+        pr.probe(tmp_path / "x.mp4")
+    assert visto["timeout"] == 120
+
+
+@pytest.mark.parametrize("r, avg, esperado", [
+    ("30000/1001", "30000/1001", (30000, 1001)),
+    ("90000/1", "30000/1001", (30000, 1001)),     # r_frame_rate absurdo (> 120)
+    ("60/1", "30/1", (30, 1)),                     # difere mais de 5% do avg
+    ("30/1", "2997/100", (30, 1)),                 # diferença pequena: mantém r_frame_rate
+    ("0/0", "25/1", (25, 1)),
+])
+def test_fps_usa_avg_quando_r_suspeito(monkeypatch, tmp_path, r, avg, esperado):
+    from roteiro_ia.media import probe as pr
+    info = {"format": {"duration": "10"},
+            "streams": [{"codec_type": "video", "width": 1920, "height": 1080,
+                         "r_frame_rate": r, "avg_frame_rate": avg},
+                        {"codec_type": "audio", "channels": 2}]}
+    monkeypatch.setattr(pr, "probe", lambda p: info)
+    root = tmp_path
+    m = pr.media_info_from_probe(root / "A" / "C1.MP4", root,
+                                 FolderAssignment(folder="A", role=Role.camera))
+    assert (m.fps_num, m.fps_den) == esperado

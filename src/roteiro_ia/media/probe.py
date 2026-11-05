@@ -10,11 +10,20 @@ from roteiro_ia.media.tools import ffprobe_bin
 from roteiro_ia.models import FolderAssignment, MediaInfo, Role
 
 
+PROBE_TIMEOUT_S = 120  # arquivo travado no NAS não segura o inventário
+MAX_FPS = 120.0
+FPS_TOLERANCE = 0.05
+
+
 def probe(path: Path) -> dict:
-    r = subprocess.run(
-        [ffprobe_bin(), "-v", "error", "-print_format", "json",
-         "-show_format", "-show_streams", str(path)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        r = subprocess.run(
+            [ffprobe_bin(), "-v", "error", "-print_format", "json",
+             "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=PROBE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"ffprobe demorou mais de {PROBE_TIMEOUT_S} s para ler o arquivo") from None
     if r.returncode != 0:
         raise RuntimeError(f"ffprobe falhou: {r.stderr.strip() or 'arquivo ilegível'}")
     data = json.loads(r.stdout or "{}")
@@ -68,6 +77,19 @@ def _tag(info: dict, key: str) -> str | None:
     return None
 
 
+def _video_fps(video: dict) -> tuple[int, int]:
+    """r_frame_rate, salvo quando é absurdo (> 120) ou difere mais de 5% de avg_frame_rate."""
+    num, den = _fraction(video.get("r_frame_rate"))
+    anum, aden = _fraction(video.get("avg_frame_rate"))
+    if num == 0:
+        return anum, aden
+    if anum > 0:
+        r, avg = num / den, anum / aden
+        if r > MAX_FPS or abs(r - avg) / avg > FPS_TOLERANCE:
+            return anum, aden
+    return num, den
+
+
 def media_info_from_probe(path: Path, root: Path, a: FolderAssignment) -> MediaInfo:
     """Monta o MediaInfo. Com rotação 90/270, width/height ficam como armazenados
     (sem trocar); a orientação é tratada na etapa de proxies."""
@@ -87,9 +109,7 @@ def media_info_from_probe(path: Path, root: Path, a: FolderAssignment) -> MediaI
         role, day = a.role, a.day_label
     dur = info.get("format", {}).get("duration") or (video or audio).get("duration") or 0
     if video:
-        num, den = _fraction(video.get("r_frame_rate"))
-        if num == 0:
-            num, den = _fraction(video.get("avg_frame_rate"))
+        num, den = _video_fps(video)
         w, h, rot = int(video.get("width", 0)), int(video.get("height", 0)), _rotation(video)
     else:
         num, den, w, h, rot = 0, 1, 0, 0, 0

@@ -93,3 +93,55 @@ def test_words_between():
         Word(text="c", start_s=2, end_s=3)])
     assert words_between(t, 1, 3) == "b c"
     assert words_between(t, 5, 6) == ""
+
+
+# --- revisão final: CPU só para erros de CUDA
+
+
+class _FakeWhisper:
+    criados = []
+    erros = {}  # device -> lista de exceções a levantar em transcribe
+
+    def __init__(self, name, device, compute_type):
+        self.device = device
+        _FakeWhisper.criados.append(device)
+
+    def transcribe(self, path, **kw):
+        fila = _FakeWhisper.erros.get(self.device, [])
+        if fila:
+            raise fila.pop(0)
+        return iter([]), None
+
+
+@pytest.fixture
+def fake_whisper(monkeypatch):
+    import sys
+    import types
+    mod = types.ModuleType("faster_whisper")
+    mod.WhisperModel = _FakeWhisper
+    monkeypatch.setitem(sys.modules, "faster_whisper", mod)
+    _FakeWhisper.criados = []
+    _FakeWhisper.erros = {}
+    return _FakeWhisper
+
+
+def test_erro_comum_nao_cai_para_cpu(fake_whisper, tmp_path):
+    from roteiro_ia.transcribe import WhisperTranscriber
+    fake_whisper.erros["cuda"] = [RuntimeError("arquivo corrompido: invalid data")]
+    t = WhisperTranscriber()
+    with pytest.raises(RuntimeError):
+        t.transcribe(tmp_path / "a.wav")
+    assert t.device == "cuda" and fake_whisper.criados == ["cuda"]
+    assert t.transcribe(tmp_path / "b.wav") == []  # o próximo arquivo segue na GPU
+    assert fake_whisper.criados == ["cuda"]
+
+
+@pytest.mark.parametrize("msg", ["CUDA failed with error out of memory",
+                                 "Could not load library cudnn_ops_infer64_8.dll",
+                                 "cuBLAS failed", "CUDA_ERROR_LAUNCH_FAILED"])
+def test_erro_de_cuda_cai_para_cpu(fake_whisper, tmp_path, msg):
+    from roteiro_ia.transcribe import WhisperTranscriber
+    fake_whisper.erros["cuda"] = [RuntimeError(msg)]
+    t = WhisperTranscriber()
+    assert t.transcribe(tmp_path / "a.wav") == []
+    assert t.device == "cpu" and fake_whisper.criados == ["cuda", "cpu"]

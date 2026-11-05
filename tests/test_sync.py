@@ -194,3 +194,97 @@ def test_retoma_sem_refazer_e_falha_nao_derruba(tmp_path, db):
     b = db.get_sync(bad)
     assert b.method == "hora" and b.timeline_start_s == pytest.approx(5)
     assert any(f.etapa == "sync" and f.rel_path == "CAM A\\SUMIU.MP4" for f in db.list_falhas())
+
+
+# --- revisão final: proxies, preferência de referência, cache e gravação incremental
+
+_BASE = np.random.default_rng(42).standard_normal(SR * 300).astype(np.float32)
+
+
+def _cenario(tmp_path, db, monkeypatch, explode_em=None):
+    from roteiro_ia import sync as sy
+    src = tmp_path / "src"
+    prx = tmp_path / "prx"
+    prx.mkdir()
+    mesa = db.add_media(_info(r"M\mesa.wav", Role.mesa, "audio", 230.0, T0))
+    a = db.add_media(_info(r"A\C1.MP4", Role.camera, "video", 150.0, T0 + timedelta(seconds=150)))
+    b = db.add_media(_info(r"B\C2.MP4", Role.camera, "video", 60.0, T0 + timedelta(seconds=200)))
+    pa, pb = prx / "C1_Proxy.mp4", prx / "C2_Proxy.mp4"
+    for p in (pa, pb):
+        p.write_bytes(b"x")
+    db.set_proxy(a, str(pa), "gerado")
+    db.set_proxy(b, str(pb), "gerado")
+    inicio = {str(src / "M" / "mesa.wav"): (0.0, 230.0), str(pa): (150.0, 150.0),
+              str(pb): (200.0, 60.0)}
+    chamadas = []
+
+    def fake_load(path, sr=8000, start_s=0.0, dur_s=None):
+        chamadas.append((str(path), round(start_s, 3), None if dur_s is None else round(dur_s, 3)))
+        if explode_em is not None and str(path) == explode_em:
+            raise KeyboardInterrupt
+        t0, dur = inicio[str(path)]
+        dur_s = dur - start_s if dur_s is None else min(dur_s, dur - start_s)
+        i0 = int((t0 + start_s) * SR)
+        return _BASE[i0:i0 + int(dur_s * SR)].copy()
+
+    monkeypatch.setattr(sy, "load_mono", fake_load)
+    return src, chamadas, (mesa, a, b), (pa, pb)
+
+
+def test_sync_le_audio_dos_proxies(tmp_path, db, monkeypatch):
+    src, chamadas, (mesa, a, b), (pa, pb) = _cenario(tmp_path, db, monkeypatch)
+    sync_event(db, src)
+    lidos = {c[0] for c in chamadas}
+    assert lidos == {str(src / "M" / "mesa.wav"), str(pa), str(pb)}  # originais de vídeo: nunca
+    assert db.get_sync(a).timeline_start_s == pytest.approx(150.0, abs=0.05)
+    assert db.get_sync(b).timeline_start_s == pytest.approx(200.0, abs=0.05)
+    assert db.get_sync(b).method == "audio"
+
+
+def test_sync_prefere_referencia_so_audio(tmp_path, db, monkeypatch):
+    from roteiro_ia import sync as sy
+    src, chamadas, (mesa, a, b), (pa, pb) = _cenario(tmp_path, db, monkeypatch)
+    tentativas = []
+    orig = sy._Day._against
+
+    def espia(self, ref, ws, we, ex, off_m):
+        tentativas.append(ref.rel_path)
+        return orig(self, ref, ws, we, ex, off_m)
+    monkeypatch.setattr(sy._Day, "_against", espia)
+    sync_event(db, src)
+    # A e depois C2; C2 sobrepõe mais a câmera A (60 s) que a mesa (30 s), mas a mesa vem antes
+    assert tentativas[:2] == [r"M\mesa.wav", r"M\mesa.wav"]
+
+
+def test_sync_cache_por_janela(tmp_path, db, monkeypatch):
+    from roteiro_ia import sync as sy
+    src, chamadas, (mesa, a, b), _ = _cenario(tmp_path, db, monkeypatch)
+    medias = db.list_media()
+    d = sy._Day(db, src, medias, 3.0, 60.0, 300.0)
+    d.pos[mesa] = SyncResult(media_id=mesa, day_label="principal", timeline_start_s=0.0,
+                             confidence=1000.0, method="audio")
+    m = db.get_media(mesa)
+    ex = _BASE[SR * 10:SR * 20]
+    d._against(m, 0.0, 100.0, ex, 0.0)
+    d._against(m, 0.0, 100.0, ex, 0.0)
+    assert len([c for c in chamadas if c[0] == str(src / "M" / "mesa.wav")]) == 1
+
+
+def test_sync_grava_cada_resultado_na_hora(tmp_path, db, monkeypatch):
+    src, chamadas, (mesa, a, b), (pa, pb) = _cenario(tmp_path, db, monkeypatch, explode_em="__pb__")
+    from roteiro_ia import sync as sy
+    orig = sy.load_mono
+
+    def explode(path, *a_, **k):
+        if str(path) == str(pb):
+            raise KeyboardInterrupt  # o processo cai no meio do dia
+        return orig(path, *a_, **k)
+    monkeypatch.setattr(sy, "load_mono", explode)
+    with pytest.raises(KeyboardInterrupt):
+        sync_event(db, src)
+    assert db.get_sync(mesa) is not None and db.get_sync(a) is not None
+    assert db.get_sync(b) is None
+    monkeypatch.setattr(sy, "load_mono", orig)
+    sync_event(db, src)  # retoma: só C2 é calculada
+    assert db.get_sync(a).timeline_start_s == pytest.approx(150.0, abs=0.05)
+    assert db.get_sync(b).timeline_start_s == pytest.approx(200.0, abs=0.05)

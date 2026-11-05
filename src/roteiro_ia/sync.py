@@ -2,9 +2,12 @@
 
 A posição (``timeline_start_s``) vem da correlação de áudio (GCC-PHAT) contra uma
 referência já sincronizada; sem áudio confiável usa a data/hora de criação.
+O áudio dos vídeos é lido dos proxies locais (mesmo tempo, mesmo áudio) quando existem;
+os originais só são lidos para mídias só-de-áudio ou vídeos ainda sem proxy.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +25,7 @@ SCAN_S = 600.0           # janela da varredura quando não há estimativa (≤ ~
 MAX_CANDIDATES = 3       # referências tentadas por estimativa
 HOUR_SHIFTS = [k * 3600.0 for k in (-3, -2, -1, 1, 2, 3)]
 REFERENCE_CONFIDENCE = 1000.0   # confiança gravada para a referência raiz do dia
+CACHE_ITEMS = 16                # trechos de áudio guardados por execução (≈ 20 MB cada no máximo)
 _EXCL_S = 0.1
 _PRIORITY = {
     Role.mesa: 0, Role.audio_ambiente: 1, Role.lapela_noivo: 2, Role.lapela_noiva: 2,
@@ -86,6 +90,7 @@ class _Day:
             _PRIORITY.get(m.role, 4) if _has_audio(m) else 5, -m.duration_s, m.rel_path))
         self.by_id = {m.id: m for m in medias}
         self.pos: dict[int, SyncResult] = {}
+        self._cache: OrderedDict[tuple, np.ndarray] = OrderedDict()
         for m in medias:
             r = db.get_sync(m.id)
             if r is not None:
@@ -109,16 +114,31 @@ class _Day:
 
     # --- correlação
     def _path(self, m: MediaInfo) -> Path:
+        if m.kind == "video":
+            prx = self.db.proxy_for(m.id)
+            if prx and Path(prx).is_file():
+                return Path(prx)  # proxy local: leitura rápida, sem tocar no NAS
         return self.root_dir / m.rel_path
+
+    def _load(self, m: MediaInfo, start_s: float, dur_s: float) -> np.ndarray:
+        key = (m.id, round(start_s, 3), round(dur_s, 3))
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        x = load_mono(self._path(m), sr=SR, start_s=start_s, dur_s=dur_s)
+        self._cache[key] = x
+        while len(self._cache) > CACHE_ITEMS:
+            self._cache.popitem(last=False)
+        return x
 
     def _excerpt(self, m: MediaInfo) -> tuple[np.ndarray, float]:
         length = min(self.window_s, m.duration_s) if m.duration_s > 0 else self.window_s
         off = max(0.0, (m.duration_s - length) / 2)
-        return load_mono(self._path(m), sr=SR, start_s=off, dur_s=length), off
+        return self._load(m, off, length), off
 
     def _against(self, ref: MediaInfo, ws: float, we: float, ex: np.ndarray,
                  off_m: float) -> tuple[float, float]:
-        refx = load_mono(self._path(ref), sr=SR, start_s=ws, dur_s=we - ws)
+        refx = self._load(ref, ws, we - ws)
         off, conf = xcorr_offset(refx, ex, SR)
         return self.pos[ref.id].timeline_start_s + ws + off - off_m, conf
 
@@ -133,10 +153,12 @@ class _Day:
             real = _overlap(est, est + m.duration_s, c0, c1)
             margin = _overlap(est - self.search_s, est + m.duration_s + self.search_s, c0, c1)
             if margin > 0:
-                cands.append((real, margin, c))
-        cands.sort(key=lambda t: (-t[0], -t[1], t[2].rel_path))
+                # referência sincronizada pelo áudio e só-de-áudio (mesa/ambiente) primeiro
+                pref = (0 if r.method == "audio" else 1) + (0 if c.kind == "audio" else 2)
+                cands.append((pref, real, margin, c))
+        cands.sort(key=lambda t: (t[0], -t[1], -t[2], t[3].rel_path))
         best: tuple[float | None, float] = (None, 0.0)
-        for _, _, c in cands[:MAX_CANDIDATES]:
+        for _, _, _, c in cands[:MAX_CANDIDATES]:
             p = est + off_m - self.pos[c.id].timeline_start_s
             ws = max(0.0, p - self.search_s)
             we = min(c.duration_s, p + ex.size / SR + self.search_s)
@@ -196,6 +218,7 @@ class _Day:
                 confidence=REFERENCE_CONFIDENCE if _has_audio(self.root) else 0.0,
                 method="audio" if _has_audio(self.root) else "hora")
             new = {self.root.id}
+            self.db.set_sync(self.pos[self.root.id])
         else:
             new = set()
         sequential: list[MediaInfo] = []
@@ -221,10 +244,11 @@ class _Day:
                 continue
             self.pos[m.id] = r
             new.add(m.id)
+            self.db.set_sync(r)  # gravado na hora: uma queda no meio do dia não perde o feito
 
         shift = -min(r.timeline_start_s for r in self.pos.values())
         for mid, r in self.pos.items():
-            if mid in new or shift != 0:
+            if shift != 0:  # normalização do dia: o deslocamento vale para todos
                 self.db.set_sync(r.model_copy(
                     update={"timeline_start_s": r.timeline_start_s + shift}))
 

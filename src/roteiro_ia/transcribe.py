@@ -61,6 +61,14 @@ def plan_sources(db: ProjectDB) -> list[int]:
     return [mid for _, mid in chosen]
 
 
+_GPU_ERR = ("cuda", "cudnn", "cublas")  # inclui CUDA_ERROR_*
+
+
+def is_gpu_error(e: BaseException) -> bool:
+    """Só erros da GPU (CUDA/cuDNN/cuBLAS) fazem a transcrição cair para a CPU."""
+    return any(k in str(e).lower() for k in _GPU_ERR)
+
+
 class Transcriber(Protocol):
     def transcribe(self, path: Path) -> list[Word]: ...
 
@@ -79,7 +87,7 @@ class WhisperTranscriber:
             return WhisperModel(self.model_name, device=self.device,
                                 compute_type=self.compute_type)
         except Exception as e:
-            if self.device == "cpu":
+            if self.device == "cpu" or not is_gpu_error(e):
                 raise
             log.warning("GPU (CUDA) indisponível para a transcrição (%s). "
                         "Usando a CPU, que é mais lenta.", e)
@@ -94,8 +102,8 @@ class WhisperTranscriber:
                 str(path), language="pt", word_timestamps=True, vad_filter=True)
             segs = list(segs)  # gerador: erros de CUDA/cuDNN podem surgir aqui
         except Exception as e:
-            if self.device == "cpu":
-                raise
+            if self.device == "cpu" or not is_gpu_error(e):
+                raise  # erro do arquivo: vira falha dele e a GPU continua para os próximos
             log.warning("Falha ao usar a GPU na transcrição (%s). Usando a CPU.", e)
             from faster_whisper import WhisperModel
             self.device, self.compute_type = "cpu", "int8"
