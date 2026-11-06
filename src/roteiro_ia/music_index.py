@@ -1,4 +1,8 @@
-"""Índice incremental das trilhas da biblioteca (BPM, tempos 1-4, energia, perfil)."""
+"""Índice incremental das trilhas da biblioteca: batida (BPM, tempos 1-4, energia, perfil) e
+melodia (voz separada pelo Demucs, tonalidade, clima/instrumentos/tipo de voz pelo CLAP).
+
+Os modelos (Demucs, CLAP) são plugáveis e carregados uma vez por execução; sem eles a trilha é
+analisada só pela batida + heurística antiga de voz e marcada `analise_parcial`."""
 from __future__ import annotations
 
 import bisect
@@ -29,6 +33,16 @@ VOCAL_BAND_HZ = (300.0, 3400.0)
 VOCAL_EXCERPT_S = 45  # HPSS só no trecho central: a faixa inteira seria lenta demais
 _SR = 22050
 _HOP = 128  # resolução fina (~6 ms) para o BPM não oscilar entre quadros
+ANALISE_VERSAO = 2
+
+# --- voz (separação com Demucs)
+VOZ_LIMIAR = 0.35         # RMS(voz)/RMS(mix) por segundo a partir do qual o segundo "tem voz"
+VOZ_MIN_PROPORCAO = 0.15  # fração de segundos com voz para a trilha ser "cantada"
+_SILENCIO_RMS = 1e-4      # segundos mais baixos que isso (≈ -80 dBFS) não contam como voz
+TRECHO_INICIO_S = 60.0
+TRECHO_CURTO_S = 20.0     # meio e clímax
+MUSICA_CURTA_S = 100.0    # abaixo disso a música é analisada inteira
+_SR_MODELOS = 44100       # áudio para Demucs/CLAP (o 22050 do BPM corta o agudo da voz)
 
 
 class BeatTracker(Protocol):
@@ -85,16 +99,102 @@ class LibrosaTracker:
         return [float(b) for b in beats], [float(b) for b in beats[best::4]]
 
 
-def _load_audio(path: Path) -> np.ndarray:
+class VocalSeparator(Protocol):
+    def vocals(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Stem de voz (mono, mesmo tamanho e taxa de `audio`)."""
+
+
+class DemucsSeparator:
+    """Demucs (htdemucs) na GPU se possível, senão CPU. Modelo carregado no primeiro uso."""
+
+    def __init__(self, device: str = "cuda", model: str = "htdemucs"):
+        self.device = device
+        self.model_name = model
+        self._model = None
+
+    def _load(self):
+        if self._model is not None:
+            return self._model
+        import torch
+        from demucs.pretrained import get_model
+
+        model = get_model(self.model_name)
+        model.eval()
+        if self.device != "cpu" and not torch.cuda.is_available():
+            log.warning("GPU indisponível para separar a voz das trilhas; usando CPU (mais lento).")
+            self.device = "cpu"
+        try:
+            model.to(self.device)
+        except Exception as e:
+            if self.device == "cpu":
+                raise
+            log.warning("Não foi possível usar a GPU para separar a voz (%s); usando CPU.", e)
+            self.device = "cpu"
+            model.to("cpu")
+        self._model = model
+        return model
+
+    def _run(self, x, model):
+        import torch
+        from demucs.apply import apply_model
+
+        mix = x.unsqueeze(0).repeat(model.audio_channels, 1)
+        ref = mix.mean(0)
+        mean, std = ref.mean(), ref.std()
+        if float(std) < 1e-8:
+            return torch.zeros_like(x)
+        with torch.no_grad():
+            out = apply_model(model, ((mix - mean) / std)[None], device=self.device, shifts=0,
+                              split=True, overlap=0.25, progress=False)[0]
+        out = out * std + mean
+        return out[model.sources.index("vocals")].mean(0).cpu()
+
+    def vocals(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        import torch
+        import torchaudio
+
+        model = self._load()
+        x = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32))
+        if sr != model.samplerate:
+            x = torchaudio.functional.resample(x, sr, model.samplerate)
+        try:
+            v = self._run(x, model)
+        except RuntimeError as e:  # ex.: memória da GPU
+            if self.device == "cpu":
+                raise
+            log.warning("Falha na GPU ao separar a voz (%s); continuando na CPU.", e)
+            self.device = "cpu"
+            model.to("cpu")
+            v = self._run(x, model)
+        if sr != model.samplerate:
+            v = torchaudio.functional.resample(v, model.samplerate, sr)
+        out = v.numpy().astype(np.float32)
+        if len(out) < len(audio):
+            out = np.pad(out, (0, len(audio) - len(out)))
+        return out[:len(audio)]
+
+
+def _default_separator() -> VocalSeparator | None:
+    sep = DemucsSeparator()
+    try:
+        sep._load()
+    except Exception as e:
+        log.warning("Não foi possível carregar o separador de voz (Demucs): %s. A voz das trilhas "
+                    "será estimada pelo método antigo, menos preciso (análise parcial).", e)
+        return None
+    return sep
+
+
+def _load_audio(path: Path, sr: int = _SR) -> np.ndarray:
     import librosa
 
     try:
-        y, _ = librosa.load(str(path), sr=_SR, mono=True)
+        y, _ = librosa.load(str(path), sr=sr, mono=True)
         return y
     except Exception:
         from .media.audio import load_mono
 
-        return load_mono(Path(path), sr=_SR)
+        return load_mono(Path(path), sr=sr)
 
 
 def _default_tracker() -> BeatTracker:
@@ -154,10 +254,71 @@ def _has_vocals(y: np.ndarray) -> bool:
     return float(spec[band].sum()) / total >= VOCAL_RATIO
 
 
-def analyze_track(path: Path, tracker: BeatTracker | None = None) -> TrackInfo:
+def trechos(duracao_s: float, energia: list[float]) -> list[tuple[str, float, float]]:
+    """Trechos analisados pelos modelos: início (0–60 s), meio (20 s centrados em 50%) e
+    clímax (20 s de maior energia RMS começando depois do início). Música curta: inteira."""
+    duracao_s = float(duracao_s)
+    if duracao_s < MUSICA_CURTA_S:
+        return [("inteira", 0.0, duracao_s)]
+    c = duracao_s / 2
+    meio = ("meio", c - TRECHO_CURTO_S / 2, c + TRECHO_CURTO_S / 2)
+    n = int(TRECHO_CURTO_S)
+    starts = range(int(TRECHO_INICIO_S), int(math.floor(duracao_s - TRECHO_CURTO_S)) + 1)
+
+    def media(s0: int) -> float:
+        w = energia[s0:s0 + n]
+        return float(np.mean(w)) if w else 0.0
+
+    best = max(starts, key=lambda s0: (media(s0), -s0))
+    return [("inicio", 0.0, TRECHO_INICIO_S), meio,
+            ("climax", float(best), float(best) + TRECHO_CURTO_S)]
+
+
+def _rms(x: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(np.square(x, dtype=np.float64)))) if len(x) else 0.0
+
+
+def _voz_por_segundo(mix: np.ndarray, voz: np.ndarray, sr: int) -> list[bool]:
+    out = []
+    for i in range(math.ceil(len(mix) / sr)):
+        m = _rms(mix[i * sr:(i + 1) * sr])
+        out.append(m >= _SILENCIO_RMS and _rms(voz[i * sr:(i + 1) * sr]) / m >= VOZ_LIMIAR)
+    return out
+
+
+def analisar_voz(y: np.ndarray, sr: int, separator: VocalSeparator,
+                 partes: list[tuple[str, float, float]]) -> tuple[float, float | None, float]:
+    """(voz_proporcao, voz_inicio_s, intro_instrumental_s) separando só os `partes`."""
+    total: list[bool] = []
+    inicio: tuple[float, float, list[bool]] | None = None
+    for nome, a, b in partes:
+        seg = y[int(round(a * sr)):int(round(b * sr))]
+        if len(seg) == 0:
+            continue
+        flags = _voz_por_segundo(seg, np.asarray(separator.vocals(seg, sr)), sr)
+        total += flags
+        if nome in ("inicio", "inteira"):
+            inicio = (a, min(b, len(y) / sr), flags)
+    prop = sum(total) / len(total) if total else 0.0
+    if inicio is None:
+        return prop, None, 0.0
+    a, b, flags = inicio
+    first = next((i for i, f in enumerate(flags) if f), None)
+    if first is None:
+        return prop, None, float(b)
+    return prop, float(a + first), float(a + first)
+
+
+def analyze_track(path: Path, tracker: BeatTracker | None = None,
+                  separator: VocalSeparator | None = None, *,
+                  carregar_modelos: bool = True) -> TrackInfo:
+    """Analisa uma trilha. Modelos ausentes (None) são carregados aqui, a menos que
+    `carregar_modelos=False` (o update_index carrega uma vez e passa o que conseguiu)."""
     path = Path(path)
     if tracker is None:
         tracker = _default_tracker()
+    if separator is None and carregar_modelos:
+        separator = _default_separator()
     y = _load_audio(path)
     if isinstance(tracker, LibrosaTracker):
         beats, downbeats = tracker.track_signal(y)
@@ -165,10 +326,28 @@ def analyze_track(path: Path, tracker: BeatTracker | None = None) -> TrackInfo:
         beats, downbeats = tracker.track(path)
     bpm = _bpm(beats)
     energy = _energy_per_second(y)
+    duracao = len(y) / _SR
+    partes = trechos(duracao, energy)
+    voz = None
+    if separator is not None:
+        try:
+            voz = analisar_voz(_load_audio(path, _SR_MODELOS), _SR_MODELOS, separator, partes)
+        except Exception as e:
+            log.warning("Não foi possível separar a voz da trilha '%s' (%s); usando o método "
+                        "antigo (análise parcial).", path.name, e)
+    if voz is None:
+        has_vocals = _has_vocals(y)
+        prop, voz_inicio, intro = 0.0, None, 0.0
+    else:
+        prop, voz_inicio, intro = voz
+        has_vocals = prop >= VOZ_MIN_PROPORCAO
     return TrackInfo(
         path=os.path.abspath(path), bpm=bpm, beats_s=beats, downbeats_s=downbeats,
-        energy=energy, duration_s=len(y) / _SR, has_vocals=_has_vocals(y),
+        energy=energy, duration_s=duracao, has_vocals=has_vocals,
         perfil=_perfil(bpm, energy), mtime=path.stat().st_mtime,
+        voz_proporcao=prop, voz_inicio_s=voz_inicio, intro_instrumental_s=intro,
+        tipo_voz="" if has_vocals else "sem voz",
+        versao_analise=ANALISE_VERSAO, analise_parcial=voz is None,
     )
 
 

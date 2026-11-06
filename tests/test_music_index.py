@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 import soundfile as sf
 
@@ -140,3 +141,123 @@ def test_vocals_usa_trecho_central(tmp_path):
     finally:
         librosa.effects.harmonic = orig
     assert seen["n"] <= VOCAL_EXCERPT_S * SR
+
+
+# ---------------------------------------------------------------- voz (Demucs plugável)
+
+class FakeSeparator:
+    """"Voz" = tudo acima de 600 Hz (as trilhas de teste têm a voz num tom agudo)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def vocals(self, audio, sr):
+        self.calls.append(len(audio) / sr)
+        spec = np.fft.rfft(audio)
+        f = np.fft.rfftfreq(len(audio), 1 / sr)
+        spec[f < 600] = 0
+        return np.fft.irfft(spec, n=len(audio)).astype(np.float32)
+
+
+def _musica_com_voz(seconds, voz_de=None, voz_ate=None, sr=SR):
+    t = np.arange(int(seconds * sr)) / sr
+    y = 0.2 * np.sin(2 * np.pi * 220 * t)
+    if voz_de is not None:
+        fim = seconds if voz_ate is None else voz_ate
+        mask = (t >= voz_de) & (t < fim)
+        y = y + 0.5 * np.sin(2 * np.pi * 1000 * t) * mask
+    return y.astype(np.float32)
+
+
+def test_trechos_musica_longa():
+    from roteiro_ia.music_index import trechos
+
+    energia = [0.1] * 300
+    energia[200:220] = [0.9] * 20
+    assert trechos(300.0, energia) == [("inicio", 0.0, 60.0), ("meio", 140.0, 160.0),
+                                       ("climax", 200.0, 220.0)]
+
+
+def test_trechos_climax_fora_do_inicio():
+    from roteiro_ia.music_index import trechos
+
+    energia = [0.9] * 30 + [0.1] * 270
+    nome, a, b = trechos(300.0, energia)[2]
+    assert nome == "climax" and a >= 60.0 and b - a == 20.0
+
+
+def test_trechos_musica_curta_inteira():
+    from roteiro_ia.music_index import trechos
+
+    assert trechos(95.0, [0.1] * 95) == [("inteira", 0.0, 95.0)]
+
+
+def test_voz_entra_aos_12s():
+    from roteiro_ia.music_index import analisar_voz, trechos
+
+    y = _musica_com_voz(40, voz_de=12)
+    prop, inicio, intro = analisar_voz(y, SR, FakeSeparator(), trechos(40.0, [0.1] * 40))
+    assert inicio == pytest.approx(12, abs=1)
+    assert intro == pytest.approx(12, abs=1)
+    assert prop == pytest.approx(28 / 40, abs=0.05)
+
+
+def test_voz_so_no_meio_intro_e_o_inicio_inteiro():
+    from roteiro_ia.music_index import analisar_voz, trechos
+
+    y = _musica_com_voz(300, voz_de=130, voz_ate=170)
+    sep = FakeSeparator()
+    prop, inicio, intro = analisar_voz(y, SR, sep, trechos(300.0, [0.1] * 300))
+    assert inicio is None and intro == 60.0
+    assert prop > 0
+    assert sorted(sep.calls) == [20.0, 20.0, 60.0]  # só os trechos, não a música inteira
+
+
+def test_analyze_track_com_separador(tmp_path):
+    p = tmp_path / "voz.wav"
+    sf.write(str(p), _musica_com_voz(40, voz_de=12), SR)
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=FakeSeparator())
+    assert t.has_vocals is True
+    assert t.voz_inicio_s == pytest.approx(12, abs=1)
+    assert t.intro_instrumental_s == pytest.approx(12, abs=1)
+    assert t.voz_proporcao == pytest.approx(0.7, abs=0.05)
+    assert t.versao_analise == 2
+
+
+def test_analyze_track_sem_voz(tmp_path):
+    p = tmp_path / "inst.wav"
+    sf.write(str(p), _musica_com_voz(30), SR)
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=FakeSeparator())
+    assert t.has_vocals is False
+    assert t.voz_proporcao == 0.0
+    assert t.voz_inicio_s is None
+    assert t.intro_instrumental_s == pytest.approx(30, abs=0.5)
+    assert t.tipo_voz == "sem voz"
+
+
+def test_sem_demucs_usa_heuristica_e_marca_parcial(tmp_path, caplog):
+    p = tmp_path / "x.wav"
+    sf.write(str(p), _musica_com_voz(20, voz_de=5), SR)
+    with caplog.at_level("WARNING"):
+        t = analyze_track(p, tracker=LibrosaTracker())  # conftest: modelos indisponíveis
+    assert t.analise_parcial is True
+    assert t.voz_inicio_s is None and t.voz_proporcao == 0.0
+
+
+def test_separador_que_falha_vira_parcial(tmp_path):
+    class Quebrado:
+        def vocals(self, audio, sr):
+            raise RuntimeError("CUDA out of memory")
+
+    p = tmp_path / "x.wav"
+    sf.write(str(p), _musica_com_voz(20, voz_de=5), SR)
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=Quebrado())
+    assert t.analise_parcial is True
+
+
+def test_registro_antigo_carrega():
+    antigo = ('{"path":"M:/a.mp3","bpm":90,"beats_s":[],"downbeats_s":[],"energy":[],'
+              '"duration_s":100,"has_vocals":false,"perfil":"calma","mtime":1}')
+    t = TrackInfo.model_validate_json(antigo)
+    assert t.versao_analise == 1 and t.analise_parcial is False
+    assert t.climas == [] and t.tonalidade == "" and t.voz_inicio_s is None
