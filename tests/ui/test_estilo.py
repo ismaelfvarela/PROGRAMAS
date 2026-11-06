@@ -35,7 +35,23 @@ def aba(qtbot, settings_tmp, tmp_path):
 
 
 def textos(aba):
-    return [aba.lista.item(i).text() for i in range(aba.lista.count())]
+    """'<símbolo do estado>  <url>' — o símbolo vem do estado do item (ícone colorido)."""
+    from roteiro_ia.ui.abas import ICONES_ESTILO
+    out = []
+    for i in range(aba.lista.count()):
+        it = aba.lista.item(i)
+        out.append(f"{ICONES_ESTILO[it.toolTip()]}  {it.text()}")
+    return out
+
+
+def test_icone_feito_verde_e_texto_sem_simbolo(qtbot):
+    from roteiro_ia.ui.abas import CORES_ESTILO, _icone_estado
+    assert CORES_ESTILO["feito"] == "#5fb37c"
+    assert not _icone_estado("feito").isNull()
+    img = _icone_estado("feito").pixmap(18, 18).toImage()
+    cores = {img.pixelColor(x, y).name() for x in range(18) for y in range(18)
+             if img.pixelColor(x, y).alpha() > 200}
+    assert "#5fb37c" in cores
 
 
 def test_ao_abrir_cache_aparece_feito(aba):

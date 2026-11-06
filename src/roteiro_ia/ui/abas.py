@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton,
                                QSpinBox, QTextBrowser, QVBoxLayout, QWidget)
@@ -130,6 +131,26 @@ class TrilhasTab(QWidget):
 
 
 ICONES_ESTILO = {"aguardando": "○", "analisando": "▶", "feito": "✔", "erro": "✖", "ignorado": "⚠"}
+# Cor de cada ícone de estado (mesma paleta do tema).
+CORES_ESTILO = {"aguardando": "#9a9aa0", "analisando": "#d9774a", "feito": "#5fb37c",
+                "erro": "#e06a5f", "ignorado": "#e0b04f"}
+_CACHE_ICONES: dict[str, QIcon] = {}
+
+
+def _icone_estado(estado: str) -> QIcon:
+    """Ícone colorido (glifo desenhado num pixmap) para o estado do vídeo."""
+    if estado not in _CACHE_ICONES:
+        pm = QPixmap(18, 18)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        f = QFont("Segoe UI Symbol", 11)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor(CORES_ESTILO.get(estado, "#9a9aa0")))
+        p.drawText(pm.rect(), Qt.AlignCenter, ICONES_ESTILO.get(estado, "○"))
+        p.end()
+        _CACHE_ICONES[estado] = QIcon(pm)
+    return _CACHE_ICONES[estado]
 
 
 class _EstiloWorker(TarefaWorker):
@@ -219,7 +240,8 @@ class EstiloTab(QWidget):
 
     @staticmethod
     def _pintar(it: QListWidgetItem, estado: str) -> None:
-        it.setText(f"{ICONES_ESTILO.get(estado, '○')}  {it.data(Qt.UserRole)}")
+        it.setIcon(_icone_estado(estado))
+        it.setText(str(it.data(Qt.UserRole)))
         it.setToolTip(estado)
 
     def _icones(self) -> None:
