@@ -157,9 +157,13 @@ def test_fala_da_fonte_melhor_e_audio_sem_upload(tmp_path):
     seg = db.add_segments([Segment(media_id=cam, start_s=10, end_s=20)])
     mseg = db.add_segments([Segment(media_id=mesa, start_s=0, end_s=5)])
     assert segment_speech(db, db.get_media(cam), db.list_segments(cam)[0]) == "eu aceito"
-    c = FakeClient([FileAnalysis(segmentos=[sa(seg[0])]), FileAnalysis(segmentos=[sa(mseg[0])])])
+    c = FakeClient([FileAnalysis(segmentos=[sa(seg[0]), sa(mseg[0])])])
     analyze_event(db, c, None, "m")
-    assert len(c.uploads) == 1 and c.calls[1][1] == []
+    # vídeo e áudio no mesmo pacote: só o vídeo é enviado; o áudio entra só como texto
+    parts = c.calls[0][1]
+    assert len(c.uploads) == 1 and len(c.calls) == 1
+    assert parts[0] == r"ARQUIVO 1: A\C1.MP4" and parts[2] == r"ARQUIVO 2: M\m.wav" and len(parts) == 3
+    assert "eu aceito" in c.calls[0][3]
 
 
 def test_lotes_de_40(tmp_path):
@@ -182,11 +186,11 @@ def mpause(daily=False):
 def test_erro_qualquer_vira_falha_e_segue(tmp_path):
     from google.genai import errors
     db = new_db(tmp_path)
-    a = db.add_media(mi(r"A\C1.MP4"))
+    a = db.add_media(mi(r"A\C1.MP4", dur=4000))  # longa: vai sozinha, separada de B
     b = db.add_media(mi(r"A\C2.MP4"))
     for mid in (a, b):
         db.set_proxy(mid, "p.mp4", "gerado")
-    sa_ = db.add_segments([Segment(media_id=a, start_s=0, end_s=5)])
+    sa_ = db.add_segments([Segment(media_id=a, start_s=0, end_s=1900)])
     sb = db.add_segments([Segment(media_id=b, start_s=0, end_s=5)])
     c = FakeClient([errors.ClientError(400, {"error": {"code": 400, "message": "ruim"}}),
                     FileAnalysis(segmentos=[sa(sb[0])])])
@@ -199,11 +203,11 @@ def test_erro_qualquer_vira_falha_e_segue(tmp_path):
 def test_erro_de_rede_vira_falha_e_segue(tmp_path):
     import httpx
     db = new_db(tmp_path)
-    a = db.add_media(mi(r"A\C1.MP4"))
+    a = db.add_media(mi(r"A\C1.MP4", dur=4000))  # longa: vai sozinha, separada de B
     b = db.add_media(mi(r"B\C2.MP4"))
     for mid in (a, b):
         db.set_proxy(mid, "p.mp4", "gerado")
-    db.add_segments([Segment(media_id=a, start_s=0, end_s=5)])
+    db.add_segments([Segment(media_id=a, start_s=0, end_s=1900)])
     sb = db.add_segments([Segment(media_id=b, start_s=0, end_s=5)])
     c = FakeClient([httpx.ConnectError("sem rede"), FileAnalysis(segmentos=[sa(sb[0])])])
     analyze_event(db, c, None, "m")
@@ -215,13 +219,15 @@ def test_lote_envia_so_o_intervalo(tmp_path):
     db = new_db(tmp_path)
     mid = db.add_media(mi(r"A\C1.MP4", dur=1000))
     db.set_proxy(mid, "p.mp4", "gerado")
-    ids = db.add_segments([Segment(media_id=mid, start_s=i * 10, end_s=i * 10 + 8) for i in range(45)])
+    # mais de PACOTE_MAX_SEGMENTOS (60) segmentos: a mídia vai sozinha, em lotes recortados
+    ids = db.add_segments([Segment(media_id=mid, start_s=i * 10, end_s=i * 10 + 8) for i in range(65)])
     c = FakeClient([FileAnalysis(segmentos=[sa(i) for i in ids[k:k + 40]]) for k in (0, 40)])
     analyze_event(db, c, None, "m")
+    assert len(c.calls) == 2
     p1, p2 = c.calls[0][1][0], c.calls[1][1][0]
     assert p1.file_data.file_uri == "file:p.mp4" and p1.file_data.mime_type == "video/mp4"
     assert (p1.video_metadata.start_offset, p1.video_metadata.end_offset) == ("0.00s", "398.00s")
-    assert (p2.video_metadata.start_offset, p2.video_metadata.end_offset) == ("400.00s", "448.00s")
+    assert (p2.video_metadata.start_offset, p2.video_metadata.end_offset) == ("400.00s", "648.00s")
     assert "400.00s" in c.calls[1][3]
 
 
@@ -293,3 +299,123 @@ def test_analise_antiga_sem_som_ambiente_valida():
     antigo.pop("som_ambiente_util", None)
     b = SceneAnalysis.model_validate(antigo)
     assert b.som_ambiente == "" and b.som_ambiente_util is False
+
+
+# ------------------------------------------------------------------ pacotes (cota grátis)
+
+
+def ids_do_prompt(prompt):
+    import re
+    return [int(x) for x in re.findall(r"segment_id=(\d+)", prompt)]
+
+
+class EcoClient(FakeClient):
+    """Responde com um item válido para cada segment_id do prompt."""
+
+    def generate_json(self, model, parts, schema, prompt, max_retries=3):
+        self.calls.append((model, parts, schema, prompt))
+        if self.exc:
+            raise self.exc
+        return FileAnalysis(segmentos=[sa(i) for i in ids_do_prompt(prompt)])
+
+
+def test_dez_midias_curtas_numa_chamada(tmp_path):
+    from roteiro_ia.gemini.analysis import PACOTE_MAX_SEGMENTOS, PACOTE_MAX_VIDEO_S
+    assert (PACOTE_MAX_VIDEO_S, PACOTE_MAX_SEGMENTOS) == (1800, 60)
+    db = new_db(tmp_path)
+    todos = []
+    for k in range(10):
+        mid = db.add_media(mi(rf"A\C{k}.MP4", dur=30))
+        db.set_proxy(mid, f"p{k}.mp4", "gerado")
+        todos += db.add_segments([Segment(media_id=mid, start_s=0, end_s=10),
+                                  Segment(media_id=mid, start_s=10, end_s=20)])
+    c = EcoClient()
+    analyze_event(db, c, None, "m")
+    assert len(c.calls) == 1 and len(c.uploads) == 10
+    assert all(db.get_analysis(i) is not None for i in todos)
+    parts, prompt = c.calls[0][1], c.calls[0][3]
+    # texto "ARQUIVO n: rel" seguido do vídeo de cada mídia, na ordem do banco
+    assert parts[0] == r"ARQUIVO 1: A\C0.MP4" and parts[1].file_data.file_uri == "file:p0.mp4"
+    assert parts[18] == r"ARQUIVO 10: A\C9.MP4" and len(parts) == 20
+    assert prompt.index("ARQUIVO 1:") < prompt.index(f"segment_id={todos[0]}") < prompt.index("ARQUIVO 2:")
+    assert sorted(c.deleted) == sorted(f"files/{k}" for k in range(1, 11))
+    assert db.list_falhas() == []
+
+
+def test_pacote_respeita_limite_de_video_e_de_segmentos(tmp_path):
+    db = new_db(tmp_path)
+    for k in range(4):  # 4 × 700 s de vídeo → 2 pacotes (1400 s cada)
+        mid = db.add_media(mi(rf"A\V{k}.MP4", dur=700))
+        db.set_proxy(mid, "p.mp4", "gerado")
+        db.add_segments([Segment(media_id=mid, start_s=0, end_s=700)])
+    for k in range(3):  # áudios com 25 segmentos: não contam vídeo, mas contam segmentos
+        mid = db.add_media(mi(rf"M\a{k}.wav", Role.mesa, "audio", 500))
+        db.add_segments([Segment(media_id=mid, start_s=i, end_s=i + 1) for i in range(25)])
+    c = EcoClient()
+    analyze_event(db, c, None, "m")
+    por_chamada = [len(ids_do_prompt(x[3])) for x in c.calls]
+    assert por_chamada == [2, 2 + 50, 25]
+    assert all(n <= 60 for n in por_chamada)
+
+
+def test_midia_longa_vai_sozinha_em_lotes(tmp_path):
+    db = new_db(tmp_path)
+    curta = db.add_media(mi(r"A\C1.MP4", dur=30))
+    longa = db.add_media(mi(r"A\LONGA.MP4", dur=4000))
+    curta2 = db.add_media(mi(r"A\C2.MP4", dur=30))
+    for mid in (curta, longa, curta2):
+        db.set_proxy(mid, f"{mid}.mp4", "gerado")
+    db.add_segments([Segment(media_id=curta, start_s=0, end_s=10)])
+    db.add_segments([Segment(media_id=longa, start_s=i * 60, end_s=i * 60 + 59) for i in range(50)])
+    db.add_segments([Segment(media_id=curta2, start_s=0, end_s=10)])
+    c = EcoClient()
+    analyze_event(db, c, None, "m")
+    # longa: 2 lotes (40 + 10) com recorte; as duas curtas juntas num pacote
+    assert len(c.calls) == 3
+    longas = [x for x in c.calls if "LONGA" in x[3]]
+    assert len(longas) == 2 and all(len(x[1]) == 1 and x[1][0].video_metadata for x in longas)
+    pacote = next(x for x in c.calls if "LONGA" not in x[3])
+    assert [p for p in pacote[1] if isinstance(p, str)] == [r"ARQUIVO 1: A\C1.MP4", r"ARQUIVO 2: A\C2.MP4"]
+    assert db.list_falhas() == []
+
+
+def test_pacote_valida_ids_misturados(tmp_path):
+    db = new_db(tmp_path)
+    a = db.add_media(mi(r"A\C1.MP4", dur=30))
+    b = db.add_media(mi(r"A\C2.MP4", dur=30))
+    for mid in (a, b):
+        db.set_proxy(mid, "p.mp4", "gerado")
+    ia = db.add_segments([Segment(media_id=a, start_s=0, end_s=10)])
+    ib = db.add_segments([Segment(media_id=b, start_s=0, end_s=10)])
+    # 1ª: falta o id de B; 2ª: repetido; 3ª: ids misturados mas completos (ordem trocada)
+    c = FakeClient([FileAnalysis(segmentos=[sa(ia[0])]),
+                    FileAnalysis(segmentos=[sa(ia[0]), sa(ia[0]), sa(ib[0])]),
+                    FileAnalysis(segmentos=[sa(ib[0]), sa(ia[0])])])
+    analyze_event(db, c, None, "m")
+    assert len(c.calls) == 3
+    assert db.get_analysis(ia[0]) and db.get_analysis(ib[0]) and db.list_falhas() == []
+
+
+def test_falha_do_pacote_vira_falha_de_cada_midia(tmp_path):
+    db = new_db(tmp_path)
+    a = db.add_media(mi(r"A\C1.MP4", dur=30))
+    b = db.add_media(mi(r"M\m.wav", Role.mesa, "audio", 30))
+    db.set_proxy(a, "p.mp4", "gerado")
+    db.add_segments([Segment(media_id=a, start_s=0, end_s=10)])
+    db.add_segments([Segment(media_id=b, start_s=0, end_s=10)])
+    c = FakeClient([FileAnalysis(segmentos=[])] * 3)
+    analyze_event(db, c, None, "m")
+    assert sorted(f.rel_path for f in db.list_falhas()) == [r"A\C1.MP4", r"M\m.wav"]
+    assert c.deleted == ["files/1"]
+
+
+def test_pacote_quota_propaga_e_apaga_uploads(tmp_path):
+    db = new_db(tmp_path)
+    for k in range(3):
+        mid = db.add_media(mi(rf"A\C{k}.MP4", dur=30))
+        db.set_proxy(mid, "p.mp4", "gerado")
+        db.add_segments([Segment(media_id=mid, start_s=0, end_s=10)])
+    c = FakeClient(exc=QuotaPaused(datetime.now(), daily=True))
+    with pytest.raises(QuotaPaused):
+        analyze_event(db, c, None, "m")
+    assert len(c.calls) == 1 and sorted(c.deleted) == ["files/1", "files/2", "files/3"]
