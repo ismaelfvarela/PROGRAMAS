@@ -311,3 +311,50 @@ def test_correcao_no_ajuste_inclui_pedido(env):
     c = FakeClient([bad, good])
     generate_roteiro(db, c, idx, None, "m", None, set(), pedido_ajuste="mais votos no ep 1")
     assert len(c.calls) == 2 and "mais votos no ep 1" in c.calls[1][3]
+
+
+def _som(env, util, texto="risos | aplausos"):
+    db, idx = env
+    seg = db.list_segments()[1]  # B: emoção 8 -> deixa fraco para testar compactação
+    a = db.get_analysis(seg.id)
+    db.set_analysis(a.model_copy(update={"som_ambiente": texto, "som_ambiente_util": util,
+                                         "emocao_intensidade": 1, "qualidade": 2,
+                                         "potencial_gancho": False}))
+    return db
+
+
+def test_catalogo_mostra_som_e_estrela(env):
+    db = _som(env, True)
+    linha = [l for l in build_catalog(db).splitlines() if l.startswith("B\\")][0]
+    assert "som: risos / aplausos ★" in linha
+
+
+
+def test_catalogo_som_sem_estrela(env):
+    db = _som(env, False)
+    linha = [l for l in build_catalog(db).splitlines() if l.startswith("B\\")][0]
+    assert "som: risos / aplausos" in linha and "★" not in linha
+
+
+def test_compactacao_mantem_segmento_com_som_util(env):
+    db = _som(env, True)
+    assert any(l.startswith("B\\") for l in build_catalog(db, compact=True).splitlines())
+    db = _som(env, False)
+    assert not any(l.startswith("B\\") for l in build_catalog(db, compact=True).splitlines())
+
+
+def test_regra_som_camera_e_campo_padrao():
+    assert "usar_som_camera" in REGRAS_FOKUSS
+    assert ref().usar_som_camera is False
+
+
+def test_validate_normaliza_som_camera_sem_audio(env):
+    db, idx = env
+    sem = db.add_media(mi("C\\C0001.MP4", dur=20.0).model_copy(update={"audio_channels": 0}))
+    r = rot(piece(abertura=ref("A\\C0001.MP4", 0, 5).model_copy(update={"usar_som_camera": True}),
+                  dev=[ref("C\\C0001.MP4", 0, 5).model_copy(update={"usar_som_camera": True})],
+                  gancho=None))
+    validate_refs(r, db, idx)
+    assert r.pecas[0].abertura.usar_som_camera is True
+    assert r.pecas[0].desenvolvimento[0].usar_som_camera is False
+    assert any("C\\C0001.MP4" in a and "som da câmera" in a for a in r.alertas)

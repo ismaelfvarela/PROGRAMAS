@@ -64,6 +64,7 @@
   <div class="scene">
     <span class="pill">{{ ref(pc.abertura.rel_path, pc.abertura.start_s, pc.abertura.end_s) }}</span>
     {% if pc.abertura.lembranca %}<span class="badge">lembrança</span>{% endif %}
+    {% if pc.abertura.usar_som_camera %}<span class="badge">som da câmera</span>{% endif %}
     <div>{{ pc.abertura.descricao }}</div>
     {% if pc.abertura.fala %}<div class="quote">“{{ pc.abertura.fala }}”</div>{% endif %}
     {% if pc.abertura.motivo %}<div class="why">{{ pc.abertura.motivo }}</div>{% endif %}
@@ -74,6 +75,7 @@
   <div class="scene">
     <span class="n">{{ loop.index }}.</span><span class="pill">{{ ref(sc.rel_path, sc.start_s, sc.end_s) }}</span>
     {% if sc.lembranca %}<span class="badge">lembrança</span>{% endif %}
+    {% if sc.usar_som_camera %}<span class="badge">som da câmera</span>{% endif %}
     <div>{{ sc.descricao }}</div>
     {% if sc.fala %}<div class="quote">“{{ sc.fala }}”</div>{% endif %}
     {% if sc.motivo %}<div class="why">{{ sc.motivo }}</div>{% endif %}
@@ -84,6 +86,7 @@
   <div class="label">Gancho</div>
   <div class="hook">
     <span class="pill">{{ ref(pc.gancho.rel_path, pc.gancho.start_s, pc.gancho.end_s) }}</span>
+    {% if pc.gancho.usar_som_camera %}<span class="badge">som da câmera</span>{% endif %}
     <div>{{ pc.gancho.descricao }}</div>
     {% if pc.gancho.fala %}<div class="quote">“{{ pc.gancho.fala }}”</div>{% endif %}
     {% if pc.gancho_resolve_em %}<div class="resolve">Resolve em: {{ pc.gancho_resolve_em }}</div>{% endif %}
