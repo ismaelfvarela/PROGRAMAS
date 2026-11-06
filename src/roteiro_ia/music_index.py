@@ -590,10 +590,23 @@ class MusicIndex:
         self._c.commit()
 
 
+def analise_completa(t: TrackInfo) -> bool:
+    return t.versao_analise >= ANALISE_VERSAO and not t.analise_parcial
+
+
+def resumo_indice(idx: MusicIndex) -> tuple[int, int]:
+    """(trilhas no índice, trilhas com análise completa)."""
+    todas = idx.all()
+    return len(todas), sum(analise_completa(t) for t in todas)
+
+
 def update_index(s: Settings, idx: MusicIndex,
                  on_progress: Callable[[int, int, str], None] | None = None,
-                 tracker: BeatTracker | None = None) -> int:
-    """Varre music_root (somente leitura) e analisa só o que é novo ou foi alterado."""
+                 tracker: BeatTracker | None = None, separator: VocalSeparator | None = None,
+                 tagger: AudioTagger | None = None) -> int:
+    """Varre music_root (somente leitura) e analisa só o que é novo, foi alterado, tem análise
+    de versão antiga ou ficou parcial (quando os modelos agora carregam). Os modelos ausentes
+    são carregados uma única vez por execução, e só se houver algo a analisar."""
     root = Path(s.music_root)
     if not root.is_dir():
         raise FileNotFoundError(
@@ -608,16 +621,27 @@ def update_index(s: Settings, idx: MusicIndex,
                 files.append((f, os.path.abspath(f)))
     existing = {key for _, key in files}
     done = 0
+    tentou_modelos = False
     for i, (f, key) in enumerate(files, 1):
         if on_progress:
             on_progress(i, len(files), f.name)
         try:
             old = idx.get(key)
-            if old is not None and old.mtime == f.stat().st_mtime:
+            atual = (old is not None and old.mtime == f.stat().st_mtime
+                     and old.versao_analise >= ANALISE_VERSAO)
+            if atual and not old.analise_parcial:
                 continue
+            if not tentou_modelos:
+                tentou_modelos = True
+                if separator is None:
+                    separator = _default_separator()
+                if tagger is None:
+                    tagger = _default_tagger()
+            if atual and (separator is None or tagger is None):
+                continue  # parcial e os modelos continuam indisponíveis
             if tracker is None:
                 tracker = _default_tracker()
-            idx.upsert(analyze_track(f, tracker))
+            idx.upsert(analyze_track(f, tracker, separator, tagger, carregar_modelos=False))
             done += 1
         except Exception as e:
             log.warning("Não foi possível analisar a trilha '%s': %s", f.name, e)

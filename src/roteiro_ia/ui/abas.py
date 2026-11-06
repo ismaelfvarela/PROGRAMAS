@@ -71,9 +71,10 @@ class TrilhasTab(QWidget):
     def textos(self) -> None:
         self.btn.setText(f"Atualizar índice de músicas do {self.s.music_root.rstrip(chr(92))}")
         self.lbl_info.setText(
-            f"O programa analisa BPM, clima e batidas de cada música de {self.s.music_root} "
-            "(somente leitura) para sugerir trilhas no roteiro. Só as novas ou alteradas são "
-            "analisadas.")
+            f"O programa analisa cada música de {self.s.music_root} (somente leitura) pela "
+            "batida (BPM, tempos) e pela melodia: se tem voz ou é só tocada, onde a voz entra, "
+            "tonalidade, clima e instrumentos (modelos locais na GPU). Só as novas, alteradas "
+            "ou com análise incompleta são analisadas.")
 
     def _idx(self):
         from roteiro_ia.music_index import MusicIndex
@@ -87,20 +88,21 @@ class TrilhasTab(QWidget):
 
     def contar(self) -> None:
         def fn(_p):
+            from roteiro_ia.music_index import resumo_indice
             with self._idx() as idx:
-                return len(idx.all())
+                return resumo_indice(idx)
         w = TarefaWorker(fn)
         w.resultado.connect(self._set_total)
         w.erro.connect(self.banner.mostrar)
         self.runner.start(w)
 
     def atualizar(self) -> None:
-        from roteiro_ia.music_index import update_index
+        from roteiro_ia.music_index import resumo_indice, update_index
 
         def fn(progress):
             with self._idx() as idx:
                 n = update_index(self.s, idx, on_progress=progress)
-                return n, len(idx.all())
+                return n, resumo_indice(idx)
         self.banner.limpar()
         self.btn.setEnabled(False)
         self.barra.setValue(0)
@@ -113,8 +115,9 @@ class TrilhasTab(QWidget):
         self.runner.start(w)
 
     # slots (métodos de widgets da thread principal: os sinais do worker chegam enfileirados)
-    def _set_total(self, n: int) -> None:
-        self.lbl_total.setText(f"{n} trilhas no índice")
+    def _set_total(self, resumo) -> None:
+        total, completas = resumo
+        self.lbl_total.setText(f"{total} trilhas no índice ({completas} com análise completa)")
 
     def _fim_tarefa(self, _status: str) -> None:
         self.btn.setEnabled(True)
@@ -125,8 +128,8 @@ class TrilhasTab(QWidget):
         self.lbl_atual.setText(f"{i}/{total}  {nome}")
 
     def _fim(self, r) -> None:
-        n, total = r
-        self.lbl_total.setText(f"{total} trilhas no índice")
+        n, resumo = r
+        self._set_total(resumo)
         self.lbl_atual.setText(f"Pronto: {n} trilha(s) nova(s) ou alterada(s) analisada(s).")
 
 

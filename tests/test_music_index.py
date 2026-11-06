@@ -341,3 +341,69 @@ def test_sem_clap_campos_vazios_e_parcial(tmp_path):
     assert t.analise_parcial is True
     assert t.climas == [] and t.instrumentos == []
     assert t.voz_inicio_s == pytest.approx(12, abs=1)  # a voz do Demucs continua valendo
+
+
+# ---------------------------------------------------------------- reanálise
+
+def _biblioteca(tmp_path, n=2):
+    s = _settings(tmp_path)
+    root = tmp_path / "musicas"
+    root.mkdir()
+    for i in range(n):
+        sf.write(str(root / f"m{i}.wav"), _musica_com_voz(15, voz_de=5), SR)
+    return s, MusicIndex(tmp_path / "sis" / "trilhas.db", s)
+
+
+def test_reanalisa_versao_antiga(tmp_path):
+    s, idx = _biblioteca(tmp_path, 1)
+    update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(), tagger=FakeTagger())
+    t = idx.all()[0]
+    idx.upsert(t.model_copy(update={"versao_analise": 1}))
+    assert update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                        tagger=FakeTagger()) == 1
+    assert idx.all()[0].versao_analise == 2
+
+
+def test_reanalisa_parcial_quando_modelos_carregam(tmp_path):
+    s, idx = _biblioteca(tmp_path)
+    assert update_index(s, idx, tracker=LibrosaTracker()) == 2  # sem modelos → parciais
+    assert all(t.analise_parcial for t in idx.all())
+    assert update_index(s, idx, tracker=LibrosaTracker()) == 0  # continuam sem modelos
+    assert update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                        tagger=FakeTagger()) == 2
+    assert not any(t.analise_parcial for t in idx.all())
+    assert update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                        tagger=FakeTagger()) == 0
+
+
+def test_modelos_carregados_uma_vez_por_execucao(tmp_path, monkeypatch):
+    from roteiro_ia import music_index
+
+    s, idx = _biblioteca(tmp_path, 3)
+    n = {"sep": 0, "tag": 0}
+
+    def sep():
+        n["sep"] += 1
+        return FakeSeparator()
+
+    def tag():
+        n["tag"] += 1
+        return FakeTagger()
+
+    monkeypatch.setattr(music_index, "_default_separator", sep)
+    monkeypatch.setattr(music_index, "_default_tagger", tag)
+    assert update_index(s, idx, tracker=LibrosaTracker()) == 3
+    assert n == {"sep": 1, "tag": 1}
+    assert update_index(s, idx, tracker=LibrosaTracker()) == 0
+    assert n == {"sep": 1, "tag": 1}  # tudo completo: nem carrega os modelos
+
+
+def test_resumo_indice(tmp_path):
+    from roteiro_ia.music_index import resumo_indice
+
+    s, idx = _biblioteca(tmp_path)
+    update_index(s, idx, tracker=LibrosaTracker())
+    assert resumo_indice(idx) == (2, 0)
+    t = idx.all()[0]
+    idx.upsert(t.model_copy(update={"analise_parcial": False}))
+    assert resumo_indice(idx) == (2, 1)

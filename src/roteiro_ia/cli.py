@@ -164,10 +164,12 @@ def _cmd_ajustar(a, s: Settings, cfg: Path) -> int:
 
 
 def _cmd_trilhas(a, s: Settings, cfg: Path) -> int:
-    from roteiro_ia.music_index import MusicIndex, update_index
+    from roteiro_ia.music_index import MusicIndex, resumo_indice, update_index
     with MusicIndex(Path(s.system_dir) / "trilhas.db", s) as idx:
         n = update_index(s, idx, on_progress=lambda i, t, name: print(f"  {i}/{t} {name}", flush=True))
-        print(f"Índice de trilhas atualizado: {n} analisadas, {len(idx.all())} no total.")
+        total, completas = resumo_indice(idx)
+        print(f"Índice de trilhas atualizado: {n} analisadas, {total} no total "
+              f"({completas} com análise completa).")
     return EXIT_OK
 
 
