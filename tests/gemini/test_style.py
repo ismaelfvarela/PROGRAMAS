@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -96,3 +97,44 @@ def test_video_com_erro_e_pulado_e_quota_propaga(tmp_path, caplog):
     s3 = settings(tmp_path / "q", [U1])
     with pytest.raises(QuotaPaused):
         build_style_profile(FakeClient(fail={U1: QuotaPaused(__import__("datetime").datetime.now())}), s3)
+
+
+# ------------------------------------------------------------------ progresso por vídeo
+
+U3 = "https://www.youtube.com/watch?v=CCCCCCCCCCC"
+PL = "https://www.youtube.com/playlist?list=PLx"
+
+
+def _cache(s, url):
+    d = Path(s.system_dir) / "estilo_cache"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{url.rsplit('=', 1)[1]}.json").write_text(notes(url).model_dump_json(), encoding="utf-8")
+
+
+def test_progresso_por_video_na_ordem(tmp_path):
+    s = settings(tmp_path, [U1, U2, U3, PL])
+    _cache(s, U1)
+    assert st.video_em_cache(s, U1) and not st.video_em_cache(s, U2)
+    ev = []
+    build_style_profile(FakeClient(fail={U3: RuntimeError("privado")}), s,
+                        on_progress=lambda *a: ev.append(a))
+    assert ev == [
+        (PL, "ignorado", 0, 3),
+        (U1, "feito", 1, 3),       # cache: feito na hora
+        (U2, "aguardando", 1, 3),
+        (U3, "aguardando", 1, 3),
+        (U2, "analisando", 1, 3),
+        (U2, "feito", 2, 3),
+        (U3, "analisando", 2, 3),
+        (U3, "erro", 2, 3),
+    ]
+
+
+def test_progresso_para_na_cota(tmp_path):
+    from datetime import datetime
+    s = settings(tmp_path, [U1, U2])
+    ev = []
+    with pytest.raises(QuotaPaused):
+        build_style_profile(FakeClient(fail={U1: QuotaPaused(datetime.now())}), s,
+                            on_progress=lambda *a: ev.append(a))
+    assert ev[-1] == (U1, "analisando", 0, 2)

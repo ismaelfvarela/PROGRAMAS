@@ -173,11 +173,15 @@ class Pipeline:
     def _models(self) -> tuple[str, str]:
         if not (self.s.gemini_model_analysis and self.s.gemini_model_script):
             a, b = self._client().pick_default_models()
-            for st in (self.s, self._base):
+            # no grátis a escolha (flash para tudo) vale só nesta execução: gravada no config,
+            # o roteiro continuaria no flash depois de mudar para o pago
+            gratis = self.s.gemini_mode == "gratis"
+            for st in (self.s,) if gratis else (self.s, self._base):
                 st.gemini_model_analysis = st.gemini_model_analysis or a
                 st.gemini_model_script = st.gemini_model_script or b
-            assert_writable(self._settings_path, self._base)
-            save_settings(self._base, self._settings_path)
+            if not gratis:
+                assert_writable(self._settings_path, self._base)
+                save_settings(self._base, self._settings_path)
         return self.s.gemini_model_analysis, self.s.gemini_model_script
 
     def close(self) -> None:
@@ -390,7 +394,8 @@ class Pipeline:
     def _st_analise(self) -> None:
         model, _ = self._models()
         analyze_event(self.db, self._client(), self.p, model, load_style_profile(self.s),
-                      on_progress=self._progress("analise"))
+                      on_progress=self._progress("analise"),
+                      max_video_s=self.s.gemini_pacote_max_s)
 
     def _st_trilhas(self) -> str:
         idx = self._index()

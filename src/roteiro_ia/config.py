@@ -20,6 +20,8 @@ class Settings(BaseModel):
     gemini_mode: Literal["gratis", "pago"] = "gratis"
     gemini_model_analysis: str = ""
     gemini_model_script: str = ""
+    gemini_pacote_max_s: int = 1800  # máx. de vídeo (s) por chamada de análise em pacote
+    gemini_rotacao: bool = True  # grátis: reveza entre os modelos flash quando um esgota a cota do dia
     price_usd_per_mtok: float = 0.0
     style_urls: list[str] = Field(default_factory=list)
     copy_music_to_work: bool = False

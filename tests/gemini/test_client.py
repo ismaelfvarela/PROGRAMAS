@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -47,8 +48,20 @@ class FakeFiles:
         return SimpleNamespace(name=name, state=self.states.pop(0), uri="u")
 
 
-def mk(outcomes, mode="gratis", names=(), files=None, price=0.0):
-    s = Settings(gemini_mode=mode, price_usd_per_mtok=price)
+SYS = {}
+
+
+@pytest.fixture(autouse=True)
+def _system_dir_tmp(tmp_path):
+    """O cliente grava cota.json no system_dir: nos testes, sempre numa pasta temporária."""
+    SYS["dir"] = str(tmp_path / "sys")
+    yield
+    SYS.clear()
+
+
+def mk(outcomes, mode="gratis", names=(), files=None, price=0.0, rotacao=True):
+    s = Settings(gemini_mode=mode, price_usd_per_mtok=price, system_dir=SYS["dir"],
+                 gemini_rotacao=rotacao, protected_roots=[])
     be = SimpleNamespace(models=FakeModels(outcomes, names), files=files)
     return GeminiClient(s, backend=be), be
 
@@ -137,8 +150,10 @@ def test_pick_default_models():
     names = ["models/gemini-1.5-flash", "models/gemini-x-flash", "models/gemini-2.5-flash",
              "models/gemini-2.5-flash-lite", "models/gemini-2.5-pro", "models/gemini-3.0-pro-preview",
              "models/gemini-3.0-pro", "models/gemini-2.5-flash-image", "models/gemini-2.5-flash-preview-tts"]
-    c, _ = mk([], names=names)
+    c, _ = mk([], names=names, mode="pago")
     assert c.pick_default_models() == ("gemini-2.5-flash", "gemini-3.0-pro")
+    c2, _ = mk([], names=names, mode="gratis")  # Pro tem limite 0 no grátis
+    assert c2.pick_default_models() == ("gemini-2.5-flash", "gemini-2.5-flash")
 
 
 def test_pick_default_sem_modelo():
@@ -179,7 +194,7 @@ def test_sem_chave(monkeypatch):
 def test_real_json_simples():
     if not gc.get_api_key():
         pytest.skip("sem chave Gemini configurada")
-    s = Settings()
+    s = Settings(system_dir=SYS["dir"], protected_roots=[])
     c = GeminiClient(s)
     flash, _ = c.pick_default_models()
     assert c.generate_json(flash, [], Out, 'Responda {"ok": true}').ok is True
@@ -213,8 +228,8 @@ def test_quota_diaria_marcada():
         c.generate_json("m", [], Out, "p")
     assert e.value.daily is True
     c2, _ = mk([err429()])
-    with pytest.raises(QuotaPaused) as e2:
-        c2.generate_json("m", [], Out, "p")
+    with pytest.raises(QuotaPaused) as e2:  # outro modelo: "m" ficou esgotado no cota.json
+        c2.generate_json("m2", [], Out, "p")
     assert e2.value.daily is False
 
 
@@ -264,3 +279,171 @@ def test_count_tokens():
     c = GeminiClient(s, backend=be)
     assert c.count_tokens("pro", "texto") == 1234
     assert be.models.calls == [("pro", "texto")]
+
+
+# ------------------------------------------------------------------ revezamento no grátis
+
+
+NOMES = ["models/gemini-3.6-flash", "models/gemini-3.5-flash", "models/gemini-3.6-flash-lite",
+         "models/gemini-3.6-pro", "models/gemini-3.6-flash-image", "models/gemini-3.6-flash-preview-tts",
+         "models/gemini-3.6-flash-live", "models/gemini-embedding-001", "models/gemini-3.7-flash-preview"]
+
+
+def err429v(quota_id, value="20", model="gemini-3.6-flash", delay="20731s"):
+    """Formato real (google-genai 2.34.0): details = o JSON inteiro da resposta."""
+    return errors.ClientError(429, {"error": {
+        "code": 429, "status": "RESOURCE_EXHAUSTED",
+        "message": f"You exceeded your current quota. Quota exceeded for metric: "
+                   f"generativelanguage.googleapis.com/generate_content_free_tier_requests, "
+                   f"limit: {value}, model: {model}. Please retry in 20731.5s.",
+        "details": [
+            {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{
+                "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+                "quotaId": quota_id,
+                "quotaDimensions": {"location": "global", "model": model},
+                "quotaValue": value}]},
+            {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay}]}})
+
+
+DIA = "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+MINUTO = "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"
+
+
+def modelos(be):
+    return [x[0] for x in be.models.calls]
+
+
+def test_candidatos_do_revezamento():
+    c, _ = mk([], names=NOMES)
+    assert c.candidatos("gemini-3.6-flash") == ["gemini-3.6-flash", "gemini-3.6-flash-lite",
+                                                "gemini-3.5-flash"]
+    # o configurado vem primeiro, mesmo que seja Pro
+    assert c.candidatos("gemini-3.6-pro")[:2] == ["gemini-3.6-pro", "gemini-3.6-flash"]
+
+
+def test_per_day_no_modelo_a_usa_b_sem_pausa(tmp_path):
+    c, be = mk([err429v(DIA), '{"ok": true}'], names=NOMES)
+    assert c.generate_json("gemini-3.6-flash", [], Out, "p").ok
+    assert modelos(be) == ["gemini-3.6-flash", "gemini-3.6-flash-lite"]
+    # a próxima chamada já começa pelo B
+    be.models.outcomes.append('{"ok": true}')
+    c.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert modelos(be)[-1] == "gemini-3.6-flash-lite"
+    dados = json.loads((tmp_path / "sys" / "cota.json").read_text(encoding="utf-8"))
+    assert "gemini-3.6-flash" in dados["esgotados"]
+
+
+def test_todos_esgotados_pausa_com_o_menor_resume_at():
+    c, be = mk([err429v(DIA, delay="7300s"), err429v(DIA, delay="5000s"), err429v(DIA, delay="9000s")],
+               names=NOMES)
+    antes = datetime.now(timezone.utc)
+    with pytest.raises(QuotaPaused) as e:
+        c.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert e.value.daily is True and len(be.models.calls) == 3
+    delta = (e.value.resume_at - antes).total_seconds()
+    assert 4999 <= delta <= 5010
+    # tudo esgotado: nem chama a API de novo
+    with pytest.raises(QuotaPaused):
+        c.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert len(be.models.calls) == 3
+
+
+def test_limite_zero_exclui_sem_pausa(tmp_path):
+    c, be = mk([err429v(DIA, value="0", model="gemini-3.6-pro"), '{"ok": true}', '{"ok": true}'],
+               names=NOMES)
+    assert c.generate_json("gemini-3.6-pro", [], Out, "p").ok
+    assert modelos(be) == ["gemini-3.6-pro", "gemini-3.6-flash"]
+    c.generate_json("gemini-3.6-pro", [], Out, "p")
+    assert modelos(be)[-1] == "gemini-3.6-flash"  # o Pro não volta ao revezamento
+    dados = json.loads((tmp_path / "sys" / "cota.json").read_text(encoding="utf-8"))
+    assert dados["indisponiveis"] == ["gemini-3.6-pro"] and dados["esgotados"] == {}
+
+
+def test_per_minute_mantem_comportamento_atual():
+    c, be = mk([err429v(MINUTO, value="5", delay="40s")], names=NOMES)
+    antes = datetime.now(timezone.utc)
+    with pytest.raises(QuotaPaused) as e:
+        c.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert e.value.daily is False and len(be.models.calls) == 1
+    assert 39 <= (e.value.resume_at - antes).total_seconds() <= 50
+
+
+def test_violacao_vale_mais_que_o_texto():
+    # a mensagem cita "per day", mas o quotaId violado é por minuto
+    e = err429v(MINUTO, delay="30s")
+    e.details["error"]["message"] += " (see per day limits)"
+    c, be = mk([e], names=NOMES)
+    with pytest.raises(QuotaPaused) as ex:
+        c.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert ex.value.daily is False
+
+
+def test_cota_json_lido_em_novo_cliente():
+    c, be = mk([err429v(DIA), '{"ok": true}'], names=NOMES)
+    c.generate_json("gemini-3.6-flash", [], Out, "p")
+    c2, be2 = mk(['{"ok": true}'], names=NOMES)
+    c2.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert modelos(be2) == ["gemini-3.6-flash-lite"]
+
+
+def test_esgotado_vencido_volta(tmp_path):
+    from datetime import timedelta
+    (tmp_path / "sys").mkdir()
+    passado = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    (tmp_path / "sys" / "cota.json").write_text(
+        json.dumps({"esgotados": {"gemini-3.6-flash": passado}, "indisponiveis": []}), encoding="utf-8")
+    c, be = mk(['{"ok": true}'], names=NOMES)
+    c.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert modelos(be) == ["gemini-3.6-flash"]
+
+
+def test_sem_rotacao_per_day_pausa_na_hora():
+    c, be = mk([err429v(DIA)], names=NOMES, rotacao=False)
+    with pytest.raises(QuotaPaused) as e:
+        c.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert e.value.daily is True and len(be.models.calls) == 1
+
+
+def test_pago_nao_reveza(monkeypatch):
+    monkeypatch.setattr(gc, "_sleep", lambda s: None)
+    c, be = mk([err429v(DIA, delay="1s"), '{"ok": true}'], names=NOMES, mode="pago")
+    assert c.generate_json("gemini-3.6-flash", [], Out, "p").ok
+    assert modelos(be) == ["gemini-3.6-flash", "gemini-3.6-flash"]
+
+
+def test_modelo_usado_vai_para_o_log(caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="roteiro_ia")
+    c, be = mk([err429v(DIA), '{"ok": true}'], names=NOMES)
+    c.generate_json("gemini-3.6-flash", [], Out, "p")
+    usados = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any("gemini-3.6-flash-lite" in m for m in usados)
+
+
+
+# ------------------------------------------------------------------ revisão 1
+
+
+def test_retry_delay_diario_tem_piso_de_1h():
+    from datetime import timedelta
+    c, be = mk([err429v(DIA, delay="100s")], names=["models/gemini-3.6-flash"])
+    antes = datetime.now(timezone.utc)
+    with pytest.raises(QuotaPaused) as e:
+        c.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert e.value.resume_at - antes >= timedelta(hours=1) - timedelta(seconds=1)
+
+
+def test_save_cota_junta_o_que_outra_janela_gravou(tmp_path):
+    from datetime import timedelta
+    c2, _ = mk([], names=NOMES)
+    c2._esgotados["gemini-3.5-flash"] = datetime.now(timezone.utc) + timedelta(hours=3)
+    # outra janela gravou depois que c2 leu o arquivo
+    (tmp_path / "sys").mkdir()
+    outro = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    (tmp_path / "sys" / "cota.json").write_text(json.dumps(
+        {"esgotados": {"gemini-3.6-flash": outro}, "indisponiveis": ["gemini-3.6-pro"]}), encoding="utf-8")
+    c2._save_cota()
+    dados = json.loads((tmp_path / "sys" / "cota.json").read_text(encoding="utf-8"))
+    assert set(dados["esgotados"]) == {"gemini-3.6-flash", "gemini-3.5-flash"}
+    assert dados["indisponiveis"] == ["gemini-3.6-pro"]
+    assert not list((tmp_path / "sys").glob("*.part"))  # escrita atômica, sem sobras

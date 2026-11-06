@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 from urllib.parse import parse_qs, urlparse
 
 from google.genai import types
@@ -84,6 +84,18 @@ def _cache_path(s: Settings, url: str) -> Path:
     return Path(s.system_dir) / "estilo_cache" / f"{_video_id(url)}.json"
 
 
+def _read_cache(s: Settings, url: str) -> VideoStyleNotes | None:
+    try:
+        return VideoStyleNotes.model_validate_json(_cache_path(s, url).read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError):
+        return None
+
+
+def video_em_cache(s: Settings, url: str) -> bool:
+    """True se o vídeo (URL em qualquer formato aceito) já foi analisado e está no cache."""
+    return _video_id(url) is not None and _read_cache(s, url) is not None
+
+
 def load_style_profile(s: Settings) -> StyleProfile | None:
     try:
         return StyleProfile.model_validate_json(_profile_path(s).read_text(encoding="utf-8"))
@@ -108,22 +120,38 @@ _PROMPT_AGG = (
 )
 
 
-def build_style_profile(c, s: Settings, model: str | None = None) -> StyleProfile:
+ProgressoVideo = Callable[[str, str, int, int], None]
+ESTADOS = ("aguardando", "analisando", "feito", "erro", "ignorado")
 
+
+def build_style_profile(c, s: Settings, model: str | None = None,
+                        on_progress: ProgressoVideo | None = None) -> StyleProfile:
+    """`on_progress(url, estado, feitos, total)`: estados em ESTADOS; `url` é a canônica
+    (watch?v=) para vídeos e a original para as ignoradas; `feitos` conta só os analisados."""
+    def prog(url: str, estado: str) -> None:
+        if on_progress:
+            on_progress(url, estado, len(all_notes), len(videos))
 
     videos, ignored = expand_playlists(s.style_urls)
+    all_notes: list[VideoStyleNotes] = []
     for u in ignored:
         log.warning("URL ignorada (playlist ou link inválido; adicione os vídeos individualmente): %s", u)
-    model = model or s.gemini_model_script or c.pick_default_models()[0]
-    safe_mkdir(Path(s.system_dir) / "estilo_cache", s)
-    all_notes: list[VideoStyleNotes] = []
-    for url in videos:
-        cp = _cache_path(s, url)
-        try:
-            all_notes.append(VideoStyleNotes.model_validate_json(cp.read_text(encoding="utf-8")))
-            continue
-        except (OSError, ValueError, ValidationError):
-            pass
+        prog(u, "ignorado")
+    pendentes = []
+    for url in videos:  # os do cache contam como feitos na hora
+        n = _read_cache(s, url)
+        if n is None:
+            pendentes.append(url)
+        else:
+            all_notes.append(n)
+            prog(url, "feito")
+    for url in pendentes:
+        prog(url, "aguardando")
+    if pendentes:
+        model = model or s.gemini_model_script or c.pick_default_models()[0]
+        safe_mkdir(Path(s.system_dir) / "estilo_cache", s)
+    for url in pendentes:
+        prog(url, "analisando")
         part = types.Part.from_uri(file_uri=url, mime_type="video/*")
         try:
             n = c.generate_json(model, [part], VideoStyleNotes, _PROMPT_VIDEO)
@@ -131,15 +159,18 @@ def build_style_profile(c, s: Settings, model: str | None = None) -> StyleProfil
             raise
         except Exception as e:  # noqa: BLE001
             log.warning("Vídeo pulado (indisponível ou erro na análise) %s: %s", url, e)
+            prog(url, "erro")
             continue
         n = n.model_copy(update={"url": url})
-        safe_write_text(cp, n.model_dump_json(indent=2), s)
+        safe_write_text(_cache_path(s, url), n.model_dump_json(indent=2), s)
         all_notes.append(n)
+        prog(url, "feito")
     if not all_notes:
         raise RuntimeError(
             "Nenhum vídeo de estilo pôde ser analisado. Confira os links (públicos, vídeos individuais) "
             "nas configurações."
         )
+    model = model or s.gemini_model_script or c.pick_default_models()[0]
     payload = json.dumps([n.model_dump() for n in all_notes], ensure_ascii=False, indent=1)
     prof = c.generate_json(model, [], StyleProfile, _PROMPT_AGG + payload)
     prof = prof.model_copy(update={"fontes": [n.url for n in all_notes]})
