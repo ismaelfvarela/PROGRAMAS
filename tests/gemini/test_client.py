@@ -334,14 +334,14 @@ def test_per_day_no_modelo_a_usa_b_sem_pausa(tmp_path):
 
 
 def test_todos_esgotados_pausa_com_o_menor_resume_at():
-    c, be = mk([err429v(DIA, delay="300s"), err429v(DIA, delay="100s"), err429v(DIA, delay="900s")],
+    c, be = mk([err429v(DIA, delay="7300s"), err429v(DIA, delay="5000s"), err429v(DIA, delay="9000s")],
                names=NOMES)
     antes = datetime.now(timezone.utc)
     with pytest.raises(QuotaPaused) as e:
         c.generate_json("gemini-3.6-flash", [], Out, "p")
     assert e.value.daily is True and len(be.models.calls) == 3
     delta = (e.value.resume_at - antes).total_seconds()
-    assert 99 <= delta <= 110
+    assert 4999 <= delta <= 5010
     # tudo esgotado: nem chama a API de novo
     with pytest.raises(QuotaPaused):
         c.generate_json("gemini-3.6-flash", [], Out, "p")
@@ -418,3 +418,32 @@ def test_modelo_usado_vai_para_o_log(caplog):
     c.generate_json("gemini-3.6-flash", [], Out, "p")
     usados = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     assert any("gemini-3.6-flash-lite" in m for m in usados)
+
+
+
+# ------------------------------------------------------------------ revisão 1
+
+
+def test_retry_delay_diario_tem_piso_de_1h():
+    from datetime import timedelta
+    c, be = mk([err429v(DIA, delay="100s")], names=["models/gemini-3.6-flash"])
+    antes = datetime.now(timezone.utc)
+    with pytest.raises(QuotaPaused) as e:
+        c.generate_json("gemini-3.6-flash", [], Out, "p")
+    assert e.value.resume_at - antes >= timedelta(hours=1) - timedelta(seconds=1)
+
+
+def test_save_cota_junta_o_que_outra_janela_gravou(tmp_path):
+    from datetime import timedelta
+    c2, _ = mk([], names=NOMES)
+    c2._esgotados["gemini-3.5-flash"] = datetime.now(timezone.utc) + timedelta(hours=3)
+    # outra janela gravou depois que c2 leu o arquivo
+    (tmp_path / "sys").mkdir()
+    outro = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    (tmp_path / "sys" / "cota.json").write_text(json.dumps(
+        {"esgotados": {"gemini-3.6-flash": outro}, "indisponiveis": ["gemini-3.6-pro"]}), encoding="utf-8")
+    c2._save_cota()
+    dados = json.loads((tmp_path / "sys" / "cota.json").read_text(encoding="utf-8"))
+    assert set(dados["esgotados"]) == {"gemini-3.6-flash", "gemini-3.5-flash"}
+    assert dados["indisponiveis"] == ["gemini-3.6-pro"]
+    assert not list((tmp_path / "sys").glob("*.part"))  # escrita atômica, sem sobras

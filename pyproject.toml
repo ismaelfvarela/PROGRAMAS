@@ -42,6 +42,7 @@ packages = ["src/roteiro_ia"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not gemini'"  # teste com a API real só com -m gemini (gasta cota)
 markers = [
   "gemini: teste real contra a API Gemini (requer chave)",
   "windows: teste que usa o Microsoft Edge instalado no Windows",

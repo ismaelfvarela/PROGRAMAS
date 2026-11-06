@@ -175,7 +175,7 @@ def test_prepare_grava_projeto_e_estima_custo(tmp_path):
 def test_modelos_padrao_escolhidos_uma_vez(tmp_path):
     s = mk_settings(tmp_path, gemini_model_analysis="", gemini_model_script="")
     g = FakeGemini()
-    pipe, _, _ = mk_pipe(tmp_path, settings=s, gemini=g)
+    pipe, _, _ = mk_pipe(tmp_path, mode="pago", settings=s, gemini=g)
     assert pipe._models() == ("auto-flash", "auto-pro")
     assert pipe._models() == ("auto-flash", "auto-pro")
     assert g.picks == 1
@@ -573,3 +573,27 @@ def test_cli_pasta_relativa_resolvida(cli_env, monkeypatch):
     req.save(p.analysis_dir / "projeto.json", load_settings(cfg))
     assert cli.main(["--config", str(cfg), "continuar", "."]) == 0
     assert cli.main(["--config", str(cfg), "ajustar", ".", "x"]) == 0
+
+
+
+def test_modelos_escolhidos_no_gratis_nao_vao_para_o_config(tmp_path):
+    s = mk_settings(tmp_path, gemini_model_analysis="", gemini_model_script="")
+    g = FakeGemini()
+    pipe, _, _ = mk_pipe(tmp_path, mode="gratis", settings=s, gemini=g)
+    assert pipe._models() == ("auto-flash", "auto-pro")
+    assert pipe._models() == ("auto-flash", "auto-pro") and g.picks == 1  # só em memória
+    assert not (tmp_path / "SIS" / "config.json").exists()
+    assert s.gemini_model_script == ""  # as Settings do editor continuam vazias
+    pipe.close()
+
+
+def test_analise_usa_maximo_de_video_das_settings(tmp_path, monkeypatch):
+    s = mk_settings(tmp_path, gemini_pacote_max_s=600)
+    pipe = Pipeline(mk_req(tmp_path), s, FakeGemini(), None, None,
+                    settings_path=tmp_path / "SIS" / "config.json")
+    got = {}
+    monkeypatch.setattr(pipeline, "analyze_event", lambda *a, **k: got.update(k))
+    monkeypatch.setattr(pipeline, "load_style_profile", lambda s: None)
+    pipe._st_analise()
+    assert got["max_video_s"] == 600
+    pipe.close()

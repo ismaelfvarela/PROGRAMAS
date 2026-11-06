@@ -125,12 +125,13 @@ def test_id_invalido_reenvia(env):
 
 def test_falha_apos_3_tentativas(env):
     db, mid, ids = env
-    bad = FileAnalysis(segmentos=[sa(ids[0])])
-    c = FakeClient([bad, bad, bad])
+    c = FakeClient([FileAnalysis(segmentos=[sa(ids[0])])] + [FileAnalysis(segmentos=[])] * 2)
     analyze_event(db, c, None, "m")
     f = db.list_falhas()
     assert len(f) == 1 and f[0].etapa == "analise" and f[0].rel_path == "A\\C1.MP4"
-    assert db.get_analysis(ids[0]) is None
+    # o que veio válido fica salvo; só o que faltou após 3 tentativas vira falha
+    assert db.get_analysis(ids[0]) is not None and db.get_analysis(ids[1]) is None
+    assert f"segment_id={ids[0]}" not in c.calls[1][3] and f"segment_id={ids[1]}" in c.calls[1][3]
 
 
 def test_video_sem_proxy_falha(tmp_path):
@@ -243,8 +244,12 @@ def test_apaga_arquivo_enviado_ao_terminar(env):
     assert c2.deleted == ["files/1"]  # apaga mesmo quando o lote falha
 
 
-def test_tres_pausas_por_minuto_na_mesma_requisicao_viram_falha(env):
-    db, mid, ids = env
+def test_tres_pausas_por_minuto_na_mesma_requisicao_viram_falha(tmp_path):
+    # com um segmento só não há como dividir: a 3ª pausa vira falha (com mais, divide — ver abaixo)
+    db = new_db(tmp_path)
+    mid = db.add_media(mi(r"A\C1.MP4"))
+    db.set_proxy(mid, "p.mp4", "gerado")
+    ids = db.add_segments([Segment(media_id=mid, start_s=0, end_s=10)])
     for _ in range(2):
         with pytest.raises(QuotaPaused):
             analyze_event(db, FakeClient(exc=mpause()), None, "m")
@@ -259,7 +264,7 @@ def test_tres_pausas_por_minuto_na_mesma_requisicao_viram_falha(env):
     analyze_event(db, c4, None, "m")
     assert c4.calls == [] and len(db.list_falhas()) == 1
     db.clear_quota_strikes()
-    c5 = FakeClient([FileAnalysis(segmentos=[sa(ids[0]), sa(ids[1])])])
+    c5 = FakeClient([FileAnalysis(segmentos=[sa(ids[0])])])
     analyze_event(db, c5, None, "m")
     assert db.get_analysis(ids[0]) is not None
 
@@ -387,12 +392,13 @@ def test_pacote_valida_ids_misturados(tmp_path):
         db.set_proxy(mid, "p.mp4", "gerado")
     ia = db.add_segments([Segment(media_id=a, start_s=0, end_s=10)])
     ib = db.add_segments([Segment(media_id=b, start_s=0, end_s=10)])
-    # 1ª: falta o id de B; 2ª: repetido; 3ª: ids misturados mas completos (ordem trocada)
+    # 1ª: falta o id de B (A é salvo); 2ª pede só B e volta com A repetido + B
     c = FakeClient([FileAnalysis(segmentos=[sa(ia[0])]),
-                    FileAnalysis(segmentos=[sa(ia[0]), sa(ia[0]), sa(ib[0])]),
-                    FileAnalysis(segmentos=[sa(ib[0]), sa(ia[0])])])
+                    FileAnalysis(segmentos=[sa(ia[0]), sa(ia[0]), sa(ib[0])])])
     analyze_event(db, c, None, "m")
-    assert len(c.calls) == 3
+    assert len(c.calls) == 2
+    assert f"segment_id={ia[0]}" not in c.calls[1][3]
+    assert [p for p in c.calls[1][1] if isinstance(p, str)] == [r"ARQUIVO 1: A\C2.MP4"]
     assert db.get_analysis(ia[0]) and db.get_analysis(ib[0]) and db.list_falhas() == []
 
 
@@ -419,3 +425,123 @@ def test_pacote_quota_propaga_e_apaga_uploads(tmp_path):
     with pytest.raises(QuotaPaused):
         analyze_event(db, c, None, "m")
     assert len(c.calls) == 1 and sorted(c.deleted) == ["files/1", "files/2", "files/3"]
+
+
+
+# ------------------------------------------------------------------ revisão 1
+
+
+def _pacote_60(db, n_midias=3, por_midia=20):
+    ids = []
+    for k in range(n_midias):
+        mid = db.add_media(mi(rf"A\P{k}.MP4", dur=300))
+        db.set_proxy(mid, f"p{k}.mp4", "gerado")
+        ids += db.add_segments([Segment(media_id=mid, start_s=i * 10, end_s=i * 10 + 9)
+                                for i in range(por_midia)])
+    return ids
+
+
+def test_resposta_sem_um_id_salva_59_e_pede_so_o_que_falta(tmp_path):
+    db = new_db(tmp_path)
+    ids = _pacote_60(db)
+    assert len(ids) == 60
+    falta = ids[37]
+    c = FakeClient([FileAnalysis(segmentos=[sa(i) for i in ids if i != falta]),
+                    FileAnalysis(segmentos=[sa(falta)])])
+    analyze_event(db, c, None, "m")
+    assert len(c.calls) == 2
+    assert ids_do_prompt(c.calls[1][3]) == [falta]
+    # só o arquivo do segmento faltante vai na 2ª chamada, recortado no trecho dele
+    textos = [p for p in c.calls[1][1] if not isinstance(p, str)]
+    assert len(textos) == 1 and textos[0].video_metadata.start_offset == "170.00s"
+    assert all(db.get_analysis(i) is not None for i in ids) and db.list_falhas() == []
+    assert len(c.uploads) == 3  # os mesmos uploads, sem reenviar
+
+
+def test_resposta_sem_um_id_salva_59_mesmo_se_o_resto_falhar(tmp_path):
+    db = new_db(tmp_path)
+    ids = _pacote_60(db)
+    falta = ids[45]
+    c = FakeClient([FileAnalysis(segmentos=[sa(i) for i in ids if i != falta]),
+                    ValueError("json"), FileAnalysis(segmentos=[sa(999)])])
+    analyze_event(db, c, None, "m")
+    assert sum(db.get_analysis(i) is not None for i in ids) == 59
+    assert [f.rel_path for f in db.list_falhas()] == [r"A\P2.MP4"]  # só a mídia com falta
+
+
+def test_id_duplicado_e_desconhecido_descartados(tmp_path):
+    db = new_db(tmp_path)
+    ids = _pacote_60(db, n_midias=1, por_midia=3)
+    c = FakeClient([FileAnalysis(segmentos=[sa(ids[0]), sa(ids[0], hl=[]), sa(ids[1]), sa(999)]),
+                    FileAnalysis(segmentos=[sa(ids[2])])])
+    analyze_event(db, c, None, "m")
+    assert len(c.calls) == 2 and ids_do_prompt(c.calls[1][3]) == [ids[2]]
+    assert all(db.get_analysis(i) is not None for i in ids) and db.list_falhas() == []
+
+
+class RoteiroClient(FakeClient):
+    """Respostas na ordem; a string "eco" responde a todos os ids do prompt."""
+
+    def generate_json(self, model, parts, schema, prompt, max_retries=3):
+        self.calls.append((model, parts, schema, prompt))
+        r = self.responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return FileAnalysis(segmentos=[sa(i) for i in ids_do_prompt(prompt)])
+
+
+def test_tres_pausas_por_minuto_dividem_o_pacote(tmp_path):
+    db = new_db(tmp_path)
+    ids = _pacote_60(db, n_midias=2, por_midia=5)
+    for _ in range(2):
+        with pytest.raises(QuotaPaused):
+            analyze_event(db, FakeClient(exc=mpause()), None, "m")
+    c = RoteiroClient([mpause(), "eco", "eco"])
+    analyze_event(db, c, None, "m")  # 3ª pausa: divide em dois pacotes menores e segue
+    assert len(c.calls) == 3
+    assert ids_do_prompt(c.calls[1][3]) == ids[:5] and ids_do_prompt(c.calls[2][3]) == ids[5:]
+    assert db.list_falhas() == [] and all(db.get_analysis(i) is not None for i in ids)
+
+
+def test_retomada_de_pacote_ja_desistido_divide_sem_chamar_o_inteiro(tmp_path):
+    db = new_db(tmp_path)
+    ids = _pacote_60(db, n_midias=1, por_midia=4)
+    for _ in range(2):
+        with pytest.raises(QuotaPaused):
+            analyze_event(db, FakeClient(exc=mpause()), None, "m")
+    with pytest.raises(QuotaPaused):  # 3ª pausa: divide; a 1ª metade também pausa
+        analyze_event(db, RoteiroClient([mpause(), mpause()]), None, "m")
+    c = RoteiroClient(["eco", "eco"])
+    analyze_event(db, c, None, "m")  # uma mídia só: divide os segmentos (e o recorte) ao meio
+    assert [ids_do_prompt(x[3]) for x in c.calls] == [ids[:2], ids[2:]]
+    assert c.calls[1][1][1].video_metadata.start_offset == "20.00s"
+    assert db.list_falhas() == []
+
+
+def test_pacote_de_um_segmento_nao_divide_e_vira_falha(tmp_path):
+    db = new_db(tmp_path)
+    _pacote_60(db, n_midias=1, por_midia=1)
+    for _ in range(2):
+        with pytest.raises(QuotaPaused):
+            analyze_event(db, FakeClient(exc=mpause()), None, "m")
+    analyze_event(db, FakeClient(exc=mpause()), None, "m")
+    f = db.list_falhas()
+    assert len(f) == 1 and "cota por minuto" in f[0].msg
+
+
+def test_maximo_de_video_por_chamada_configuravel(tmp_path):
+    db = new_db(tmp_path)
+    for k in range(4):
+        mid = db.add_media(mi(rf"A\V{k}.MP4", dur=400))
+        db.set_proxy(mid, "p.mp4", "gerado")
+        db.add_segments([Segment(media_id=mid, start_s=0, end_s=400)])
+    c = RoteiroClient(["eco"] * 4)
+    analyze_event(db, c, None, "m", max_video_s=900)
+    assert [len(ids_do_prompt(x[3])) for x in c.calls] == [2, 2]
+    c2 = RoteiroClient(["eco"] * 4)
+    db2 = new_db(tmp_path / "b")
+    mid = db2.add_media(mi(r"A\L.MP4", dur=1000))
+    db2.set_proxy(mid, "p.mp4", "gerado")
+    db2.add_segments([Segment(media_id=mid, start_s=0, end_s=1000)])
+    analyze_event(db2, c2, None, "m", max_video_s=900)  # > 900 s: vai sozinha
+    assert len(c2.calls[0][1]) == 1 and not isinstance(c2.calls[0][1][0], str)

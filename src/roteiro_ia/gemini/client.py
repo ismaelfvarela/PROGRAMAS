@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timedelta
@@ -16,7 +17,7 @@ from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
 from roteiro_ia.config import Settings
-from roteiro_ia.safety import safe_mkdir, safe_write_text
+from roteiro_ia.safety import assert_writable, safe_mkdir, safe_write_text
 
 log = logging.getLogger(__name__)
 KEYRING_SERVICE = "RoteiroIA-Gemini"
@@ -36,6 +37,7 @@ _EXCLUDE = ("lite", "image", "tts", "live", "audio", "embedding", "thinking-exp"
 _FLASH = re.compile(r"gemini-(\d+(?:\.\d+)?)-flash(-lite)?(?:-\d{3})?")
 _ROTATION_EXCLUDE = ("image", "tts", "live", "audio", "embedding", "preview", "exp")
 COTA_FILE = "cota.json"
+DAILY_MIN_WAIT_S = 3600  # piso da espera diária informada pelo retryDelay
 
 
 def get_api_key() -> str | None:
@@ -225,14 +227,24 @@ class GeminiClient:
         self._indisponiveis |= {str(n) for n in data.get("indisponiveis") or []}
 
     def _save_cota(self) -> None:
+        """Relê e junta o arquivo (outra janela pode ter gravado) e grava de forma atômica."""
+        self._load_cota()
         now = datetime.now(LA)
         data = {"esgotados": {n: w.isoformat() for n, w in sorted(self._esgotados.items()) if w > now},
                 "indisponiveis": sorted(self._indisponiveis)}
+        path = self._cota_path()
+        part = path.with_name(path.name + ".part")
         try:
-            safe_mkdir(Path(self.s.system_dir), self.s)
-            safe_write_text(self._cota_path(), json.dumps(data, ensure_ascii=False, indent=2), self.s)
+            safe_mkdir(path.parent, self.s)
+            safe_write_text(part, json.dumps(data, ensure_ascii=False, indent=2), self.s)
+            assert_writable(path, self.s)
+            os.replace(part, path)
         except Exception as e:  # noqa: BLE001 - só memória: vale nesta execução
-            log.warning("Não foi possível gravar %s: %s", self._cota_path(), e)
+            log.warning("Não foi possível gravar %s: %s", path, e)
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _livre(self, name: str, now: datetime) -> bool:
         if name in self._indisponiveis:
@@ -303,9 +315,10 @@ class GeminiClient:
                             "O modelo do Gemini escolhido não tem cota no plano gratuito (limite 0). "
                             "Ative o revezamento de modelos ou escolha um modelo flash.") from e
                     if kind == "diario":
-                        # com QuotaFailure + RetryInfo, a espera informada; senão 00:00 (Pacífico)
+                        # com QuotaFailure + RetryInfo, a espera informada (mín. 1 h); senão
+                        # 00:00 (Pacífico)
                         if _find_violations(getattr(e, "details", None)) and _has_retry_info(e):
-                            resume = now + timedelta(seconds=_retry_delay_s(e))
+                            resume = now + timedelta(seconds=max(_retry_delay_s(e), DAILY_MIN_WAIT_S))
                         else:
                             resume = _next_midnight_la(now)
                         if rotate:

@@ -103,3 +103,16 @@ def test_cota_diaria_mostra_hora_e_quantos_faltam(aba, qtbot, monkeypatch):
     msg = aba.banner.text()
     assert f"{quando.astimezone():%d/%m %H:%M}" in msg and "faltam 2 de 3" in msg
     assert textos(aba)[1] == f"○  {U2}"  # o que estava em análise volta a aguardar
+
+
+def test_config_maximo_de_video_por_chamada(qtbot, settings_tmp, tmp_path):
+    from PySide6.QtWidgets import QLabel
+    from roteiro_ia.config import load_settings
+    from roteiro_ia.ui.abas import ConfigTab
+    w = ConfigTab(settings_tmp, tmp_path / "SISTEMA" / "config.json")
+    qtbot.addWidget(w)
+    assert any(lb.text() == "Máx. de vídeo por chamada (s)" for lb in w.findChildren(QLabel))
+    assert w.sp_pacote.value() == 1800
+    w.sp_pacote.setValue(900)
+    assert w.salvar()
+    assert load_settings(tmp_path / "SISTEMA" / "config.json").gemini_pacote_max_s == 900

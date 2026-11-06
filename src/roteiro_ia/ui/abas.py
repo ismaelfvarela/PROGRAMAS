@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton,
-                               QTextBrowser, QVBoxLayout, QWidget)
+                               QSpinBox, QTextBrowser, QVBoxLayout, QWidget)
 
 from roteiro_ia.config import Settings, save_settings
 from roteiro_ia.ui.widgets import Banner, Card
@@ -353,10 +353,16 @@ class ConfigTab(QWidget):
         self.sp_preco.setDecimals(2)
         self.sp_preco.setPrefix("US$ ")
         self.sp_preco.setValue(s.price_usd_per_mtok)
+        self.sp_pacote = QSpinBox()
+        self.sp_pacote.setRange(60, 3600)
+        self.sp_pacote.setSingleStep(60)
+        self.sp_pacote.setValue(s.gemini_pacote_max_s)
+        self.sp_pacote.setToolTip("Quanto vídeo vai em cada chamada de análise ao Gemini. Diminua se "
+                                  "a cota por minuto do plano gratuito pausar sempre.")
         self.chk_copiar = QCheckBox("Copiar trilhas para o Y: (pasta TRILHAS do evento)")
         self.chk_copiar.setChecked(s.copy_music_to_work)
         for w in (self.ed_work, self.ed_e, self.ed_g, self.ed_music, self.ed_cliente,
-                  self.sp_preco):
+                  self.sp_preco, self.sp_pacote):
             w.setMaximumWidth(420)
         f.addRow("Disco de trabalho (padrão)", self.ed_work)
         f.addRow("Projetos do Premiere", self.ed_e)
@@ -364,6 +370,7 @@ class ConfigTab(QWidget):
         f.addRow("Biblioteca de trilhas", self.ed_music)
         f.addRow("Pasta do cliente", self.ed_cliente)
         f.addRow("Preço por milhão de tokens", self.sp_preco)
+        f.addRow("Máx. de vídeo por chamada (s)", self.sp_pacote)
         f.addRow("", self.chk_copiar)
         card.body.addLayout(f)
         linha = QHBoxLayout()
@@ -393,6 +400,7 @@ class ConfigTab(QWidget):
         for k, v in campos.items():
             setattr(self.s, k, v)
         self.s.price_usd_per_mtok = self.sp_preco.value()
+        self.s.gemini_pacote_max_s = self.sp_pacote.value()
         self.s.copy_music_to_work = self.chk_copiar.isChecked()
         err = _salvar(self.s, self.settings_path)
         if err:
