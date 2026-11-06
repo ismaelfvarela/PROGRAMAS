@@ -44,6 +44,28 @@ TRECHO_CURTO_S = 20.0     # meio e clímax
 MUSICA_CURTA_S = 100.0    # abaixo disso a música é analisada inteira
 _SR_MODELOS = 44100       # áudio para Demucs/CLAP (o 22050 do BPM corta o agudo da voz)
 
+# --- tonalidade (Krumhansl–Schmuckler)
+NOTAS = ("Dó", "Dó#", "Ré", "Ré#", "Mi", "Fá", "Fá#", "Sol", "Sol#", "Lá", "Lá#", "Si")
+_PERFIL_MAIOR = (6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)
+_PERFIL_MENOR = (6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17)
+
+# --- clima / instrumentos / voz (CLAP zero-shot): prompt em inglês → nome em português
+CLIMAS = {"romantic": "romântica", "emotional": "emotiva", "happy": "alegre", "epic": "épica",
+          "inspiring": "inspiradora", "nostalgic": "nostálgica", "tense": "tensa",
+          "calm": "calma", "festive": "festiva"}
+INSTRUMENTOS = {"piano": "piano", "acoustic guitar": "violão", "strings": "cordas",
+                "orchestra": "orquestra", "electronic": "eletrônica", "drums": "bateria",
+                "choir": "coral", "solo voice": "voz solo"}
+TIPO_VOZ = {"male vocals": "masculina", "female vocals": "feminina", "choir": "coral",
+            "instrumental": "sem voz"}
+SEM_VOZ = "sem voz"
+CLAP_MODELO = "laion/clap-htsat-unfused"
+# O repositório principal só tem pytorch_model.bin, que o transformers>=4.50 recusa carregar com
+# torch < 2.6 (CVE do torch.load). A PR oficial de conversão (SFconvertbot) traz o safetensors.
+CLAP_REVISAO_PESOS = "refs/pr/3"
+CLAP_SR = 48000
+CLAP_JANELA_S = 10.0
+
 
 class BeatTracker(Protocol):
     def track(self, path: Path) -> tuple[list[float], list[float]]:
@@ -185,6 +207,104 @@ def _default_separator() -> VocalSeparator | None:
     return sep
 
 
+class AudioTagger(Protocol):
+    def scores(self, audio: np.ndarray, sr: int, rotulos: list[str]) -> list[float]:
+        """Um score por rótulo (texto livre), maior = mais parecido com o áudio."""
+
+
+class ClapTagger:
+    """CLAP zero-shot (transformers) em janelas de 10 s a 48 kHz, média das janelas.
+    GPU se possível, senão CPU; modelo carregado no primeiro uso. O embedding do último
+    áudio é reaproveitado entre as chamadas (clima, instrumentos e voz do mesmo trecho)."""
+
+    def __init__(self, device: str = "cuda"):
+        self.device = device
+        self._model = None
+        self._proc = None
+        self._ultimo: tuple[np.ndarray, int, object] | None = None
+        self._textos: dict[tuple[str, ...], object] = {}
+
+    def _load(self):
+        if self._model is not None:
+            return self._model, self._proc
+        import torch
+        from transformers import ClapModel, ClapProcessor
+
+        proc = ClapProcessor.from_pretrained(CLAP_MODELO)
+        model = ClapModel.from_pretrained(CLAP_MODELO, revision=CLAP_REVISAO_PESOS,
+                                          use_safetensors=True)
+        model.eval()
+        if self.device != "cpu" and not torch.cuda.is_available():
+            log.warning("GPU indisponível para o clima das trilhas (CLAP); usando CPU.")
+            self.device = "cpu"
+        try:
+            model.to(self.device)
+        except Exception as e:
+            if self.device == "cpu":
+                raise
+            log.warning("Não foi possível usar a GPU para o CLAP (%s); usando CPU.", e)
+            self.device = "cpu"
+            model.to("cpu")
+        self._model, self._proc = model, proc
+        return model, proc
+
+    def _audio_emb(self, audio: np.ndarray, sr: int):
+        import torch
+        import torchaudio
+
+        if self._ultimo is not None and self._ultimo[0] is audio and self._ultimo[1] == sr:
+            return self._ultimo[2]
+        model, proc = self._load()
+        x = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32))
+        if sr != CLAP_SR:
+            x = torchaudio.functional.resample(x, sr, CLAP_SR)
+        x = x.numpy()
+        n = int(CLAP_JANELA_S * CLAP_SR)
+        janelas = [x[i:i + n] for i in range(0, len(x), n) if len(x[i:i + n]) >= CLAP_SR]
+        if not janelas:
+            janelas = [x]
+        with torch.no_grad():
+            inp = proc(audio=janelas, sampling_rate=CLAP_SR, return_tensors="pt")
+            inp = {k: v.to(self.device) for k, v in inp.items()}
+            emb = torch.nn.functional.normalize(model.get_audio_features(**inp), dim=-1)
+        self._ultimo = (audio, sr, emb)
+        return emb
+
+    def _text_emb(self, rotulos: list[str]):
+        import torch
+
+        key = tuple(rotulos)
+        if key not in self._textos:
+            model, proc = self._load()
+            with torch.no_grad():
+                inp = proc(text=list(rotulos), return_tensors="pt", padding=True)
+                inp = {k: v.to(self.device) for k, v in inp.items()}
+                self._textos[key] = torch.nn.functional.normalize(
+                    model.get_text_features(**inp), dim=-1)
+        return self._textos[key]
+
+    def scores(self, audio: np.ndarray, sr: int, rotulos: list[str]) -> list[float]:
+        import torch
+
+        a = self._audio_emb(audio, sr)
+        t = self._text_emb(rotulos)
+        with torch.no_grad():
+            logits = a @ t.T * self._model.logit_scale_t.exp()
+            probs = logits.softmax(dim=-1).mean(dim=0)
+        return [float(p) for p in probs.cpu()]
+
+
+def _default_tagger() -> AudioTagger | None:
+    tg = ClapTagger()
+    try:
+        tg._load()
+    except Exception as e:
+        log.warning("Não foi possível carregar o modelo de clima das trilhas (CLAP): %s. Clima, "
+                    "instrumentos e tipo de voz ficarão em branco (análise parcial).", e)
+        return None
+    return tg
+
+
 def _load_audio(path: Path, sr: int = _SR) -> np.ndarray:
     import librosa
 
@@ -309,9 +429,49 @@ def analisar_voz(y: np.ndarray, sr: int, separator: VocalSeparator,
     return prop, float(a + first), float(a + first)
 
 
+def tonalidade(y: np.ndarray, sr: int) -> tuple[str, str]:
+    """("Lá menor", "menor") pelo croma CQT médio + perfis de Krumhansl–Schmuckler.
+    Sem conteúdo tonal (silêncio): ("", "")."""
+    import librosa
+
+    if len(y) < 2048 or _rms(y) < _SILENCIO_RMS:
+        return "", ""
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=2048)
+    perfil = chroma.mean(axis=1)
+    if not np.isfinite(perfil).all() or float(np.std(perfil)) < 1e-6:
+        return "", ""
+    best = (-2.0, "", "")
+    for modo, ref in (("maior", _PERFIL_MAIOR), ("menor", _PERFIL_MENOR)):
+        for tonica in range(12):
+            r = float(np.corrcoef(perfil, np.roll(ref, tonica))[0, 1])
+            if r > best[0]:
+                best = (r, f"{NOTAS[tonica]} {modo}", modo)
+    return best[1], best[2]
+
+
+def _top(tagger: AudioTagger, audio: np.ndarray, sr: int, rotulos: dict[str, str],
+         prompt: str) -> list[str]:
+    """Nomes em português ordenados pelo score (maior primeiro; empate na ordem da tabela)."""
+    sc = tagger.scores(audio, sr, [prompt.format(r) for r in rotulos])
+    ordem = sorted(range(len(rotulos)), key=lambda i: -float(sc[i]))
+    nomes = list(rotulos.values())
+    return [nomes[i] for i in ordem]
+
+
+def classificar(audio: np.ndarray, sr: int, tagger: AudioTagger,
+                has_vocals: bool) -> tuple[list[str], list[str], str]:
+    """(climas top 3, instrumentos top 3, tipo de voz). Se a voz foi detectada, o tipo é o
+    melhor entre os cantados (o CLAP não desmente o Demucs); sem voz → "sem voz"."""
+    climas = _top(tagger, audio, sr, CLIMAS, "a {} song")[:3]
+    instrumentos = _top(tagger, audio, sr, INSTRUMENTOS, "music with {}")[:3]
+    vozes = _top(tagger, audio, sr, TIPO_VOZ, "music with {}")
+    tipo = next((v for v in vozes if v != SEM_VOZ), SEM_VOZ) if has_vocals else SEM_VOZ
+    return climas, instrumentos, tipo
+
+
 def analyze_track(path: Path, tracker: BeatTracker | None = None,
-                  separator: VocalSeparator | None = None, *,
-                  carregar_modelos: bool = True) -> TrackInfo:
+                  separator: VocalSeparator | None = None, tagger: AudioTagger | None = None,
+                  *, carregar_modelos: bool = True) -> TrackInfo:
     """Analisa uma trilha. Modelos ausentes (None) são carregados aqui, a menos que
     `carregar_modelos=False` (o update_index carrega uma vez e passa o que conseguiu)."""
     path = Path(path)
@@ -319,6 +479,8 @@ def analyze_track(path: Path, tracker: BeatTracker | None = None,
         tracker = _default_tracker()
     if separator is None and carregar_modelos:
         separator = _default_separator()
+    if tagger is None and carregar_modelos:
+        tagger = _default_tagger()
     y = _load_audio(path)
     if isinstance(tracker, LibrosaTracker):
         beats, downbeats = tracker.track_signal(y)
@@ -328,10 +490,11 @@ def analyze_track(path: Path, tracker: BeatTracker | None = None,
     energy = _energy_per_second(y)
     duracao = len(y) / _SR
     partes = trechos(duracao, energy)
+    y_hi = _load_audio(path, _SR_MODELOS) if separator is not None or tagger is not None else None
     voz = None
     if separator is not None:
         try:
-            voz = analisar_voz(_load_audio(path, _SR_MODELOS), _SR_MODELOS, separator, partes)
+            voz = analisar_voz(y_hi, _SR_MODELOS, separator, partes)
         except Exception as e:
             log.warning("Não foi possível separar a voz da trilha '%s' (%s); usando o método "
                         "antigo (análise parcial).", path.name, e)
@@ -341,13 +504,25 @@ def analyze_track(path: Path, tracker: BeatTracker | None = None,
     else:
         prop, voz_inicio, intro = voz
         has_vocals = prop >= VOZ_MIN_PROPORCAO
+    clap = None
+    if tagger is not None:
+        try:
+            ouvir = np.concatenate([y_hi[int(round(a * _SR_MODELOS)):int(round(b * _SR_MODELOS))]
+                                    for _, a, b in partes])
+            clap = classificar(ouvir, _SR_MODELOS, tagger, has_vocals)
+        except Exception as e:
+            log.warning("Não foi possível classificar o clima da trilha '%s' (%s); "
+                        "análise parcial.", path.name, e)
+    climas, instrumentos, tipo_voz = clap or ([], [], "" if has_vocals else SEM_VOZ)
+    nome_tom, modo = tonalidade(y, _SR)
     return TrackInfo(
         path=os.path.abspath(path), bpm=bpm, beats_s=beats, downbeats_s=downbeats,
         energy=energy, duration_s=duracao, has_vocals=has_vocals,
         perfil=_perfil(bpm, energy), mtime=path.stat().st_mtime,
         voz_proporcao=prop, voz_inicio_s=voz_inicio, intro_instrumental_s=intro,
-        tipo_voz="" if has_vocals else "sem voz",
-        versao_analise=ANALISE_VERSAO, analise_parcial=voz is None,
+        tonalidade=nome_tom, modo=modo, climas=climas, instrumentos=instrumentos,
+        tipo_voz=tipo_voz,
+        versao_analise=ANALISE_VERSAO, analise_parcial=voz is None or clap is None,
     )
 
 

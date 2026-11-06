@@ -261,3 +261,83 @@ def test_registro_antigo_carrega():
     t = TrackInfo.model_validate_json(antigo)
     assert t.versao_analise == 1 and t.analise_parcial is False
     assert t.climas == [] and t.tonalidade == "" and t.voz_inicio_s is None
+
+
+# ---------------------------------------------------------------- tonalidade e clima (CLAP plugável)
+
+def _acorde(freqs, seconds=8, sr=SR):
+    t = np.arange(int(seconds * sr)) / sr
+    y = sum(np.sin(2 * np.pi * f * t) / (1 + 0.3 * i) for i, f in enumerate(freqs))
+    return (0.2 * y).astype(np.float32)
+
+
+def test_tonalidade_la_menor():
+    from roteiro_ia.music_index import tonalidade
+
+    assert tonalidade(_acorde([220.0, 261.63, 329.63]), SR) == ("Lá menor", "menor")
+
+
+def test_tonalidade_do_maior():
+    from roteiro_ia.music_index import tonalidade
+
+    assert tonalidade(_acorde([261.63, 329.63, 392.0]), SR) == ("Dó maior", "maior")
+
+
+def test_tonalidade_silencio_vazia():
+    from roteiro_ia.music_index import tonalidade
+
+    assert tonalidade(np.zeros(SR * 3, dtype=np.float32), SR) == ("", "")
+
+
+class FakeTagger:
+    PESOS = {"a epic song": 0.9, "a romantic song": 0.7, "a calm song": 0.5,
+             "music with strings": 0.8, "music with piano": 0.95, "music with drums": 0.3,
+             "music with instrumental": 0.99, "music with female vocals": 0.6,
+             "music with male vocals": 0.2}
+
+    def __init__(self):
+        self.calls = []
+
+    def scores(self, audio, sr, rotulos):
+        self.calls.append((len(audio) / sr, list(rotulos)))
+        return [self.PESOS.get(r, 0.1) for r in rotulos]
+
+
+def test_classificar_top3_e_tipo_voz():
+    from roteiro_ia.music_index import classificar
+
+    tg = FakeTagger()
+    climas, instrumentos, voz = classificar(np.zeros(SR), SR, tg, has_vocals=True)
+    assert climas == ["épica", "romântica", "calma"]
+    assert instrumentos == ["piano", "cordas", "bateria"]
+    # "instrumental" tem o maior score, mas a voz foi detectada pelo Demucs: vale o tipo cantado
+    assert voz == "feminina"
+    assert "a romantic song" in tg.calls[0][1] and "music with acoustic guitar" in tg.calls[1][1]
+
+
+def test_classificar_sem_voz():
+    from roteiro_ia.music_index import classificar
+
+    assert classificar(np.zeros(SR), SR, FakeTagger(), has_vocals=False)[2] == "sem voz"
+
+
+def test_analyze_track_completa_com_fakes(tmp_path):
+    p = tmp_path / "voz.wav"
+    sf.write(str(p), _musica_com_voz(40, voz_de=12), SR)
+    tg = FakeTagger()
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=FakeSeparator(), tagger=tg)
+    assert t.analise_parcial is False
+    assert t.climas == ["épica", "romântica", "calma"]
+    assert t.instrumentos == ["piano", "cordas", "bateria"]
+    assert t.tipo_voz == "feminina"
+    assert t.tonalidade and t.modo in ("maior", "menor")
+    assert tg.calls[0][0] == pytest.approx(40, abs=0.1)  # música curta: o CLAP ouve a inteira
+
+
+def test_sem_clap_campos_vazios_e_parcial(tmp_path):
+    p = tmp_path / "voz.wav"
+    sf.write(str(p), _musica_com_voz(40, voz_de=12), SR)
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=FakeSeparator())
+    assert t.analise_parcial is True
+    assert t.climas == [] and t.instrumentos == []
+    assert t.voz_inicio_s == pytest.approx(12, abs=1)  # a voz do Demucs continua valendo
