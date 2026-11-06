@@ -470,3 +470,33 @@ def test_cena_so_audio_sem_video_marca_sem_imagem(env):
     mesa_l = _tracks(seq, "audio")[AUDIO_TRACKS.index("MESA L")].findall("clipitem")
     assert [c.findtext("name") for c in mesa_l] == ["MESA.WAV"]
     assert int(seq.findtext("duration")) == round(10 * NTSC)
+
+
+def _musica_clip(seq):
+    return _tracks(seq, "audio")[AUDIO_TRACKS.index("MÚSICA L")].findall("clipitem")[0]
+
+
+def test_musica_comeca_no_trecho_inicio(env):
+    s, db, idx, ids = env
+    p = _piece()
+    p.trilhas[1].trecho_inicio_s = 30.0
+    m = _musica_clip(build_sequence(p, db, idx, {}, SRC))
+    assert int(m.findtext("in")) == round(30.0 * NTSC)
+    assert int(m.findtext("out")) - int(m.findtext("in")) == int(m.findtext("end"))
+
+
+def test_musica_trecho_inicio_perto_do_fim_encurta(env):
+    s, db, idx, ids = env
+    p = _piece()
+    p.trilhas[1].trecho_inicio_s = 195.0  # sobram 5 s dos 200 s da trilha
+    m = _musica_clip(build_sequence(p, db, idx, {}, SRC))
+    assert int(m.findtext("end")) == round(5.0 * NTSC)
+
+
+def test_musica_trecho_inicio_invalido_ignorado_com_alerta(env):
+    s, db, idx, ids = env
+    p = _piece()
+    p.trilhas[1].trecho_inicio_s = 999.0
+    seq = build_sequence(p, db, idx, {}, SRC)
+    assert _musica_clip(seq).findtext("in") == "0"
+    assert any(n == "TRILHA" for n, *_ in _markers(seq))

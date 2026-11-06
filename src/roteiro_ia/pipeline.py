@@ -423,7 +423,8 @@ class Pipeline:
         return Roteiro.model_validate_json(txt)
 
     def _st_pdf(self) -> None:
-        html = render_html(self._roteiro(), self.p, collect_technical_alerts(self.db))
+        html = render_html(self._roteiro(), self.p, collect_technical_alerts(self.db),
+                           idx=self._index())
         out = html_to_pdf(html, self.p.pdf_path, self.s,
                           html_path=Path(self.p.analysis_dir) / "roteiro.html")
         if out is not None and Path(out) != Path(self.p.pdf_path):

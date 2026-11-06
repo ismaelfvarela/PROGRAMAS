@@ -184,3 +184,34 @@ def test_selo_som_da_camera(tmp_path):
     ep.abertura.usar_som_camera = True
     ep.gancho.usar_som_camera = True
     assert render_html(r, make_paths(tmp_path), []).count("som da câmera") == 5  # trailer sem gancho
+
+
+def test_coluna_clima_voz_e_inicio(tmp_path):
+    from roteiro_ia.models import TrackInfo
+    from roteiro_ia.music_index import MusicIndex
+
+    s = Settings(system_dir=str(tmp_path / "sys"), protected_roots=[])
+    idx = MusicIndex(tmp_path / "t.db", s)
+
+    def t(path, **kw):
+        return TrackInfo(path=path, bpm=70, beats_s=[], downbeats_s=[], energy=[],
+                         duration_s=200, perfil="calma", mtime=1, **kw)
+
+    idx.upsert(t(r"M:\a.mp3", has_vocals=False, climas=["romântica", "calma"], tipo_voz="sem voz"))
+    idx.upsert(t(r"M:\b.mp3", has_vocals=True, climas=["épica"], tipo_voz="feminina"))
+    r = sample_roteiro()
+
+    def ms(path, titulo, inicio=None):
+        return MusicSuggestion(origem="biblioteca", path=path, titulo=titulo, bpm=70, clima="x",
+                               motivo="m", padrao_corte="1-3", exige_licenca=False,
+                               trecho_inicio_s=inicio)
+
+    r.pecas[1].trilhas = [ms(r"M:\a.mp3", "A", 0.0), ms(r"M:\b.mp3", "B", 75.0)]
+    html = render_html(r, make_paths(tmp_path), [], idx=idx)
+    idx.close()
+    assert "Clima / voz" in html
+    assert "romântica · instrumental" in html
+    assert "épica · cantada (feminina)" in html
+    assert "começar em 0:00" in html and "começar em 1:15" in html
+    # sem índice continua funcionando (só o clima sugerido)
+    assert "romântico" in render_html(sample_roteiro(), make_paths(tmp_path), [])

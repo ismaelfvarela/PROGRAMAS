@@ -19,7 +19,8 @@
   recebe o filtro "Audio Levels" com 10^(ganho_dB/20), ganho de `gain_for`.
   Observação: o Premiere limita o nível de clipe a +12 dB (3,98109 linear), então o valor
   linear é limitado a 3,98109 mesmo quando `gain_for` pede mais (até +20 dB).
-- A trilha nº 1 da biblioteca vai para a faixa MÚSICA desde o início.
+- A trilha nº 1 da biblioteca vai para a faixa MÚSICA desde o quadro 0; o `in` é o
+  `trecho_inicio_s` sugerido (0 ≤ início < duração; inválido → começo da música + marcador TRILHA).
 - Os caminhos apontam para os ORIGINAIS (source_root / rel_path), nunca para proxies:
   os proxies são anexados depois pelo painel do Premiere.
 - Tempos: segundos → quadros com round(s * fps_real); start/end na taxa da sequência,
@@ -44,7 +45,7 @@ from roteiro_ia.models import MediaInfo, Role
 from roteiro_ia.music_index import MusicIndex
 from roteiro_ia.paths import EventPaths
 from roteiro_ia.safety import safe_write_text
-from roteiro_ia.script.generate import Piece, Roteiro, SceneRef
+from roteiro_ia.script.generate import Piece, Roteiro, SceneRef, inicio_valido
 
 _AUDIO_GROUPS = ["MESA", "AMBIENTE", "SOM CÂMERA", "LAPELA NOIVO", "LAPELA NOIVA", "MÚSICA"]
 AUDIO_TRACKS = [f"{g} {side}" for g in _AUDIO_GROUPS for side in ("L", "R")]
@@ -477,9 +478,17 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
         if fid not in [u[0] for u in ctx.music_used]:
             ctx.music_used.append((fid, mpath, info.duration_s))
         src = _Src(fid, Path(mpath), info.duration_s, mrate, None, 2)
-        length = min(cursor, _frames(info.duration_s, rate))
-        _place_audio(a_tracks, "MÚSICA", ctx, src, PureWindowsPath(mpath).name, 0, length,
-                     0.0, length / _real(rate), rate, 1.0)
+        inicio = 0.0
+        if music.trecho_inicio_s is not None:
+            if inicio_valido(music.trecho_inicio_s, info.duration_s):
+                inicio = float(music.trecho_inicio_s)
+            else:
+                markers.append(("TRILHA", f"Início sugerido da trilha ({music.trecho_inicio_s:.0f} s) "
+                                f"fora da música ({info.duration_s:.0f} s): usado o começo.", 0, None))
+        length = min(cursor, _frames(info.duration_s - inicio, rate))
+        if length > 0:
+            _place_audio(a_tracks, "MÚSICA", ctx, src, PureWindowsPath(mpath).name, 0, length,
+                         inicio, length / _real(rate), rate, 1.0)
 
     for t in v_tracks:
         _sub(t, "enabled", "TRUE")

@@ -553,7 +553,7 @@ def test_proxies_verifica_espaco_so_do_que_falta(tmp_path, sleeps, monkeypatch):
 
 def test_pdf_aberto_avisa(tmp_path, sleeps, monkeypatch):
     pipe, _, events = mk_pipe(tmp_path)
-    monkeypatch.setattr(pipeline, "render_html", lambda *a: "<p/>")
+    monkeypatch.setattr(pipeline, "render_html", lambda *a, **k: "<p/>")
     monkeypatch.setattr(pipeline, "collect_technical_alerts", lambda db: [])
     monkeypatch.setattr(pipe, "_roteiro", lambda: None)
     alt = Path(str(pipe.p.pdf_path).replace(".pdf", " (2).pdf"))
