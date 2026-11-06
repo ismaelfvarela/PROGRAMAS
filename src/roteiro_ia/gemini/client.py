@@ -1,6 +1,8 @@
 """Cliente Gemini: cota, retentativas, JSON validado e chave no Credential Manager."""
 from __future__ import annotations
 
+import json
+import logging
 import re
 import time
 from datetime import datetime, timedelta
@@ -14,7 +16,9 @@ from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
 from roteiro_ia.config import Settings
+from roteiro_ia.safety import safe_mkdir, safe_write_text
 
+log = logging.getLogger(__name__)
 KEYRING_SERVICE = "RoteiroIA-Gemini"
 _KEYRING_USER = "api_key"
 PRIVACY_NOTICE_PT = (
@@ -28,6 +32,10 @@ _POLL_S = 2.0
 _UPLOAD_TIMEOUT_S = 600.0
 MAX_TRANSPORT_RETRIES = 5
 _EXCLUDE = ("lite", "image", "tts", "live", "audio", "embedding", "thinking-exp")
+# candidatos do revezamento no grátis: gemini-<versão>-flash e -flash-lite (sem variantes)
+_FLASH = re.compile(r"gemini-(\d+(?:\.\d+)?)-flash(-lite)?(?:-\d{3})?")
+_ROTATION_EXCLUDE = ("image", "tts", "live", "audio", "embedding", "preview", "exp")
+COTA_FILE = "cota.json"
 
 
 def get_api_key() -> str | None:
@@ -92,6 +100,52 @@ def _is_daily(e: errors.APIError) -> bool:
     return any(k in text for k in ("perday", "per day", "daily"))
 
 
+def _find_violations(obj) -> list[dict]:
+    """Violações de `google.rpc.QuotaFailure` (os limites efetivamente estourados)."""
+    out: list[dict] = []
+    if isinstance(obj, dict):
+        if str(obj.get("@type", "")).endswith("QuotaFailure"):
+            out += [v for v in obj.get("violations") or [] if isinstance(v, dict)]
+        else:
+            for v in obj.values():
+                out += _find_violations(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            out += _find_violations(v)
+    return out
+
+
+def _has_retry_info(e: errors.APIError) -> bool:
+    return _find_retry_info(getattr(e, "details", None)) is not None
+
+
+def _quota_kind(e: errors.APIError) -> str:
+    """Classifica um 429 pelo limite VIOLADO: "zero" (modelo sem cota no grátis), "diario",
+    "minuto". Sem QuotaFailure.violations, usa a regra antiga (texto do erro)."""
+    viol = _find_violations(getattr(e, "details", None))
+    msg = str(getattr(e, "message", "") or "")
+    if any(str(v.get("quotaValue", "")).strip() == "0" for v in viol) or re.search(r"\blimit:\s*0\b", msg):
+        return "zero"
+    ids = [str(v.get("quotaId", "")) for v in viol]
+    if any("PerDay" in q for q in ids):
+        return "diario"
+    if any("PerMinute" in q for q in ids):
+        return "minuto"
+    return "diario" if _is_daily(e) else "minuto"
+
+
+def _next_midnight_la(now: datetime) -> datetime:
+    return (now.astimezone(LA) + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+class _ModelQuota(Exception):
+    """Interno: o modelo da chamada esgotou a cota do dia ("diario") ou não tem cota ("zero")."""
+
+    def __init__(self, kind: str, resume_at: datetime | None):
+        self.kind, self.resume_at = kind, resume_at
+        super().__init__(kind)
+
+
 def _version(name: str) -> float:
     m = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
     return float(m.group(1)) if m else 0.0
@@ -116,9 +170,75 @@ class GeminiClient:
                 )
             backend = genai.Client(api_key=key)
         self.backend = backend
+        self._names: list[str] | None = None
+        self._esgotados: dict[str, datetime] = {}  # modelo -> retomar em (cota diária)
+        self._indisponiveis: set[str] = set()      # limite 0 no grátis: fora do revezamento
 
     def list_models(self) -> list[str]:
         return [m.name.removeprefix("models/") for m in self.backend.models.list()]
+
+    # ------------------------------------------------------------ revezamento (grátis)
+    def _rotating(self) -> bool:
+        return self.s.gemini_mode == "gratis" and self.s.gemini_rotacao
+
+    def _model_names(self) -> list[str]:
+        if self._names is None:
+            try:
+                self._names = self.list_models()
+            except Exception as e:  # noqa: BLE001 - sem lista, reveza só com o configurado
+                log.warning("Não foi possível listar os modelos do Gemini: %s", e)
+                return []
+        return self._names
+
+    def candidatos(self, model: str) -> list[str]:
+        """O modelo configurado primeiro; depois os gemini-<versão>-flash/-flash-lite da chave,
+        por versão decrescente (flash antes de flash-lite)."""
+        flash = []
+        for n in self._model_names():
+            m = _FLASH.fullmatch(n)
+            if m and not any(x in n for x in _ROTATION_EXCLUDE):
+                flash.append((-float(m.group(1)), bool(m.group(2)), n))
+        out = [model]
+        for *_k, n in sorted(flash):
+            if n not in out:
+                out.append(n)
+        return out
+
+    def _cota_path(self) -> Path:
+        return Path(self.s.system_dir) / COTA_FILE
+
+    def _load_cota(self) -> None:
+        """Junta o cota.json (outras execuções/janelas) ao estado em memória."""
+        try:
+            data = json.loads(self._cota_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        for name, iso in (data.get("esgotados") or {}).items():
+            try:
+                when = datetime.fromisoformat(str(iso))
+            except ValueError:
+                continue
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=LA)
+            if name not in self._esgotados or when > self._esgotados[name]:
+                self._esgotados[name] = when
+        self._indisponiveis |= {str(n) for n in data.get("indisponiveis") or []}
+
+    def _save_cota(self) -> None:
+        now = datetime.now(LA)
+        data = {"esgotados": {n: w.isoformat() for n, w in sorted(self._esgotados.items()) if w > now},
+                "indisponiveis": sorted(self._indisponiveis)}
+        try:
+            safe_mkdir(Path(self.s.system_dir), self.s)
+            safe_write_text(self._cota_path(), json.dumps(data, ensure_ascii=False, indent=2), self.s)
+        except Exception as e:  # noqa: BLE001 - só memória: vale nesta execução
+            log.warning("Não foi possível gravar %s: %s", self._cota_path(), e)
+
+    def _livre(self, name: str, now: datetime) -> bool:
+        if name in self._indisponiveis:
+            return False
+        w = self._esgotados.get(name)
+        return w is None or w <= now
 
     def pick_default_models(self) -> tuple[str, str]:
         names = self.list_models()
@@ -129,6 +249,9 @@ class GeminiClient:
                 raise RuntimeError(f"Nenhum modelo '{key}' do Gemini disponível para esta chave.")
             return max(cands, key=lambda n: (_version(n), not ("preview" in n or "exp" in n)))
 
+        if self.s.gemini_mode == "gratis":  # Pro tem limite 0 no grátis: flash para os dois
+            f = best("flash")
+            return f, f
         return best("flash"), best("pro")
 
     def upload(self, path: Path):
@@ -158,9 +281,10 @@ class GeminiClient:
         resp = self._retrying(lambda: self.backend.models.count_tokens(model=model, contents=text))
         return int(getattr(resp, "total_tokens", 0) or 0)
 
-    def _retrying(self, fn):
+    def _retrying(self, fn, rotate: bool = False):
         """Executa `fn` com retentativas de transporte (429 pago / 5xx / rede), no máximo
-        MAX_TRANSPORT_RETRIES chamadas; esgotado, relança o erro. 429 no modo grátis → QuotaPaused."""
+        MAX_TRANSPORT_RETRIES chamadas; esgotado, relança o erro. 429 no modo grátis → QuotaPaused
+        (com `rotate`, cota diária ou limite 0 do modelo → _ModelQuota, para tentar o próximo)."""
         attempts = 0
         while True:
             try:
@@ -171,12 +295,23 @@ class GeminiClient:
                     raise
                 if quota and self.s.gemini_mode == "gratis":
                     now = datetime.now(LA)
-                    daily = _is_daily(e)
-                    if daily:
-                        resume = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-                    else:
-                        resume = now + timedelta(seconds=_retry_delay_s(e))
-                    raise QuotaPaused(resume, daily=daily) from e
+                    kind = _quota_kind(e)
+                    if kind == "zero":
+                        if rotate:
+                            raise _ModelQuota("zero", None) from e
+                        raise RuntimeError(
+                            "O modelo do Gemini escolhido não tem cota no plano gratuito (limite 0). "
+                            "Ative o revezamento de modelos ou escolha um modelo flash.") from e
+                    if kind == "diario":
+                        # com QuotaFailure + RetryInfo, a espera informada; senão 00:00 (Pacífico)
+                        if _find_violations(getattr(e, "details", None)) and _has_retry_info(e):
+                            resume = now + timedelta(seconds=_retry_delay_s(e))
+                        else:
+                            resume = _next_midnight_la(now)
+                        if rotate:
+                            raise _ModelQuota("diario", resume) from e
+                        raise QuotaPaused(resume, daily=True) from e
+                    raise QuotaPaused(now + timedelta(seconds=_retry_delay_s(e)), daily=False) from e
                 attempts += 1
                 if attempts >= MAX_TRANSPORT_RETRIES:
                     raise
@@ -185,9 +320,44 @@ class GeminiClient:
                     wait = max(wait, _retry_delay_s(e))
                 _sleep(min(wait, 60.0))
 
-    def _call(self, model: str, contents: list, config):
+    def _gen(self, model: str, contents: list, config, rotate: bool = False):
+        log.info("Gemini: chamando o modelo %s", model)
         return self._retrying(
-            lambda: self.backend.models.generate_content(model=model, contents=contents, config=config))
+            lambda: self.backend.models.generate_content(model=model, contents=contents, config=config),
+            rotate=rotate)
+
+    def _call(self, model: str, contents: list, config):
+        if not self._rotating():
+            return self._gen(model, contents, config)
+        self._load_cota()
+        tentados: set[str] = set()
+        while True:
+            now = datetime.now(LA)
+            cands = self.candidatos(model)
+            livres = [n for n in cands if n not in tentados and self._livre(n, now)]
+            if not livres:
+                raise self._sem_modelo(cands, now)
+            atual = livres[0]
+            tentados.add(atual)
+            try:
+                return self._gen(atual, contents, config, rotate=True)
+            except _ModelQuota as q:
+                if q.kind == "zero":
+                    self._indisponiveis.add(atual)
+                    log.warning("Modelo %s sem cota no plano gratuito; fora do revezamento.", atual)
+                else:
+                    self._esgotados[atual] = q.resume_at
+                    log.warning("Cota diária do modelo %s esgotada até %s; tentando o próximo.",
+                                atual, q.resume_at.astimezone().strftime("%d/%m %H:%M"))
+                self._save_cota()
+
+    def _sem_modelo(self, cands: list[str], now: datetime) -> Exception:
+        esperas = [self._esgotados[n] for n in cands
+                   if n not in self._indisponiveis and n in self._esgotados and self._esgotados[n] > now]
+        if esperas:
+            return QuotaPaused(min(esperas), daily=True)
+        return RuntimeError("Nenhum modelo do Gemini com cota no plano gratuito para esta chave "
+                            "(todos com limite 0). Use o plano pago ou outra chave.")
 
     def generate_json(self, model: str, parts: list, schema: type[BaseModel], prompt: str,
                       max_retries: int = 3) -> BaseModel:
