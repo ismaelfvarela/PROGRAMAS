@@ -4,10 +4,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QListWidget, QProgressBar, QPushButton, QTextBrowser,
-                               QVBoxLayout, QWidget)
+                               QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton,
+                               QTextBrowser, QVBoxLayout, QWidget)
 
 from roteiro_ia.config import Settings, save_settings
 from roteiro_ia.ui.widgets import Banner, Card
@@ -129,11 +129,27 @@ class TrilhasTab(QWidget):
         self.lbl_atual.setText(f"Pronto: {n} trilha(s) nova(s) ou alterada(s) analisada(s).")
 
 
+ICONES_ESTILO = {"aguardando": "○", "analisando": "▶", "feito": "✔", "erro": "✖", "ignorado": "⚠"}
+
+
+class _EstiloWorker(TarefaWorker):
+    """TarefaWorker com o estado de cada vídeo: (url, estado, feitos, total)."""
+
+    video = Signal(str, str, int, int)
+
+
+def _canonica(url: str) -> str | None:
+    from roteiro_ia.gemini.style import expand_playlists
+    vids, _ign = expand_playlists([url])
+    return vids[0] if vids else None
+
+
 class EstiloTab(QWidget):
     def __init__(self, s: Settings, settings_path: Path, runner: Runner,
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.s, self.settings_path, self.runner = s, Path(settings_path), runner
+        self._estado: dict[str, str] = {}  # url canônica -> estado na última geração
         _w, lay = _pagina(self)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -146,7 +162,8 @@ class EstiloTab(QWidget):
         dica.setWordWrap(True)
         card.body.addWidget(dica)
         self.lista = QListWidget()
-        self.lista.addItems(s.style_urls)
+        for u in s.style_urls:
+            self._novo_item(u)
         card.body.addWidget(self.lista, 1)
         linha = QHBoxLayout()
         self.edit_url = QLineEdit()
@@ -167,6 +184,14 @@ class EstiloTab(QWidget):
         g.addWidget(self.btn_gerar)
         g.addStretch(1)
         card.body.addLayout(g)
+        self.barra = QProgressBar()
+        self.barra.setTextVisible(True)
+        self.barra.setFormat("%v de %m vídeos analisados")
+        card.body.addWidget(self.barra)
+        self.lbl_atual = QLabel()
+        self.lbl_atual.setProperty("muted", True)
+        self.lbl_atual.setWordWrap(True)
+        card.body.addWidget(self.lbl_atual)
         lay.addWidget(card, 1)
 
         self.banner = Banner("erro")
@@ -184,7 +209,42 @@ class EstiloTab(QWidget):
         self._atualizar()
 
     def _urls(self) -> list[str]:
-        return [self.lista.item(i).text() for i in range(self.lista.count())]
+        return [self.lista.item(i).data(Qt.UserRole) for i in range(self.lista.count())]
+
+    def _novo_item(self, url: str) -> None:
+        it = QListWidgetItem()
+        it.setData(Qt.UserRole, url)
+        self.lista.addItem(it)
+        self._pintar(it, "aguardando")
+
+    @staticmethod
+    def _pintar(it: QListWidgetItem, estado: str) -> None:
+        it.setText(f"{ICONES_ESTILO.get(estado, '○')}  {it.data(Qt.UserRole)}")
+        it.setToolTip(estado)
+
+    def _icones(self) -> None:
+        """Estado de cada item: cache → feito; link ignorado → ⚠; senão o da última geração."""
+        from roteiro_ia.gemini.style import video_em_cache
+        feitos = total = 0
+        for i in range(self.lista.count()):
+            it = self.lista.item(i)
+            url = it.data(Qt.UserRole)
+            canon = _canonica(url)
+            if canon is None:
+                estado = "ignorado"
+            else:
+                total += 1
+                if video_em_cache(self.s, url):
+                    estado = "feito"
+                else:
+                    estado = self._estado.get(canon, "aguardando")
+                    if estado == "analisando":
+                        estado = "aguardando"  # a geração parou no meio
+                feitos += estado == "feito"
+            self._pintar(it, estado)
+        self.barra.setRange(0, max(total, 1))
+        self.barra.setValue(feitos)
+        self.barra.setVisible(total > 0)
 
     def _gravar(self) -> None:
         self.s.style_urls = self._urls()
@@ -196,7 +256,7 @@ class EstiloTab(QWidget):
     def adicionar(self) -> None:
         url = self.edit_url.text().strip()
         if url and url not in self._urls():
-            self.lista.addItem(url)
+            self._novo_item(url)
             self._gravar()
         self.edit_url.clear()
 
@@ -213,24 +273,58 @@ class EstiloTab(QWidget):
             "vídeos individualmente:\n" + "\n".join(ignoradas) if ignoradas else "")
         self.lbl_ignoradas.setVisible(bool(ignoradas))
         self.btn_gerar.setEnabled(bool(videos))
+        self._icones()
         prof = load_style_profile(self.s)
         self.txt_resumo.setPlainText(prof.resumo if prof else
                                      "Ainda não há perfil. Adicione links e clique em Gerar perfil.")
 
     def gerar(self) -> None:
-        from roteiro_ia.gemini.client import GeminiClient
-        from roteiro_ia.gemini.style import build_style_profile
         s = self.s
         self.banner.limpar()
+        self._estado.clear()
         self.btn_gerar.setEnabled(False)
         self.btn_gerar.setText("Gerando…")
-        w = TarefaWorker(lambda _p: build_style_profile(GeminiClient(s), s))
+        ultimo = [0, 0]  # (feitos, total) do último aviso — lido só na thread do worker
+
+        def fn(_p):
+            from roteiro_ia.gemini import client as gc
+            from roteiro_ia.gemini import style as st
+
+            def prog(url: str, estado: str, feitos: int, total: int) -> None:
+                ultimo[:] = [feitos, total]
+                w.video.emit(url, estado, feitos, total)
+            try:
+                return st.build_style_profile(gc.GeminiClient(s), s, on_progress=prog)
+            except gc.QuotaPaused as e:
+                feitos, total = ultimo
+                tipo = "diária" if e.daily else "por minuto"
+                raise RuntimeError(
+                    f"Cota {tipo} gratuita do Gemini esgotada. Continue a partir de "
+                    f"{e.resume_at.astimezone():%d/%m %H:%M}; faltam {total - feitos} de {total} "
+                    "vídeos (os já analisados ficam guardados).") from e
+
+        w = _EstiloWorker(fn)
+        w.video.connect(self._on_video)
         w.erro.connect(self.banner.mostrar)
         w.terminou.connect(self._fim_gerar)
         self.runner.start(w)
 
+    def _on_video(self, url: str, estado: str, feitos: int, total: int) -> None:
+        self._estado[url] = estado
+        for i in range(self.lista.count()):
+            it = self.lista.item(i)
+            raw = it.data(Qt.UserRole)
+            if raw == url or _canonica(raw) == url:
+                self._pintar(it, estado)
+        self.barra.setRange(0, max(total, 1))
+        self.barra.setValue(feitos)
+        self.barra.setVisible(total > 0)
+        if estado == "analisando":
+            self.lbl_atual.setText(f"Analisando: {url}")
+
     def _fim_gerar(self, _status: str) -> None:
         self.btn_gerar.setText("Gerar perfil")
+        self.lbl_atual.setText("")
         self._atualizar()
 
 
