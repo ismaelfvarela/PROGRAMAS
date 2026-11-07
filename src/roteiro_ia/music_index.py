@@ -62,9 +62,77 @@ SEM_VOZ = "sem voz"
 CLAP_MODELO = "laion/clap-htsat-unfused"
 # O repositório principal só tem pytorch_model.bin, que o transformers>=4.50 recusa carregar com
 # torch < 2.6 (CVE do torch.load). A PR oficial de conversão (SFconvertbot) traz o safetensors.
-CLAP_REVISAO_PESOS = "refs/pr/3"
+# Fixada no commit para o qual refs/pr/3 apontava em 2026-11-06 (cache local do HF); se esse
+# commit sumir, tenta a própria PR.
+CLAP_REVISAO_PESOS = "79b58ed25fc00386262a2bea4b19fd21dc4310a0"
+CLAP_REVISAO_ALTERNATIVA = "refs/pr/3"
 CLAP_SR = 48000
 CLAP_JANELA_S = 10.0
+
+# Erros que indicam a CUDA quebrada (não só falta de memória): a execução passa para a CPU de vez.
+_ERROS_CUDA_QUEBRADA = ("cuda error", "cudnn", "cublas", "driver", "device-side assert")
+
+
+def _tipo_erro_gpu(e: BaseException) -> str | None:
+    """"memoria" (falta de memória: temporário), "quebrada" (CUDA/driver/cuDNN) ou None."""
+    import torch
+
+    msg = str(e).lower()
+    oom = getattr(torch.cuda, "OutOfMemoryError", None)
+    if (oom is not None and isinstance(e, oom)) or "out of memory" in msg:
+        return "memoria"
+    if any(s in msg for s in _ERROS_CUDA_QUEBRADA):
+        return "quebrada"
+    return None
+
+
+def _executar_com_gpu(obj, rotulo: str, executar: Callable[[], object],
+                      mover: Callable[[str], object]):
+    """Roda `executar()` no `obj.device`. Falta de memória na GPU: limpa o cache, refaz só esta
+    chamada na CPU e devolve o modelo à GPU. CUDA quebrada: o resto da execução fica na CPU.
+    Outros erros sobem (a trilha fica com análise parcial)."""
+    try:
+        return executar()
+    except RuntimeError as e:
+        if obj.device == "cpu":
+            raise
+        tipo = _tipo_erro_gpu(e)
+        if tipo is None:
+            raise
+        import torch
+
+        if tipo == "memoria":
+            log.warning("Memória da GPU insuficiente para %s nesta trilha; refazendo só esta "
+                        "trilha na CPU.", rotulo)
+            original = obj.device
+            torch.cuda.empty_cache()
+            mover("cpu")
+            obj.device = "cpu"
+            try:
+                return executar()
+            finally:
+                try:
+                    mover(original)
+                    obj.device = original
+                except Exception as e2:  # a GPU não voltou: segue na CPU
+                    log.warning("Não foi possível voltar para a GPU (%s); usando CPU.", e2)
+        log.warning("Erro na GPU ao %s (%s); o restante da análise usa a CPU (mais lento).",
+                    rotulo, e)
+        obj.device = "cpu"
+        mover("cpu")
+        return executar()
+
+
+def _liberar_gpu() -> None:
+    """Devolve ao sistema a memória da GPU guardada pelo cache do PyTorch (se ele foi usado)."""
+    import sys
+
+    torch = sys.modules.get("torch")
+    try:
+        if torch is not None and torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 — limpeza é só cortesia
+        pass
 
 
 class BeatTracker(Protocol):
@@ -179,15 +247,7 @@ class DemucsSeparator:
         x = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32))
         if sr != model.samplerate:
             x = torchaudio.functional.resample(x, sr, model.samplerate)
-        try:
-            v = self._run(x, model)
-        except RuntimeError as e:  # ex.: memória da GPU
-            if self.device == "cpu":
-                raise
-            log.warning("Falha na GPU ao separar a voz (%s); continuando na CPU.", e)
-            self.device = "cpu"
-            model.to("cpu")
-            v = self._run(x, model)
+        v = _executar_com_gpu(self, "separar a voz", lambda: self._run(x, model), model.to)
         if sr != model.samplerate:
             v = torchaudio.functional.resample(v, model.samplerate, sr)
         out = v.numpy().astype(np.float32)
@@ -212,6 +272,18 @@ class AudioTagger(Protocol):
         """Um score por rótulo (texto livre), maior = mais parecido com o áudio."""
 
 
+def _carregar_processador_clap():
+    from transformers import ClapProcessor
+
+    return ClapProcessor.from_pretrained(CLAP_MODELO)
+
+
+def _carregar_modelo_clap(revisao: str):
+    from transformers import ClapModel
+
+    return ClapModel.from_pretrained(CLAP_MODELO, revision=revisao, use_safetensors=True)
+
+
 class ClapTagger:
     """CLAP zero-shot (transformers) em janelas de 10 s a 48 kHz, média das janelas.
     GPU se possível, senão CPU; modelo carregado no primeiro uso. O embedding do último
@@ -228,11 +300,14 @@ class ClapTagger:
         if self._model is not None:
             return self._model, self._proc
         import torch
-        from transformers import ClapModel, ClapProcessor
 
-        proc = ClapProcessor.from_pretrained(CLAP_MODELO)
-        model = ClapModel.from_pretrained(CLAP_MODELO, revision=CLAP_REVISAO_PESOS,
-                                          use_safetensors=True)
+        proc = _carregar_processador_clap()
+        try:
+            model = _carregar_modelo_clap(CLAP_REVISAO_PESOS)
+        except Exception as e:
+            log.warning("Revisão fixa do CLAP indisponível (%s); tentando %s.", e,
+                        CLAP_REVISAO_ALTERNATIVA)
+            model = _carregar_modelo_clap(CLAP_REVISAO_ALTERNATIVA)
         model.eval()
         if self.device != "cpu" and not torch.cuda.is_available():
             log.warning("GPU indisponível para o clima das trilhas (CLAP); usando CPU.")
@@ -263,10 +338,15 @@ class ClapTagger:
         janelas = [x[i:i + n] for i in range(0, len(x), n) if len(x[i:i + n]) >= CLAP_SR]
         if not janelas:
             janelas = [x]
-        with torch.no_grad():
-            inp = proc(audio=janelas, sampling_rate=CLAP_SR, return_tensors="pt")
-            inp = {k: v.to(self.device) for k, v in inp.items()}
-            emb = torch.nn.functional.normalize(model.get_audio_features(**inp), dim=-1)
+        entrada = proc(audio=janelas, sampling_rate=CLAP_SR, return_tensors="pt")
+
+        def executar():
+            with torch.no_grad():
+                inp = {k: v.to(self.device) for k, v in entrada.items()}
+                return torch.nn.functional.normalize(model.get_audio_features(**inp),
+                                                     dim=-1).cpu()
+
+        emb = _executar_com_gpu(self, "classificar o clima (CLAP)", executar, model.to)
         self._ultimo = (audio, sr, emb)
         return emb
 
@@ -276,20 +356,26 @@ class ClapTagger:
         key = tuple(rotulos)
         if key not in self._textos:
             model, proc = self._load()
-            with torch.no_grad():
-                inp = proc(text=list(rotulos), return_tensors="pt", padding=True)
-                inp = {k: v.to(self.device) for k, v in inp.items()}
-                self._textos[key] = torch.nn.functional.normalize(
-                    model.get_text_features(**inp), dim=-1)
+            entrada = proc(text=list(rotulos), return_tensors="pt", padding=True)
+
+            def executar():
+                with torch.no_grad():
+                    inp = {k: v.to(self.device) for k, v in entrada.items()}
+                    return torch.nn.functional.normalize(model.get_text_features(**inp),
+                                                         dim=-1).cpu()
+
+            self._textos[key] = _executar_com_gpu(self, "classificar o clima (CLAP)", executar,
+                                                  model.to)
         return self._textos[key]
 
     def scores(self, audio: np.ndarray, sr: int, rotulos: list[str]) -> list[float]:
         import torch
 
-        a = self._audio_emb(audio, sr)
+        a = self._audio_emb(audio, sr)  # embeddings ficam na CPU (o dispositivo pode mudar)
         t = self._text_emb(rotulos)
         with torch.no_grad():
-            logits = a @ t.T * self._model.logit_scale_t.exp()
+            # áudio → texto usa a escala do áudio (logits_per_audio no transformers)
+            logits = a @ t.T * float(self._model.logit_scale_a.exp())
             probs = logits.softmax(dim=-1).mean(dim=0)
         return [float(p) for p in probs.cpu()]
 

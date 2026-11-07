@@ -29,3 +29,9 @@ def _sem_modelos_de_musica(request, monkeypatch):
     from roteiro_ia import music_index
     monkeypatch.setattr(music_index, "_default_separator", lambda: None, raising=False)
     monkeypatch.setattr(music_index, "_default_tagger", lambda: None, raising=False)
+    for nome in ("_carregar_modelo_clap", "_carregar_processador_clap"):
+        monkeypatch.setattr(music_index, nome, _modelo_bloqueado, raising=False)
+
+
+def _modelo_bloqueado(*a, **k):
+    raise RuntimeError("modelo real bloqueado na suíte padrão (use -m modelos)")
