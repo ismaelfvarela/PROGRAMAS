@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 from scipy.fft import irfft, next_fast_len, rfft
 
+from roteiro_ia import controle
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.media.audio import load_mono
 from roteiro_ia.models import MediaInfo, Role, SyncResult
@@ -225,6 +226,7 @@ class _Day:
         for m in self.order:
             if m.id in self.pos:
                 continue
+            controle.atual().checkpoint()  # Pausar/Parar entre mídias (o feito já foi gravado)
             est = self.estimate(m)
             tl, conf = None, 0.0
             if _has_audio(m):

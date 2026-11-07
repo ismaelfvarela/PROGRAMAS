@@ -6,6 +6,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from roteiro_ia import proc
 from roteiro_ia.media.tools import ffprobe_bin
 from roteiro_ia.models import FolderAssignment, MediaInfo, Role
 
@@ -17,10 +18,10 @@ FPS_TOLERANCE = 0.05
 
 def probe(path: Path) -> dict:
     try:
-        r = subprocess.run(
+        r = proc.run(
             [ffprobe_bin(), "-v", "error", "-print_format", "json",
              "-show_format", "-show_streams", str(path)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            text=True, encoding="utf-8", errors="replace",
             timeout=PROBE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"ffprobe demorou mais de {PROBE_TIMEOUT_S} s para ler o arquivo") from None

@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -16,6 +15,7 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
+from roteiro_ia import controle
 from roteiro_ia.config import Settings
 from roteiro_ia.safety import assert_writable, safe_mkdir, safe_write_text
 
@@ -28,7 +28,7 @@ PRIVACY_NOTICE_PT = (
 )
 LA = ZoneInfo("America/Los_Angeles")
 TOKENS_PER_SECOND = 100
-_sleep = time.sleep
+_sleep = controle.dormir  # patchável nos testes; o Parar interrompe a espera
 _POLL_S = 2.0
 _UPLOAD_TIMEOUT_S = 600.0
 MAX_TRANSPORT_RETRIES = 5

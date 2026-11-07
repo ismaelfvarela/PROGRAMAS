@@ -15,6 +15,7 @@ from typing import Callable, Protocol
 
 import numpy as np
 
+from . import controle
 from .config import Settings
 from .models import TrackInfo
 from .safety import assert_writable, safe_mkdir
@@ -724,31 +725,38 @@ def _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_ver
     existing = {key for _, key in files}
     done = 0
     tentou_modelos = False
-    for i, (f, key) in enumerate(files, 1):
-        if on_progress:
-            on_progress(i, len(files), f.name)
-        try:
-            old = idx.get(key)
-            inalterada = old is not None and old.mtime == f.stat().st_mtime
-            if inalterada and not atualizar_versao:
-                continue
-            atual = inalterada and old.versao_analise >= ANALISE_VERSAO
-            if atual and not old.analise_parcial:
-                continue
-            if not tentou_modelos:
-                tentou_modelos = True
-                if separator is None:
-                    separator = _default_separator()
-                if tagger is None:
-                    tagger = _default_tagger()
-            if atual and (separator is None or tagger is None):
-                continue  # parcial e os modelos continuam indisponíveis
-            if tracker is None:
-                tracker = _default_tracker()
-            idx.upsert(analyze_track(f, tracker, separator, tagger, carregar_modelos=False))
-            done += 1
-        except Exception as e:
-            log.warning("Não foi possível analisar a trilha '%s': %s", f.name, e)
+    try:
+        for i, (f, key) in enumerate(files, 1):
+            controle.atual().checkpoint()  # Pausar/Parar entre trilhas
+            if on_progress:
+                on_progress(i, len(files), f.name)
+            try:
+                old = idx.get(key)
+                inalterada = old is not None and old.mtime == f.stat().st_mtime
+                if inalterada and not atualizar_versao:
+                    continue
+                atual = inalterada and old.versao_analise >= ANALISE_VERSAO
+                if atual and not old.analise_parcial:
+                    continue
+                if not tentou_modelos:
+                    tentou_modelos = True
+                    if separator is None:
+                        separator = _default_separator()
+                    if tagger is None:
+                        tagger = _default_tagger()
+                if atual and (separator is None or tagger is None):
+                    continue  # parcial e os modelos continuam indisponíveis
+                if tracker is None:
+                    tracker = _default_tracker()
+                idx.upsert(analyze_track(f, tracker, separator, tagger, carregar_modelos=False))
+                done += 1
+            except Exception as e:
+                log.warning("Não foi possível analisar a trilha '%s': %s", f.name, e)
+    except controle.Interrompido:
+        # Parar (entre trilhas ou no meio de uma, ex.: ffmpeg via proc.run): o que já foi
+        # analisado fica no índice e nada é removido; devolve o feito
+        log.info("Índice de trilhas parado pelo editor: %d trilha(s) analisada(s).", done)
+        return done
     if walk_errors:
         log.warning("Algumas pastas de músicas não puderam ser lidas (%d); "
                     "nenhuma trilha foi removida do índice.", len(walk_errors))

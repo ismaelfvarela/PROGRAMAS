@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
+from roteiro_ia import controle, proc
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.media.tools import ffmpeg_bin
@@ -40,7 +41,7 @@ def load_mono(path: Path, sr: int = 8000, start_s: float = 0,
         cmd += ["-t", f"{dur_s:.3f}"]
     cmd += ["-i", str(path), "-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"]
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=3600)
+        r = proc.run(cmd, timeout=3600)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"O ffmpeg demorou demais ao ler o áudio de '{Path(path).name}'.") from e
     if r.returncode != 0:
@@ -52,8 +53,7 @@ def load_mono(path: Path, sr: int = 8000, start_s: float = 0,
 
 
 def _duration_s(path: Path) -> float:
-    r = subprocess.run([ffmpeg_bin(), "-nostdin", "-i", str(path)], capture_output=True,
-                       timeout=120)
+    r = proc.run([ffmpeg_bin(), "-nostdin", "-i", str(path)], timeout=120)
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr.decode("utf-8", "replace"))
     return int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3]) if m else 0.0
 
@@ -84,8 +84,8 @@ def _noise_floor(path: Path) -> float:
 
 def measure(path: Path) -> tuple[float, float, float]:
     """(mean_db, peak_db, noise_floor_db) do primeiro fluxo de áudio."""
-    r = subprocess.run([ffmpeg_bin(), "-nostdin", "-i", str(path), "-vn", "-af", "volumedetect",
-                        "-f", "null", "-"], capture_output=True, timeout=3600)
+    r = proc.run([ffmpeg_bin(), "-nostdin", "-i", str(path), "-vn", "-af", "volumedetect",
+                  "-f", "null", "-"], timeout=3600)
     err = r.stderr.decode("utf-8", "replace")
     mean = re.search(r"mean_volume:\s*(-?[\d.]+|-inf)", err)
     peak = re.search(r"max_volume:\s*(-?[\d.]+|-inf)", err)
@@ -105,6 +105,7 @@ def gain_for(role: Role, mean_db: float) -> float:
 
 def analyze_audio(db: ProjectDB, s: Settings, source_root: Path) -> None:
     for m in db.list_media():
+        controle.atual().checkpoint()  # Pausar/Parar entre arquivos
         if m.audio_channels <= 0 or m.id is None:
             continue
         if db.get_audio_stats(m.id) is not None:

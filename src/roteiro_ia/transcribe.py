@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Protocol
 
+from . import controle
 from .db import ProjectDB
 from .models import Role, Transcript, Word
 
@@ -125,6 +126,7 @@ def transcribe_event(db: ProjectDB, source_root: Path, t: Transcriber,
     ids = plan_sources(db)
     total = len(ids)
     for i, mid in enumerate(ids, 1):
+        controle.atual().checkpoint()  # Pausar/Parar entre mídias
         m = db.get_media(mid)
         if on_progress:
             on_progress(i, total, m.rel_path)

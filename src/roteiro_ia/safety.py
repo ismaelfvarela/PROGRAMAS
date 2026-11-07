@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 from .config import Settings
@@ -18,9 +17,8 @@ _unc_cache: dict[str, list[str]] = {}
 
 
 def _net_use_output() -> str:
-    return subprocess.run(
-        ["net", "use"], capture_output=True, text=True, timeout=15, check=False
-    ).stdout
+    from roteiro_ia import proc  # import tardio: evita ciclo na importação do pacote
+    return proc.run(["net", "use"], text=True, timeout=15, controlado=False).stdout
 
 
 STATIC_UNC_ROOTS = [

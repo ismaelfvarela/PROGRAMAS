@@ -9,6 +9,7 @@ from pathlib import Path
 from jinja2 import Environment, PackageLoader, select_autoescape
 from markupsafe import Markup
 
+from roteiro_ia import proc
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.models import TrackInfo
@@ -165,7 +166,7 @@ def html_to_pdf(html: str, out: Path, s: Settings, html_path: Path | None = None
                    "--no-first-run", "--no-default-browser-check", f"--user-data-dir={prof}",
                    f"--print-to-pdf={tmp_pdf}", html_path.resolve().as_uri()]
             try:
-                res = subprocess.run(cmd, capture_output=True, timeout=PDF_TIMEOUT_S)
+                res = proc.run(cmd, timeout=PDF_TIMEOUT_S)
             except subprocess.TimeoutExpired:
                 raise RuntimeError("O Edge demorou demais para gerar o PDF do roteiro.") from None
         if res.returncode != 0 or not tmp_pdf.exists():

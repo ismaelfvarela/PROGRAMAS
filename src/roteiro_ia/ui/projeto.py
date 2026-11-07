@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox,
                                QPlainTextEdit, QVBoxLayout, QWidget)
 
@@ -21,6 +21,9 @@ from roteiro_ia.ui.worker import PipelineWorker, Runner
 # (pedido, settings, eventos) -> objeto com prepare/run/revise/close/resume_at/db
 PipelineFactory = Callable[[ProjectRequest, Settings, Callable], object]
 MARGEM_RETOMADA_MS = 5_000
+TEXTO_PAUSA_COTA = "Pausado pela cota do Gemini — continua sozinho"
+TEXTO_PARADO = ("Parado. O que já foi feito está guardado: clique em Continuar para seguir de "
+                "onde parou.")
 
 
 def fmt_usd(v: float) -> str:
@@ -53,6 +56,8 @@ class AjusteDialog(QDialog):
 
 
 class ProjetoTab(QWidget):
+    mudou = Signal()  # pausa da cota começou/terminou (a barra geral conta como processo)
+
     def __init__(self, s: Settings, settings_path: Path, runner: Runner,
                  factory: PipelineFactory | None = None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -64,6 +69,8 @@ class ProjetoTab(QWidget):
         self._custo = 0.0
         self._resume_at: datetime | None = None
         self._ultima: tuple[str, bool, str | None] = ("run", False, None)
+        self._continuar_com: tuple[str, bool, str | None] | None = None  # depois de um Parar
+        self._worker: PipelineWorker | None = None
         self.rodando = False
 
         lay = QHBoxLayout(self)
@@ -82,6 +89,12 @@ class ProjetoTab(QWidget):
         self.form.continuar.connect(self.continuar_existente)
         self.status.btn_pdf.clicked.connect(self.abrir_pdf)
         self.status.btn_ajuste.clicked.connect(self.pedir_ajuste)
+        self.controles = self.status.controles
+        self.controles.pausar.connect(self.pausar)
+        self.controles.parar.connect(self.parar)
+        self.controles.continuar.connect(self.continuar)
+        self.status.btn_cota_continuar.clicked.connect(self.continuar_agora)
+        self.status.btn_cota_parar.clicked.connect(self.cancelar_retomada)
 
     # atalhos usados pela janela e pelos testes
     @property
@@ -119,6 +132,7 @@ class ProjetoTab(QWidget):
         req, s, factory = self._req, self.s, self._factory
         if acao != "prepare":
             self._ultima = (acao, aprovado, pedido)
+        self._continuar_com = (acao, aprovado, pedido)
         w = PipelineWorker(lambda eventos: factory(req, s, eventos), acao=acao,
                            aprovado_custo=aprovado, pedido=pedido, refazer_falhas=refazer_falhas)
         w.progresso.connect(self.status.on_progresso)
@@ -128,15 +142,72 @@ class ProjetoTab(QWidget):
         w.retomar_em.connect(self._on_retomar_em)
         w.erro.connect(self._on_erro)
         w.terminou.connect(self._on_terminou)
+        w.estado.connect(self._on_estado)
+        self._worker = w
         self._set_rodando(True)
         self.status.banner_pausa.limpar()
         self.status.banner_erro.limpar()
+        self.status.acoes_cota.hide()
+        self.controles.set_estado("rodando")
         self.runner.start(w)
+        self.mudou.emit()
 
     def _set_rodando(self, on: bool) -> None:
         self.rodando = on
         self.form.set_rodando(on)
         self.status.btn_ajuste.setEnabled(not on)
+
+    # ------------------------------------------------------------ Play / Pause / Stop
+    def em_pausa_cota(self) -> bool:
+        return self.timer_retomar.isActive()
+
+    def _on_estado(self, estado: str) -> None:
+        if self.sender() is not self._worker:
+            return  # aviso atrasado de uma execução anterior
+        if estado in ("rodando", "pausando", "pausado", "parando"):
+            self.controles.set_estado(estado)
+
+    def pausar(self) -> None:
+        if self._worker is not None:
+            self._worker.controle.pausar()
+
+    def parar(self) -> None:
+        if self._worker is not None:
+            self._worker.controle.parar()
+        elif self.em_pausa_cota():
+            self.cancelar_retomada()
+
+    def continuar(self) -> None:
+        """▶ Continuar: solta a pausa; na pausa da cota tenta já; depois de um Parar roda de
+        novo a mesma ação (o pipeline retoma pelo banco, sem refazer o que foi gravado)."""
+        if self._worker is not None:
+            self._worker.controle.continuar()
+        elif self.em_pausa_cota():
+            self.continuar_agora()
+        elif self._req is not None and self._continuar_com is not None:
+            self.status.limpar_avisos()
+            self.status.log_line("Continuando de onde parou.")
+            acao, aprovado, pedido = self._continuar_com
+            self._start(acao, aprovado, pedido)
+
+    def continuar_agora(self) -> None:
+        """Pausa da cota: tenta já (se a cota ainda estiver esgotada, volta a pausar)."""
+        self.timer_retomar.stop()
+        self.status.acoes_cota.hide()
+        self.status.banner_pausa.limpar()
+        self._retomar()
+        self.mudou.emit()
+
+    def cancelar_retomada(self) -> None:
+        """Pausa da cota: Parar cancela a retomada automática."""
+        self.timer_retomar.stop()
+        self.status.acoes_cota.hide()
+        self.status.banner_pausa.limpar()
+        self._set_rodando(False)
+        self.controles.set_estado("parado")
+        self.status.lbl_mensagem.setText(TEXTO_PARADO)
+        self.status.log_line("Retomada automática cancelada pelo editor.")
+        self.mudou.emit()
 
     def _on_custo(self, custo: float) -> None:
         self._custo = custo
@@ -155,6 +226,17 @@ class ProjetoTab(QWidget):
         return r == QMessageBox.Yes
 
     def _on_terminou(self, status: str) -> None:
+        if self.sender() is not None and self.sender() is not self._worker:
+            return
+        self._worker = None
+        if status == "parado":
+            self._set_rodando(False)
+            self.controles.set_estado("parado")
+            self.status.lbl_mensagem.setText(TEXTO_PARADO)
+            self.status.log_line("Parado pelo editor.")
+            self.mudou.emit()
+            return
+        self.controles.set_estado("ocioso")
         if status == "preparado":
             self._set_rodando(False)
             if self.confirmar_custo(self._custo):
@@ -188,6 +270,8 @@ class ProjetoTab(QWidget):
             hora += f" de {local:%d/%m}"
         texto = f"Limite gratuito atingido. Continua automaticamente às {hora}."
         self.status.banner_pausa.mostrar(texto)
+        self.status.acoes_cota.show()
+        self.controles.set_estado("pausado", TEXTO_PAUSA_COTA)
         self.status.lbl_mensagem.setText(texto)
         self.status.log_line(texto)
         ms = int((local - datetime.now().astimezone()).total_seconds() * 1000)
@@ -195,6 +279,7 @@ class ProjetoTab(QWidget):
         # o formulário segue travado: a retomada usa o mesmo pedido
         self.form.set_rodando(True)
         self.status.btn_ajuste.setEnabled(False)
+        self.mudou.emit()
 
     def _retomar(self) -> None:
         if self._req is None:

@@ -6,15 +6,18 @@ import sys
 from importlib.resources import files
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
 
+from roteiro_ia import proc
 from roteiro_ia.config import DEFAULT_CONFIG_PATH, Settings, load_settings
 from roteiro_ia.ui.abas import ConfigTab, EstiloTab, TrilhasTab
 from roteiro_ia.ui.projeto import PipelineFactory, ProjetoTab
+from roteiro_ia.ui.widgets import BarraGeral
 from roteiro_ia.ui.worker import Runner
 
-WAIT_ON_EXIT_MS = 5000
+WAIT_ON_EXIT_MS = 10_000  # Parar tudo ao fechar: espera até 10 s antes de sair
 
 
 def load_theme() -> str:
@@ -57,8 +60,41 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.trilhas, "Trilhas")
         self.tabs.addTab(self.estilo, "Estilo")
         self.tabs.addTab(self.config, "Configurações")
+        # barra geral no canto das abas: age em todos os processos ativos
+        self.barra = BarraGeral()
+        self.tabs.setCornerWidget(self.barra, Qt.TopRightCorner)
+        self.barra.pausar.connect(self.pausar_tudo)
+        self.barra.continuar.connect(self.continuar_tudo)
+        self.barra.parar.connect(self.parar_tudo)
+        self.runner.mudou.connect(self._atualizar_barra)
+        self.projeto.mudou.connect(self._atualizar_barra)
         self.setCentralWidget(self.tabs)
         self.sair_com_tarefas = False
+        self._atualizar_barra()
+
+    # ------------------------------------------------------------ barra geral
+    def _atualizar_barra(self) -> None:
+        cs = self.runner.controles()
+        cota = self.projeto.em_pausa_cota()
+        est = [c.estado for c in cs]
+        self.barra.atualizar(
+            len(cs) + int(cota),
+            pode_pausar="rodando" in est,
+            pode_continuar=cota or any(e in ("pausando", "pausado") for e in est),
+            pode_parar=cota or any(e in ("rodando", "pausando", "pausado") for e in est))
+
+    def pausar_tudo(self) -> None:
+        self.runner.pausar_todos()
+
+    def continuar_tudo(self) -> None:
+        self.runner.continuar_todos()
+        if self.projeto.em_pausa_cota():
+            self.projeto.continuar_agora()
+
+    def parar_tudo(self) -> None:
+        self.runner.parar_todos()
+        if self.projeto.em_pausa_cota():
+            self.projeto.cancelar_retomada()
 
     def _config_salva(self) -> None:
         self.trilhas.textos()
@@ -77,11 +113,15 @@ class MainWindow(QMainWindow):
             if r != QMessageBox.Yes:
                 e.ignore()
                 return
-            self.sair_com_tarefas = True
+            # Parar tudo e esperar (até 10 s) para sair sem nada pela metade; o que não parar
+            # a tempo é encerrado na saída (o pipeline é retomável)
+            self.projeto.timer_retomar.stop()
+            self.sair_com_tarefas = not self.runner.parar_e_esperar(WAIT_ON_EXIT_MS)
         super().closeEvent(e)
 
 
 def main() -> int:
+    proc.esconder_consoles()  # sob o pythonw, nenhum subprocesso abre tela preta
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Roteiro IA")
     apply_theme(app)

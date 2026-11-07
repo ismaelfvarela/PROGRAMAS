@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+from roteiro_ia import controle
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.media import probe as _probe
 from roteiro_ia.media.tools import ffprobe_bin
@@ -70,6 +71,7 @@ def scan(source_dir: Path, assignments: list[FolderAssignment], db: ProjectDB,
         files.extend((p, a) for p in _iter_media(source_dir / a.folder))
     total, ok = len(files), 0
     for i, (path, a) in enumerate(files, 1):
+        controle.atual().checkpoint()  # Pausar/Parar entre arquivos
         try:
             db.add_media(_probe.media_info_from_probe(path, source_dir, a))
             ok += 1

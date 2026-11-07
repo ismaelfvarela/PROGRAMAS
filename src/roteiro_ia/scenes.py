@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 
+from roteiro_ia import controle
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.models import Segment
 from roteiro_ia.paths import EventPaths
@@ -65,6 +66,7 @@ def _video_cuts(proxy: str, duration: float) -> list[tuple[float, float]]:
 def detect_segments(db: ProjectDB, p: EventPaths | None = None) -> None:
     """Grava segmentos de cena de cada mídia (vídeo: ContentDetector no proxy)."""
     for m in db.list_media():
+        controle.atual().checkpoint()  # Pausar/Parar entre mídias
         if db.list_segments(m.id):
             continue
         try:

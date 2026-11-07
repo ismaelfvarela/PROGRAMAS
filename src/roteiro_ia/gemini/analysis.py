@@ -7,6 +7,7 @@ from typing import Callable
 from google.genai import types
 from pydantic import BaseModel
 
+from roteiro_ia import controle
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.gemini.client import QuotaPaused
 from roteiro_ia.gemini.style import StyleProfile
@@ -198,6 +199,7 @@ def _analyze_media(db: ProjectDB, c, m: MediaInfo, todo: list[Segment], uploaded
         return parts, build_prompt(m, segs, speech, style, clip=clip)
 
     for k in range(0, len(todo), BATCH):
+        controle.atual().checkpoint()  # Pausar/Parar entre lotes da mídia longa
         batch = todo[k:k + BATCH]
         key = f"{m.id}:{batch[0].id}"
         if db.quota_strikes(key) >= MAX_MINUTE_PAUSES:
@@ -399,10 +401,12 @@ def analyze_event(db: ProjectDB, c, p: EventPaths, model: str, style: StyleProfi
     def flush() -> None:
         nonlocal pack, video_s, n_segs
         if pack:
+            controle.atual().checkpoint()  # Pausar/Parar antes de cada pacote
             cur, pack, video_s, n_segs = pack, [], 0.0, 0
             _analyze_pack(db, c, cur, model, style)
 
     for i, m in enumerate(medias, 1):
+        controle.atual().checkpoint()  # Pausar/Parar entre mídias
         if on_progress:
             on_progress(i, total, m.rel_path)
         todo = [s for s in db.list_segments(m.id) if db.get_analysis(s.id) is None]
