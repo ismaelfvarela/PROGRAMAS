@@ -116,7 +116,7 @@ def test_edge_usa_user_data_dir_temporario(tmp_path, monkeypatch):
         Path(_arg(cmd, "--print-to-pdf=").split("=", 1)[1]).write_bytes(b"%PDF-x")
         return _Res()
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod.proc, "run", fake_run)
     html_to_pdf("<p>x</p>", tmp_path / "r.pdf", Settings())
     assert visto["existe"] and not visto["dir"].exists()
 
@@ -124,7 +124,7 @@ def test_edge_usa_user_data_dir_temporario(tmp_path, monkeypatch):
 def test_pdf_antigo_nao_mascara_falha(tmp_path, monkeypatch):
     from roteiro_ia.report import pdf as mod
     monkeypatch.setattr(mod, "find_edge", lambda: Path("edge.exe"))
-    monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: _Res())
+    monkeypatch.setattr(mod.proc, "run", lambda cmd, **kw: _Res())
     out = tmp_path / "r.pdf"
     out.write_bytes(b"%PDF-antigo")
     with pytest.raises(RuntimeError):
@@ -140,7 +140,7 @@ def test_pdf_novo_substitui_antigo(tmp_path, monkeypatch):
         Path(_arg(cmd, "--print-to-pdf=").split("=", 1)[1]).write_bytes(b"%PDF-novo")
         return _Res()
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod.proc, "run", fake_run)
     out = tmp_path / "r.pdf"
     out.write_bytes(b"%PDF-antigo")
     html_to_pdf("<p>x</p>", out, Settings())
@@ -156,7 +156,7 @@ def test_pdf_aberto_grava_com_numero(tmp_path, monkeypatch):
         Path(_arg(cmd, "--print-to-pdf=").split("=", 1)[1]).write_bytes(b"%PDF-novo")
         return _Res()
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod.proc, "run", fake_run)
     out = tmp_path / "EV - ROTEIRO.pdf"
     out.write_bytes(b"%PDF-aberto")
     (tmp_path / "EV - ROTEIRO (2).pdf").write_bytes(b"%PDF-outro")

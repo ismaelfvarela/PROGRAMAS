@@ -83,3 +83,14 @@ def test_esconder_consoles_idempotente_e_preserva_flags():
     assert vistos[-1]["creationflags"] == subprocess.CREATE_NO_WINDOW
     P(["x"], creationflags=subprocess.CREATE_NEW_CONSOLE)
     assert vistos[-1]["creationflags"] == subprocess.CREATE_NEW_CONSOLE
+
+
+def test_pacote_nao_usa_subprocess_run_direto():
+    """Toda chamada externa passa por proc.run (sem console e com Parar)."""
+    import re
+    from pathlib import Path
+    raiz = Path(proc.__file__).parent
+    achados = [f"{f.relative_to(raiz)}:{i}" for f in raiz.rglob("*.py") if f.name != "proc.py"
+               for i, linha in enumerate(f.read_text(encoding="utf-8").splitlines(), 1)
+               if re.search(r"subprocess\.(run|call|check_output|check_call)\(", linha)]
+    assert achados == []

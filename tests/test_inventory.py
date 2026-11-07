@@ -152,7 +152,7 @@ def test_ffprobe_tem_tempo_limite(monkeypatch, tmp_path):
     def fake_run(cmd, **kw):
         visto.update(kw)
         raise sp.TimeoutExpired(cmd, kw.get("timeout"))
-    monkeypatch.setattr(pr.subprocess, "run", fake_run)
+    monkeypatch.setattr(pr.proc, "run", fake_run)
     with pytest.raises(RuntimeError, match="ffprobe"):
         pr.probe(tmp_path / "x.mp4")
     assert visto["timeout"] == 120

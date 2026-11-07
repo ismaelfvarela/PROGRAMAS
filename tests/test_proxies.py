@@ -133,7 +133,7 @@ def test_fallback_falha_e_retomada(env, monkeypatch):
     def fake_run(cmd, **k):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 1, "", "boom")
-    monkeypatch.setattr(px.subprocess, "run", fake_run)
+    monkeypatch.setattr(px.proc, "run", fake_run)
     make_proxies(db, p, s, src)
     assert len(calls) == 2 and "h264_nvenc" in calls[0] and "libx264" in calls[1]
     assert db.proxy_for(m.id) is None

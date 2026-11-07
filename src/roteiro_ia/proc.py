@@ -38,10 +38,13 @@ def _encerrar(p: subprocess.Popen) -> None:
 
 
 def run(cmd, *, timeout: float | None = None, text: bool = False, encoding: str | None = None,
-        errors: str | None = None, capture_output: bool = True) -> subprocess.CompletedProcess:
+        errors: str | None = None, capture_output: bool = True,
+        controlado: bool = True) -> subprocess.CompletedProcess:
     """Como `subprocess.run` (sem `check`), sem console e registrado no controle atual: o
-    Parar mata o processo e levanta `controle.Interrompido`. TimeoutExpired como no original."""
-    c = controle.atual()
+    Parar mata o processo e levanta `controle.Interrompido`. TimeoutExpired como no original.
+    `controlado=False` (consultas curtas como `net use` da guarda de escrita, que também roda
+    na limpeza depois de um Parar): só esconde o console, sem checar o controle."""
+    c = controle.atual() if controlado else controle.NULO
     c.checkpoint()
     pipe = subprocess.PIPE if capture_output else None
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=pipe, stderr=pipe, text=text,

@@ -11,6 +11,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from roteiro_ia import proc
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.media.probe import _rotation, _video_fps, probe
@@ -99,8 +100,7 @@ def _find_lrf(m: MediaInfo, source_root: Path) -> Path | None:
 
 def _run(cmd: list[str], timeout: float) -> tuple[bool, str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout)
+        r = proc.run(cmd, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         return False, "tempo esgotado"
     return r.returncode == 0, (r.stderr or "").strip()[-300:]
