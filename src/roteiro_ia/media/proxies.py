@@ -11,7 +11,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from roteiro_ia import proc
+from roteiro_ia import controle, proc
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.media.probe import _rotation, _video_fps, probe
@@ -119,6 +119,7 @@ def make_proxies(db: ProjectDB, p: EventPaths, s: Settings, source_root: Path,
     todo = [m for m in db.list_media() if m.kind == "video"]
     total = len(todo)
     for i, m in enumerate(todo, 1):
+        controle.atual().checkpoint()  # Pausar/Parar entre arquivos
         final = proxy_path(m, p)
         existing = db.proxy_for(m.id)
         if existing and Path(existing).is_file():
@@ -144,7 +145,11 @@ def make_proxies(db: ProjectDB, p: EventPaths, s: Settings, source_root: Path,
             ok, err = False, ""
             for gpu in ((False,) if _FORCE_CPU else (True, False)):
                 _discard(part)
-                ok, err = _run(ffmpeg_proxy_cmd(src, part, m, gpu=gpu), timeout)
+                try:
+                    ok, err = _run(ffmpeg_proxy_cmd(src, part, m, gpu=gpu), timeout)
+                except controle.Interrompido:
+                    _discard(part)  # proxy pela metade: refeito no próximo Continuar
+                    raise
                 if ok and part.is_file():
                     break
                 ok = False

@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from google.genai import types
 from pydantic import BaseModel, ValidationError
 
+from roteiro_ia import controle
 from roteiro_ia.config import Settings
 from roteiro_ia.gemini.client import QuotaPaused
 from roteiro_ia.safety import safe_mkdir, safe_write_text
@@ -151,6 +152,7 @@ def build_style_profile(c, s: Settings, model: str | None = None,
         model = model or s.gemini_model_script or c.pick_default_models()[0]
         safe_mkdir(Path(s.system_dir) / "estilo_cache", s)
     for url in pendentes:
+        controle.atual().checkpoint()  # Pausar/Parar entre vídeos (os já analisados ficam no cache)
         prog(url, "analisando")
         part = types.Part.from_uri(file_uri=url, mime_type="video/*")
         try:
@@ -170,6 +172,7 @@ def build_style_profile(c, s: Settings, model: str | None = None,
             "Nenhum vídeo de estilo pôde ser analisado. Confira os links (públicos, vídeos individuais) "
             "nas configurações."
         )
+    controle.atual().checkpoint()  # Parar antes do perfil agregado não gera perfil incompleto
     model = model or s.gemini_model_script or c.pick_default_models()[0]
     payload = json.dumps([n.model_dump() for n in all_notes], ensure_ascii=False, indent=1)
     prof = c.generate_json(model, [], StyleProfile, _PROMPT_AGG + payload)

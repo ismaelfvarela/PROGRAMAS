@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from roteiro_ia import proc
+from roteiro_ia import controle, proc
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.media.tools import ffmpeg_bin
@@ -105,6 +105,7 @@ def gain_for(role: Role, mean_db: float) -> float:
 
 def analyze_audio(db: ProjectDB, s: Settings, source_root: Path) -> None:
     for m in db.list_media():
+        controle.atual().checkpoint()  # Pausar/Parar entre arquivos
         if m.audio_channels <= 0 or m.id is None:
             continue
         if db.get_audio_stats(m.id) is not None:

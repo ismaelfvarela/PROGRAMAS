@@ -5,14 +5,15 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import Literal
 
+from roteiro_ia import controle
 from roteiro_ia.config import Settings, save_settings
+from roteiro_ia.controle import Interrompido
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.gemini.analysis import analyze_event
 from roteiro_ia.gemini.client import GeminiClient, QuotaPaused
@@ -33,7 +34,7 @@ from roteiro_ia.script.generate import Roteiro, generate_roteiro
 from roteiro_ia.sync import sync_event
 from roteiro_ia.transcribe import transcribe_event
 
-_sleep = time.sleep  # patchável nos testes
+_sleep = controle.dormir  # patchável nos testes; o Parar interrompe a espera
 RETRY_WAITS_S = (10, 20, 40, 80, 160)
 
 # trilhas antes de estilo/análise: o índice local aproveita o tempo em que o Gemini estaria pausado
@@ -258,9 +259,11 @@ class Pipeline:
         return self.p, self.estimate_cost()
 
     def run(self, aprovado_custo: bool = False,
-            refazer_falhas: bool = True) -> Literal["concluido", "pausado"]:
+            refazer_falhas: bool = True) -> Literal["concluido", "pausado", "parado"]:
         """`refazer_falhas=False` (retomadas automáticas): etapas já feitas com falhas por
-        arquivo não são refeitas; True (Iniciar/Continuar explícitos) refaz essas etapas."""
+        arquivo não são refeitas; True (Iniciar/Continuar explícitos) refaz essas etapas.
+        "parado": o editor clicou em Parar; a etapa em andamento volta a pendente e o próximo
+        run retoma dela (o que já foi gravado fica)."""
         self._check_price()
         self._aprovado = aprovado_custo
         if not self._project_file().is_file():
@@ -268,9 +271,13 @@ class Pipeline:
         h = self._open_log()
         try:
             for name in STAGES:
+                controle.atual().checkpoint()  # Pausar/Parar entre etapas
                 self._run_stage(name, refazer_falhas=refazer_falhas)
         except QuotaPaused:
             return "pausado"
+        except Interrompido:
+            _log.info("Parado pelo editor; o próximo Continuar segue de onde parou.")
+            return "parado"
         finally:
             self._close_log(h)
         return "concluido"
@@ -288,7 +295,9 @@ class Pipeline:
                 self._run_stage("roteiro", force=True)
             finally:
                 self._pedido = None
+            controle.atual().checkpoint()
             self._run_stage("pdf", force=True)
+            controle.atual().checkpoint()
             self._run_stage("premiere", force=True)
         finally:
             self._close_log(h)
@@ -304,6 +313,7 @@ class Pipeline:
         if name == "analise" and status != "pausado":
             db.clear_quota_strikes()  # a contagem de pausas seguidas só vale entre retomadas
         label = STAGE_LABELS[name]
+        antes = (status, db.stage_detail(name))
         self._emit(name, f"Iniciando: {label}", 0.0)
         db.set_stage(name, "rodando")
         attempt = 0
@@ -312,6 +322,8 @@ class Pipeline:
                 if name in FALHA_STAGES:
                     db.clear_falhas(name)  # cada tentativa registra as suas: sem duplicatas
                 detail = self.impl[name]() or ""
+                # etapa que devolve normalmente quando parada (índice de trilhas) não fica feita
+                controle.atual().checkpoint()
                 if name in FALHA_STAGES and not os.path.isdir(self.source):
                     # NAS caiu no meio da etapa: os arquivos perdidos viraram falhas; repete
                     raise OSError(f"Pasta de origem inacessível: {self.source}")
@@ -319,6 +331,15 @@ class Pipeline:
                 if n_falhas:
                     detail = f"{FALHAS_PREFIX}{n_falhas}"
                 break
+            except Interrompido:
+                # Parar: nada de erro. Volta a pendente (ou ao 'feito' anterior num ajuste,
+                # cujo roteiro/PDF/XML antigos continuam valendo) e o próximo run retoma daqui.
+                if antes[0] == "feito":
+                    db.set_stage(name, "feito", antes[1])
+                else:
+                    db.set_stage(name, "pendente")
+                self._emit(name, f"Parado: {label}", 0.0)
+                raise
             except QuotaPaused as e:
                 self.resume_at = e.resume_at
                 db.set_stage(name, "pausado", e.resume_at.isoformat())

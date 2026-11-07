@@ -15,6 +15,7 @@ from typing import Callable, Protocol
 
 import numpy as np
 
+from . import controle
 from .config import Settings
 from .models import TrackInfo
 from .safety import assert_writable, safe_mkdir
@@ -725,6 +726,12 @@ def _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_ver
     done = 0
     tentou_modelos = False
     for i, (f, key) in enumerate(files, 1):
+        try:
+            controle.atual().checkpoint()  # Pausar/Parar entre trilhas
+        except controle.Interrompido:
+            # Parar: o que já foi analisado fica no índice e nada é removido; devolve o feito
+            log.info("Índice de trilhas parado pelo editor: %d trilha(s) analisada(s).", done)
+            return done
         if on_progress:
             on_progress(i, len(files), f.name)
         try:
