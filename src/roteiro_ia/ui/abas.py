@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QHBoxLayo
                                QSpinBox, QTextBrowser, QVBoxLayout, QWidget)
 
 from roteiro_ia.config import Settings, save_settings
-from roteiro_ia.ui.widgets import Banner, Card
+from roteiro_ia.ui.widgets import Banner, Card, ControlesProcesso
 from roteiro_ia.ui.worker import Runner, TarefaWorker, mensagem_erro
 
 
@@ -36,6 +36,8 @@ class TrilhasTab(QWidget):
         super().__init__(parent)
         self.s, self.runner = s, runner
         self._contado = False
+        self._w: TarefaWorker | None = None  # indexação em andamento
+        self._feitas = 0
         _w, lay = _pagina(self)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -46,30 +48,32 @@ class TrilhasTab(QWidget):
         self.lbl_info.setWordWrap(True)
         self.lbl_total = QLabel("—")
         self.lbl_total.setObjectName("tituloApp")
-        self.btn = QPushButton()
-        self.btn.setObjectName("primario")
+        self.controles = ControlesProcesso()
+        self.btn = self.controles.btn_play
         self.barra = QProgressBar()
         self.barra.setRange(0, 1000)
         self.barra.hide()
         self.lbl_atual = QLabel()
         self.lbl_atual.setProperty("muted", True)
         self.banner = Banner("erro")
-        linha = QHBoxLayout()
-        linha.addWidget(self.btn)
-        linha.addStretch(1)
         for w in (self.lbl_info, self.lbl_total):
             card.body.addWidget(w)
-        card.body.addLayout(linha)
+        card.body.addWidget(self.controles)
         card.body.addWidget(self.barra)
         card.body.addWidget(self.lbl_atual)
         lay.addWidget(card)
         lay.addWidget(self.banner)
         lay.addStretch(1)
-        self.btn.clicked.connect(self.atualizar)
+        self.controles.iniciar.connect(self.atualizar)
+        self.controles.continuar.connect(self._continuar)
+        self.controles.pausar.connect(lambda: self._w and self._w.controle.pausar())
+        self.controles.parar.connect(lambda: self._w and self._w.controle.parar())
         self.textos()
 
     def textos(self) -> None:
-        self.btn.setText(f"Atualizar índice de músicas do {self.s.music_root.rstrip(chr(92))}")
+        self.controles.set_textos(
+            f"Atualizar índice de músicas do {self.s.music_root.rstrip(chr(92))}",
+            "Atualizando o índice…")
         self.lbl_info.setText(
             f"O programa analisa cada música de {self.s.music_root} (somente leitura) pela "
             "batida (BPM, tempos) e pela melodia: se tem voz ou é só tocada, onde a voz entra, "
@@ -104,24 +108,43 @@ class TrilhasTab(QWidget):
                 n = update_index(self.s, idx, on_progress=progress)
                 return n, resumo_indice(idx)
         self.banner.limpar()
-        self.btn.setEnabled(False)
         self.barra.setValue(0)
         self.barra.show()
-        w = TarefaWorker(fn)
+        self._feitas = 0
+        w = TarefaWorker(fn, controlavel=True)
         w.progresso.connect(self._prog)
         w.resultado.connect(self._fim)
         w.erro.connect(self.banner.mostrar)
         w.terminou.connect(self._fim_tarefa)
+        w.estado.connect(self._on_estado)
+        self._w = w
+        self.controles.set_estado("rodando")
         self.runner.start(w)
+
+    def _continuar(self) -> None:
+        if self._w is not None:
+            self._w.controle.continuar()
+        else:  # depois de um Parar: só as que faltam são analisadas
+            self.atualizar()
+
+    def _on_estado(self, estado: str) -> None:
+        if self.sender() is self._w and estado in ("rodando", "pausando", "pausado", "parando"):
+            self.controles.set_estado(estado)
 
     # slots (métodos de widgets da thread principal: os sinais do worker chegam enfileirados)
     def _set_total(self, resumo) -> None:
         total, completas = resumo
         self.lbl_total.setText(f"{total} trilhas no índice ({completas} com análise completa)")
 
-    def _fim_tarefa(self, _status: str) -> None:
-        self.btn.setEnabled(True)
+    def _fim_tarefa(self, status: str) -> None:
+        self._w = None
         self.barra.hide()
+        if status == "parado":
+            self.controles.set_estado("parado")
+            self.lbl_atual.setText(f"Parado: {self._feitas} trilha(s) analisada(s) ficam no índice; "
+                                   "as demais ficam para o próximo Continuar.")
+        else:
+            self.controles.set_estado("ocioso")
 
     def _prog(self, i: int, total: int, nome: str) -> None:
         self.barra.setValue(int(i / total * 1000) if total else 1000)
@@ -129,6 +152,7 @@ class TrilhasTab(QWidget):
 
     def _fim(self, r) -> None:
         n, resumo = r
+        self._feitas = n
         self._set_total(resumo)
         self.lbl_atual.setText(f"Pronto: {n} trilha(s) nova(s) ou alterada(s) analisada(s).")
 
@@ -174,6 +198,7 @@ class EstiloTab(QWidget):
         super().__init__(parent)
         self.s, self.settings_path, self.runner = s, Path(settings_path), runner
         self._estado: dict[str, str] = {}  # url canônica -> estado na última geração
+        self._w: TarefaWorker | None = None  # geração em andamento
         _w, lay = _pagina(self)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -202,12 +227,9 @@ class EstiloTab(QWidget):
         self.lbl_ignoradas.setProperty("estado", "aviso")
         self.lbl_ignoradas.setWordWrap(True)
         card.body.addWidget(self.lbl_ignoradas)
-        g = QHBoxLayout()
-        self.btn_gerar = QPushButton("Gerar perfil")
-        self.btn_gerar.setObjectName("primario")
-        g.addWidget(self.btn_gerar)
-        g.addStretch(1)
-        card.body.addLayout(g)
+        self.controles = ControlesProcesso("Gerar perfil", texto_rodando="Gerando…")
+        self.btn_gerar = self.controles.btn_play
+        card.body.addWidget(self.controles)
         self.barra = QProgressBar()
         self.barra.setTextVisible(True)
         self.barra.setFormat("%v de %m vídeos analisados")
@@ -229,7 +251,10 @@ class EstiloTab(QWidget):
         self.btn_add.clicked.connect(self.adicionar)
         self.edit_url.returnPressed.connect(self.adicionar)
         self.btn_rem.clicked.connect(self.remover)
-        self.btn_gerar.clicked.connect(self.gerar)
+        self.controles.iniciar.connect(self.gerar)
+        self.controles.continuar.connect(self._continuar)
+        self.controles.pausar.connect(lambda: self._w and self._w.controle.pausar())
+        self.controles.parar.connect(lambda: self._w and self._w.controle.parar())
         self._atualizar()
 
     def _urls(self) -> list[str]:
@@ -297,7 +322,7 @@ class EstiloTab(QWidget):
             "Estes links não são vídeos individuais (playlists?) e serão ignorados — adicione os "
             "vídeos individualmente:\n" + "\n".join(ignoradas) if ignoradas else "")
         self.lbl_ignoradas.setVisible(bool(ignoradas))
-        self.btn_gerar.setEnabled(bool(videos))
+        self.controles.set_pode_iniciar(bool(videos))
         self._icones()
         prof = load_style_profile(self.s)
         self.txt_resumo.setPlainText(prof.resumo if prof else
@@ -307,8 +332,6 @@ class EstiloTab(QWidget):
         s = self.s
         self.banner.limpar()
         self._estado.clear()
-        self.btn_gerar.setEnabled(False)
-        self.btn_gerar.setText("Gerando…")
         ultimo = [0, 0]  # (feitos, total) do último aviso — lido só na thread do worker
 
         def fn(_p):
@@ -328,11 +351,24 @@ class EstiloTab(QWidget):
                     f"{e.resume_at.astimezone():%d/%m %H:%M}; faltam {total - feitos} de {total} "
                     "vídeos (os já analisados ficam guardados).") from e
 
-        w = _EstiloWorker(fn)
+        w = _EstiloWorker(fn, controlavel=True)
         w.video.connect(self._on_video)
         w.erro.connect(self.banner.mostrar)
         w.terminou.connect(self._fim_gerar)
+        w.estado.connect(self._on_estado)
+        self._w = w
+        self.controles.set_estado("rodando")
         self.runner.start(w)
+
+    def _continuar(self) -> None:
+        if self._w is not None:
+            self._w.controle.continuar()
+        else:  # depois de um Parar: os vídeos já analisados vêm do cache
+            self.gerar()
+
+    def _on_estado(self, estado: str) -> None:
+        if self.sender() is self._w and estado in ("rodando", "pausando", "pausado", "parando"):
+            self.controles.set_estado(estado)
 
     def _on_video(self, url: str, estado: str, feitos: int, total: int) -> None:
         self._estado[url] = estado
@@ -347,9 +383,11 @@ class EstiloTab(QWidget):
         if estado == "analisando":
             self.lbl_atual.setText(f"Analisando: {url}")
 
-    def _fim_gerar(self, _status: str) -> None:
-        self.btn_gerar.setText("Gerar perfil")
-        self.lbl_atual.setText("")
+    def _fim_gerar(self, status: str) -> None:
+        self._w = None
+        self.controles.set_estado("parado" if status == "parado" else "ocioso")
+        self.lbl_atual.setText("Parado: os vídeos já analisados ficam guardados."
+                               if status == "parado" else "")
         self._atualizar()
 
 

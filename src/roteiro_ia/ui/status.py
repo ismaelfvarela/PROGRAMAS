@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
                                QWidget)
 
 from roteiro_ia.ui.textos import PREMIERE_INSTRUCAO
-from roteiro_ia.ui.widgets import Banner, Card, StageList
+from roteiro_ia.ui.widgets import (COR_PARAR, COR_PLAY, Banner, Card, ControlesProcesso,
+                                  StageList, icone_glifo)
 
 LOG_MAX_LINHAS = 500
 _CONTAGEM = re.compile(r"(\d+/\d+)")
@@ -23,6 +24,9 @@ class StatusPanel(QWidget):
         lay.setSpacing(12)
 
         card = Card("Andamento")
+        # ⏸/⏹ do processamento; o ▶ aparece só para Continuar (o Iniciar fica no formulário)
+        self.controles = ControlesProcesso(so_continuar=True)
+        card.head.addWidget(self.controles)
         self.etapas = StageList()
         card.body.addWidget(self.etapas)
         self.lbl_mensagem = QLabel("Escolha a pasta do evento e clique em Iniciar.")
@@ -37,6 +41,23 @@ class StatusPanel(QWidget):
         self.banner_ok = Banner("ok")
         for b in (self.banner_erro, self.banner_pausa, self.banner_ok):
             lay.addWidget(b)
+        # pausa da cota do Gemini: dá para tentar já ou cancelar a retomada automática
+        self.acoes_cota = QWidget()
+        cota = QHBoxLayout(self.acoes_cota)
+        cota.setContentsMargins(0, 0, 0, 0)
+        cota.setSpacing(8)
+        self.btn_cota_continuar = QPushButton("Continuar agora")
+        self.btn_cota_continuar.setIcon(icone_glifo("▶", COR_PLAY))
+        self.btn_cota_continuar.setToolTip("Tenta já; se a cota ainda estiver esgotada, volta a "
+                                           "pausar")
+        self.btn_cota_parar = QPushButton("Parar")
+        self.btn_cota_parar.setIcon(icone_glifo("⏹", COR_PARAR))
+        self.btn_cota_parar.setToolTip("Cancela a retomada automática (continue depois)")
+        cota.addWidget(self.btn_cota_continuar)
+        cota.addWidget(self.btn_cota_parar)
+        cota.addStretch(1)
+        self.acoes_cota.hide()
+        lay.addWidget(self.acoes_cota)
 
         self.painel_final = Card("Pronto")
         acoes = QHBoxLayout()
@@ -82,6 +103,8 @@ class StatusPanel(QWidget):
             self.etapas.set_estado(etapa, "pausado")
         elif msg.startswith(("A etapa ", "Erro em ")):
             self.etapas.set_estado(etapa, "erro")
+        elif msg.startswith("Parado: "):
+            self.etapas.set_estado(etapa, "pendente")
         else:
             for k, row in self.etapas.rows.items():
                 if k != etapa and row.estado == "rodando":
@@ -103,4 +126,5 @@ class StatusPanel(QWidget):
     def limpar_avisos(self) -> None:
         for b in (self.banner_erro, self.banner_pausa, self.banner_ok):
             b.limpar()
+        self.acoes_cota.hide()
         self.painel_final.hide()
