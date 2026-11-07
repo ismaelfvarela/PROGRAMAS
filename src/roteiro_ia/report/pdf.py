@@ -11,9 +11,11 @@ from markupsafe import Markup
 
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
+from roteiro_ia.models import TrackInfo
+from roteiro_ia.music_index import MusicIndex
 from roteiro_ia.paths import EventPaths
 from roteiro_ia.safety import assert_writable, safe_write_text
-from roteiro_ia.script.generate import Roteiro
+from roteiro_ia.script.generate import MusicSuggestion, Roteiro
 
 EDGE_PATHS = (
     Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
@@ -82,16 +84,45 @@ def collect_technical_alerts(db: ProjectDB) -> list[str]:
     return alerts
 
 
-def render_html(r: Roteiro, p: EventPaths, alertas_tecnicos: list[str]) -> str:
+def fmt_ms(seconds: float) -> str:
+    t = int(round(max(0.0, seconds)))
+    return f"{t // 60}:{t % 60:02d}"
+
+
+def clima_voz(ms: MusicSuggestion, info: TrackInfo | None) -> str:
+    """"romântica · instrumental" / "épica · cantada (feminina)" a partir do índice; sem a
+    trilha no índice (Musicbed, popular), só o clima sugerido pelo roteiro."""
+    if info is None:
+        return ms.clima
+    clima = info.climas[0] if info.climas else ms.clima
+    if not info.has_vocals:
+        voz = "instrumental"
+    elif info.tipo_voz and info.tipo_voz != "sem voz":
+        voz = f"cantada ({info.tipo_voz})"
+    else:
+        voz = "cantada"
+    return f"{clima} · {voz}"
+
+
+def render_html(r: Roteiro, p: EventPaths, alertas_tecnicos: list[str],
+                idx: MusicIndex | None = None) -> str:
     pecas = sorted(r.pecas, key=lambda x: (_ORDEM_TIPO.get(x.tipo, 9), x.numero or 0))
     d = p.event_date
+    tracks = {t.path.replace("/", "\\").lower(): t for t in idx.all()} if idx is not None else {}
     view = []
     for pc in pecas:
         rotulo = _ROTULO_TIPO.get(pc.tipo, pc.tipo)
         if pc.tipo == "episodio" and pc.numero is not None:
             rotulo = f"{rotulo} {pc.numero}"
+        trilhas = []
+        for ms in pc.trilhas:
+            info = (tracks.get((ms.path or "").replace("/", "\\").lower())
+                    if ms.origem == "biblioteca" else None)
+            trilhas.append({"t": ms, "clima_voz": clima_voz(ms, info),
+                            "inicio": (f"começar em {fmt_ms(ms.trecho_inicio_s)}"
+                                       if ms.trecho_inicio_s is not None else "")})
         view.append({"peca": pc, "rotulo": rotulo, "svg": Markup(emotion_svg(pc.curva_emocao)),
-                     "duracao": fmt_dur(pc.duracao_estimada_s)})
+                     "duracao": fmt_dur(pc.duracao_estimada_s), "trilhas": trilhas})
     tpl = _env.get_template("roteiro.html")
     return tpl.render(
         evento=p.event_name, data=f"{d.day} de {_MESES[d.month - 1]} de {d.year}", arco=r.arco,

@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 import soundfile as sf
 
@@ -140,3 +141,295 @@ def test_vocals_usa_trecho_central(tmp_path):
     finally:
         librosa.effects.harmonic = orig
     assert seen["n"] <= VOCAL_EXCERPT_S * SR
+
+
+# ---------------------------------------------------------------- voz (Demucs plugável)
+
+class FakeSeparator:
+    """"Voz" = tudo acima de 600 Hz (as trilhas de teste têm a voz num tom agudo)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def vocals(self, audio, sr):
+        self.calls.append(len(audio) / sr)
+        spec = np.fft.rfft(audio)
+        f = np.fft.rfftfreq(len(audio), 1 / sr)
+        spec[f < 600] = 0
+        return np.fft.irfft(spec, n=len(audio)).astype(np.float32)
+
+
+def _musica_com_voz(seconds, voz_de=None, voz_ate=None, sr=SR):
+    t = np.arange(int(seconds * sr)) / sr
+    y = 0.2 * np.sin(2 * np.pi * 220 * t)
+    if voz_de is not None:
+        fim = seconds if voz_ate is None else voz_ate
+        mask = (t >= voz_de) & (t < fim)
+        y = y + 0.5 * np.sin(2 * np.pi * 1000 * t) * mask
+    return y.astype(np.float32)
+
+
+def test_trechos_musica_longa():
+    from roteiro_ia.music_index import trechos
+
+    energia = [0.1] * 300
+    energia[200:220] = [0.9] * 20
+    assert trechos(300.0, energia) == [("inicio", 0.0, 60.0), ("meio", 140.0, 160.0),
+                                       ("climax", 200.0, 220.0)]
+
+
+def test_trechos_climax_fora_do_inicio():
+    from roteiro_ia.music_index import trechos
+
+    energia = [0.9] * 30 + [0.1] * 270
+    nome, a, b = trechos(300.0, energia)[2]
+    assert nome == "climax" and a >= 60.0 and b - a == 20.0
+
+
+def test_trechos_musica_curta_inteira():
+    from roteiro_ia.music_index import trechos
+
+    assert trechos(95.0, [0.1] * 95) == [("inteira", 0.0, 95.0)]
+
+
+def test_voz_entra_aos_12s():
+    from roteiro_ia.music_index import analisar_voz, trechos
+
+    y = _musica_com_voz(40, voz_de=12)
+    prop, inicio, intro = analisar_voz(y, SR, FakeSeparator(), trechos(40.0, [0.1] * 40))
+    assert inicio == pytest.approx(12, abs=1)
+    assert intro == pytest.approx(12, abs=1)
+    assert prop == pytest.approx(28 / 40, abs=0.05)
+
+
+def test_voz_so_no_meio_intro_e_o_inicio_inteiro():
+    from roteiro_ia.music_index import analisar_voz, trechos
+
+    y = _musica_com_voz(300, voz_de=130, voz_ate=170)
+    sep = FakeSeparator()
+    prop, inicio, intro = analisar_voz(y, SR, sep, trechos(300.0, [0.1] * 300))
+    assert inicio is None and intro == 60.0
+    assert prop > 0
+    assert sorted(sep.calls) == [20.0, 20.0, 60.0]  # só os trechos, não a música inteira
+
+
+def test_analyze_track_com_separador(tmp_path):
+    p = tmp_path / "voz.wav"
+    sf.write(str(p), _musica_com_voz(40, voz_de=12), SR)
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=FakeSeparator())
+    assert t.has_vocals is True
+    assert t.voz_inicio_s == pytest.approx(12, abs=1)
+    assert t.intro_instrumental_s == pytest.approx(12, abs=1)
+    assert t.voz_proporcao == pytest.approx(0.7, abs=0.05)
+    assert t.versao_analise == 2
+
+
+def test_analyze_track_sem_voz(tmp_path):
+    p = tmp_path / "inst.wav"
+    sf.write(str(p), _musica_com_voz(30), SR)
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=FakeSeparator())
+    assert t.has_vocals is False
+    assert t.voz_proporcao == 0.0
+    assert t.voz_inicio_s is None
+    assert t.intro_instrumental_s == pytest.approx(30, abs=0.5)
+    assert t.tipo_voz == "sem voz"
+
+
+def test_sem_demucs_usa_heuristica_e_marca_parcial(tmp_path, caplog):
+    p = tmp_path / "x.wav"
+    sf.write(str(p), _musica_com_voz(20, voz_de=5), SR)
+    with caplog.at_level("WARNING"):
+        t = analyze_track(p, tracker=LibrosaTracker())  # conftest: modelos indisponíveis
+    assert t.analise_parcial is True
+    assert t.voz_inicio_s is None and t.voz_proporcao == 0.0
+
+
+def test_separador_que_falha_vira_parcial(tmp_path):
+    class Quebrado:
+        def vocals(self, audio, sr):
+            raise RuntimeError("CUDA out of memory")
+
+    p = tmp_path / "x.wav"
+    sf.write(str(p), _musica_com_voz(20, voz_de=5), SR)
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=Quebrado())
+    assert t.analise_parcial is True
+
+
+def test_registro_antigo_carrega():
+    antigo = ('{"path":"M:/a.mp3","bpm":90,"beats_s":[],"downbeats_s":[],"energy":[],'
+              '"duration_s":100,"has_vocals":false,"perfil":"calma","mtime":1}')
+    t = TrackInfo.model_validate_json(antigo)
+    assert t.versao_analise == 1 and t.analise_parcial is False
+    assert t.climas == [] and t.tonalidade == "" and t.voz_inicio_s is None
+
+
+# ---------------------------------------------------------------- tonalidade e clima (CLAP plugável)
+
+def _acorde(freqs, seconds=8, sr=SR):
+    t = np.arange(int(seconds * sr)) / sr
+    y = sum(np.sin(2 * np.pi * f * t) / (1 + 0.3 * i) for i, f in enumerate(freqs))
+    return (0.2 * y).astype(np.float32)
+
+
+def test_tonalidade_la_menor():
+    from roteiro_ia.music_index import tonalidade
+
+    assert tonalidade(_acorde([220.0, 261.63, 329.63]), SR) == ("Lá menor", "menor")
+
+
+def test_tonalidade_do_maior():
+    from roteiro_ia.music_index import tonalidade
+
+    assert tonalidade(_acorde([261.63, 329.63, 392.0]), SR) == ("Dó maior", "maior")
+
+
+def test_tonalidade_silencio_vazia():
+    from roteiro_ia.music_index import tonalidade
+
+    assert tonalidade(np.zeros(SR * 3, dtype=np.float32), SR) == ("", "")
+
+
+class FakeTagger:
+    PESOS = {"a epic song": 0.9, "a romantic song": 0.7, "a calm song": 0.5,
+             "music with strings": 0.8, "music with piano": 0.95, "music with drums": 0.3,
+             "music with instrumental": 0.99, "music with female vocals": 0.6,
+             "music with male vocals": 0.2}
+
+    def __init__(self):
+        self.calls = []
+
+    def scores(self, audio, sr, rotulos):
+        self.calls.append((len(audio) / sr, list(rotulos)))
+        return [self.PESOS.get(r, 0.1) for r in rotulos]
+
+
+def test_classificar_top3_e_tipo_voz():
+    from roteiro_ia.music_index import classificar
+
+    tg = FakeTagger()
+    climas, instrumentos, voz = classificar(np.zeros(SR), SR, tg, has_vocals=True)
+    assert climas == ["épica", "romântica", "calma"]
+    assert instrumentos == ["piano", "cordas", "bateria"]
+    # "instrumental" tem o maior score, mas a voz foi detectada pelo Demucs: vale o tipo cantado
+    assert voz == "feminina"
+    assert "a romantic song" in tg.calls[0][1] and "music with acoustic guitar" in tg.calls[1][1]
+
+
+def test_classificar_sem_voz():
+    from roteiro_ia.music_index import classificar
+
+    assert classificar(np.zeros(SR), SR, FakeTagger(), has_vocals=False)[2] == "sem voz"
+
+
+def test_analyze_track_completa_com_fakes(tmp_path):
+    p = tmp_path / "voz.wav"
+    sf.write(str(p), _musica_com_voz(40, voz_de=12), SR)
+    tg = FakeTagger()
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=FakeSeparator(), tagger=tg)
+    assert t.analise_parcial is False
+    assert t.climas == ["épica", "romântica", "calma"]
+    assert t.instrumentos == ["piano", "cordas", "bateria"]
+    assert t.tipo_voz == "feminina"
+    assert t.tonalidade and t.modo in ("maior", "menor")
+    assert tg.calls[0][0] == pytest.approx(40, abs=0.1)  # música curta: o CLAP ouve a inteira
+
+
+def test_sem_clap_campos_vazios_e_parcial(tmp_path):
+    p = tmp_path / "voz.wav"
+    sf.write(str(p), _musica_com_voz(40, voz_de=12), SR)
+    t = analyze_track(p, tracker=LibrosaTracker(), separator=FakeSeparator())
+    assert t.analise_parcial is True
+    assert t.climas == [] and t.instrumentos == []
+    assert t.voz_inicio_s == pytest.approx(12, abs=1)  # a voz do Demucs continua valendo
+
+
+# ---------------------------------------------------------------- reanálise
+
+def _biblioteca(tmp_path, n=2):
+    s = _settings(tmp_path)
+    root = tmp_path / "musicas"
+    root.mkdir()
+    for i in range(n):
+        sf.write(str(root / f"m{i}.wav"), _musica_com_voz(15, voz_de=5), SR)
+    return s, MusicIndex(tmp_path / "sis" / "trilhas.db", s)
+
+
+def test_reanalisa_versao_antiga(tmp_path):
+    s, idx = _biblioteca(tmp_path, 1)
+    update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(), tagger=FakeTagger())
+    t = idx.all()[0]
+    idx.upsert(t.model_copy(update={"versao_analise": 1}))
+    assert update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                        tagger=FakeTagger()) == 1
+    assert idx.all()[0].versao_analise == 2
+
+
+def test_reanalisa_parcial_quando_modelos_carregam(tmp_path):
+    s, idx = _biblioteca(tmp_path)
+    assert update_index(s, idx, tracker=LibrosaTracker()) == 2  # sem modelos → parciais
+    assert all(t.analise_parcial for t in idx.all())
+    assert update_index(s, idx, tracker=LibrosaTracker()) == 0  # continuam sem modelos
+    assert update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                        tagger=FakeTagger()) == 2
+    assert not any(t.analise_parcial for t in idx.all())
+    assert update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                        tagger=FakeTagger()) == 0
+
+
+def test_modelos_carregados_uma_vez_por_execucao(tmp_path, monkeypatch):
+    from roteiro_ia import music_index
+
+    s, idx = _biblioteca(tmp_path, 3)
+    n = {"sep": 0, "tag": 0}
+
+    def sep():
+        n["sep"] += 1
+        return FakeSeparator()
+
+    def tag():
+        n["tag"] += 1
+        return FakeTagger()
+
+    monkeypatch.setattr(music_index, "_default_separator", sep)
+    monkeypatch.setattr(music_index, "_default_tagger", tag)
+    assert update_index(s, idx, tracker=LibrosaTracker()) == 3
+    assert n == {"sep": 1, "tag": 1}
+    assert update_index(s, idx, tracker=LibrosaTracker()) == 0
+    assert n == {"sep": 1, "tag": 1}  # tudo completo: nem carrega os modelos
+
+
+def test_resumo_indice(tmp_path):
+    from roteiro_ia.music_index import resumo_indice
+
+    s, idx = _biblioteca(tmp_path)
+    update_index(s, idx, tracker=LibrosaTracker())
+    assert resumo_indice(idx) == (2, 0)
+    t = idx.all()[0]
+    idx.upsert(t.model_copy(update={"analise_parcial": False}))
+    assert resumo_indice(idx) == (2, 1)
+
+
+def test_sem_atualizar_versao_so_analisa_novas_e_alteradas(tmp_path):
+    s, idx = _biblioteca(tmp_path, 2)
+    update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(), tagger=FakeTagger())
+    a, b = idx.all()
+    idx.upsert(a.model_copy(update={"versao_analise": 1}))          # antiga
+    idx.upsert(b.model_copy(update={"analise_parcial": True}))      # parcial
+    sf.write(str(tmp_path / "musicas" / "nova.wav"), _musica_com_voz(15), SR)
+    n = update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                     tagger=FakeTagger(), atualizar_versao=False)
+    assert n == 1  # só a nova
+    por = {t.path: t for t in idx.all()}
+    assert por[a.path].versao_analise == 1 and por[b.path].analise_parcial is True
+    assert update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                        tagger=FakeTagger()) == 2  # a Trilhas (padrão True) atualiza as duas
+
+
+def test_libera_gpu_no_fim(tmp_path, monkeypatch):
+    from roteiro_ia import music_index
+
+    chamadas = []
+    monkeypatch.setattr(music_index, "_liberar_gpu", lambda: chamadas.append(1))
+    s, idx = _biblioteca(tmp_path, 1)
+    update_index(s, idx, tracker=LibrosaTracker())
+    assert chamadas == [1]

@@ -21,6 +21,8 @@ dependencies = [
   "jinja2",
   "PySide6",
   "tzdata>=2026.6",
+  "demucs>=4.0.1",
+  "transformers>=4.50,<5",
 ]
 
 [project.scripts]
@@ -42,9 +44,10 @@ packages = ["src/roteiro_ia"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not gemini'"  # teste com a API real só com -m gemini (gasta cota)
+addopts = "-m 'not gemini and not modelos'"  # API real só com -m gemini (gasta cota); modelos locais reais só com -m modelos
 markers = [
   "gemini: teste real contra a API Gemini (requer chave)",
+  "modelos: teste real com Demucs e CLAP (baixa os modelos na primeira vez; GPU se houver)",
   "windows: teste que usa o Microsoft Edge instalado no Windows",
   "integracao: evento sintético completo (ffmpeg, Edge, Gemini/Whisper falsos)",
 ]

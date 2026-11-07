@@ -120,6 +120,17 @@ class TrackInfo(BaseModel):
     has_vocals: bool
     perfil: Literal["calma", "crescente", "intensa"]
     mtime: float
+    # Análise por melodia (versão 2). Todos com padrão: registros antigos continuam carregando.
+    voz_proporcao: float = 0.0
+    voz_inicio_s: float | None = None
+    intro_instrumental_s: float = 0.0
+    tonalidade: str = ""
+    modo: Literal["maior", "menor", ""] = ""
+    climas: list[str] = Field(default_factory=list)
+    instrumentos: list[str] = Field(default_factory=list)
+    tipo_voz: str = ""
+    versao_analise: int = 1
+    analise_parcial: bool = False
 
 
 class Falha(BaseModel):

@@ -98,12 +98,12 @@
   {% if pc.trilhas %}
   <div class="label">Trilhas</div>
   <table>
-    <tr><th>Título</th><th>Origem</th><th>BPM</th><th>Clima</th><th>Corte</th><th>Licença</th><th>Motivo</th></tr>
-    {% for t in pc.trilhas %}
+    <tr><th>Título</th><th>Origem</th><th>BPM</th><th>Clima / voz</th><th>Corte</th><th>Licença</th><th>Motivo</th></tr>
+    {% for tv in it.trilhas %}{% set t = tv.t %}
     <tr>
       <td>{{ t.titulo }}</td><td>{{ t.origem }}</td>
       <td>{% if t.bpm %}{{ t.bpm|round|int }}{% else %}-{% endif %}</td>
-      <td>{{ t.clima }}</td><td>{{ t.padrao_corte }}</td>
+      <td>{{ tv.clima_voz }}{% if tv.inicio %}<div class="why">{{ tv.inicio }}</div>{% endif %}</td><td>{{ t.padrao_corte }}</td>
       <td>{% if t.exige_licenca %}<span class="badge" style="margin-left:0">exige licença</span>{% else %}-{% endif %}</td>
       <td>{{ t.motivo }}</td>
     </tr>

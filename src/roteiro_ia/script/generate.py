@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.gemini.style import StyleProfile
-from roteiro_ia.models import MediaInfo
+from roteiro_ia.models import MediaInfo, TrackInfo
 from roteiro_ia.music_index import MusicIndex
 
 CORRECTION_ROUNDS = 2
@@ -30,13 +30,14 @@ REGRAS_FOKUSS = """Regras de edição da Fokuss (siga todas):
 8. Criatividade: você pode sugerir momentos de lembrança/flashback (marque lembranca=true; na edição terão outra tonalidade e áudio filtrado/reverb) e momentos extras fora da lista base.
 9. Trailer, teaser e stories/reels: mesma estrutura das peças, focados nos momentos de maior impacto, SEM entregar os ganchos dos episódios.
 10. Mídias marcadas [só áudio] no catálogo (mesa, gravador, lapela) não têm imagem: use-as só como 'fala' sobre uma cena de vídeo do mesmo momento, NUNCA como rel_path de uma cena.
-11. Som ambiente da câmera: o som ambiente da câmera (risos, aplausos, emoção, falas ao fundo; veja 'som:' no catálogo, ★ = útil) pode ser usado para dar realismo; marque usar_som_camera=true nas cenas em que ele deve ficar audível junto da mesa/ambiente."""
+11. Som ambiente da câmera: o som ambiente da câmera (risos, aplausos, emoção, falas ao fundo; veja 'som:' no catálogo, ★ = útil) pode ser usado para dar realismo; marque usar_som_camera=true nas cenas em que ele deve ficar audível junto da mesa/ambiente.
+12. Trilha pela melodia, não só pela batida (veja voz, clima, instrumentos e intro na lista de trilhas): embaixo de fala real (votos, discursos, depoimentos) prefira trilha instrumental — ou só o trecho instrumental de uma cantada, usando a intro instrumental antes de a voz entrar; montagens sem fala aceitam trilha cantada; gancho e clímax pedem trilha épica, inspiradora ou de perfil crescente; abertura emotiva pede piano, cordas ou clima calmo. Quando a música deve começar em outro ponto (ex.: pular para o refrão ou para um trecho instrumental), informe trecho_inicio_s em segundos."""
 
 _FORMATO = """Formato das referências (obrigatório):
 - Cada cena (abertura, desenvolvimento, gancho) usa rel_path EXATAMENTE como aparece no catálogo e start_s/end_s em segundos RELATIVOS AO ARQUIVO, dentro do intervalo do segmento escolhido (início < fim).
 - Episódios: tipo "episodio", numero 1, 2, 3… em sequência. Derivados: tipo "trailer", "teaser" ou "stories", numero null.
 - curva_emocao: intensidade 0–10 ao longo da peça; duracao_estimada_s em segundos.
-- Trilhas por peça: 2–3 opções origem "biblioteca" com path EXATAMENTE como na lista de trilhas (BPM, clima, motivo, padrao_corte); termos de busca para Musicbed em termos_musicbed (origem "musicbed" se sugerir uma faixa de lá); músicas populares com origem "popular" e exige_licenca=true.
+- Trilhas por peça: 2–3 opções origem "biblioteca" com path EXATAMENTE como na lista de trilhas (BPM, clima, motivo, padrao_corte); termos de busca para Musicbed em termos_musicbed (origem "musicbed" se sugerir uma faixa de lá); músicas populares com origem "popular" e exige_licenca=true. trecho_inicio_s (opcional): segundo da música em que ela deve começar; null = do início.
 - alertas: momentos importantes sem take bom ou qualquer ressalva para o editor."""
 
 _BPM_BANDS = ((0.0, 90.0), (90.0, 120.0), (120.0, float("inf")))
@@ -63,6 +64,7 @@ class MusicSuggestion(BaseModel):
     motivo: str
     padrao_corte: Literal["1-3", "2-4", "misto"]
     exige_licenca: bool
+    trecho_inicio_s: float | None = None  # onde começar a música (ex.: só a intro instrumental)
 
 
 class Piece(BaseModel):
@@ -157,14 +159,47 @@ def _band(bpm: float) -> int:
     return len(_BPM_BANDS) - 1
 
 
+def _voz_txt(t) -> str:
+    if not t.has_vocals:
+        return "instrumental"
+    return f"cantada (voz {round(t.voz_proporcao * 100)}%)" if t.voz_proporcao > 0 else "cantada"
+
+
+def _track_line(t) -> str:
+    dur = int(round(t.duration_s))
+    partes = [t.path, f"BPM {t.bpm:.1f}", f"perfil {t.perfil}", f"{dur // 60}:{dur % 60:02d}",
+              _voz_txt(t)]
+    if t.climas:
+        partes.append("clima " + ", ".join(t.climas))
+    if t.instrumentos:
+        partes.append("instrumentos " + ", ".join(t.instrumentos))
+    if t.has_vocals and t.tipo_voz and t.tipo_voz != "sem voz":
+        partes.append(f"voz {t.tipo_voz}")
+    if t.has_vocals and t.intro_instrumental_s >= 1:
+        n = int(round(t.intro_instrumental_s))
+        partes.append(f"intro instrumental de {n} s" if t.voz_inicio_s is not None
+                      else f"intro instrumental de pelo menos {n} s")
+    if t.tonalidade:
+        partes.append(f"tom {t.tonalidade}")
+    return " | ".join(_clean(p) if i else p for i, p in enumerate(partes))
+
+
 def music_shortlist(idx: MusicIndex, n: int = 80) -> str:
-    """Até n trilhas espalhadas por perfil e faixa de BPM (determinístico: round-robin
-    entre os grupos, cada grupo ordenado por caminho)."""
-    buckets: dict[tuple[int, int], list] = {}
+    """Até n trilhas espalhadas por perfil, faixa de BPM e clima principal (determinístico:
+    round-robin entre os grupos, cada grupo ordenado por caminho)."""
+    buckets: dict[tuple[int, int, str], list] = {}
     for t in idx.all():
         p = _PERFIS.index(t.perfil) if t.perfil in _PERFIS else len(_PERFIS)
-        buckets.setdefault((p, _band(t.bpm)), []).append(t)
-    queues = [sorted(buckets[k], key=lambda t: t.path) for k in sorted(buckets)]
+        buckets.setdefault((p, _band(t.bpm), t.climas[0] if t.climas else ""), []).append(t)
+    # Ordem dos grupos intercalada por clima: o 1º grupo de cada clima, depois o 2º de cada…
+    # Assim todo clima entra antes de algum se repetir, mesmo com mais grupos do que n.
+    por_clima: dict[str, list] = {}
+    for k in sorted(buckets):
+        por_clima.setdefault(k[2], []).append(k)
+    listas = [por_clima[c] for c in sorted(por_clima)]
+    ordem = [lst[j] for j in range(max(map(len, listas), default=0))
+             for lst in listas if j < len(lst)]
+    queues = [sorted(buckets[k], key=lambda t: t.path) for k in ordem]
     picked = []
     i = 0
     while len(picked) < n and any(queues):
@@ -172,12 +207,7 @@ def music_shortlist(idx: MusicIndex, n: int = 80) -> str:
         if q:
             picked.append(q.pop(0))
         i += 1
-    lines = []
-    for t in picked:
-        dur = int(round(t.duration_s))
-        lines.append(f"{t.path} | BPM {t.bpm:.1f} | perfil {t.perfil} | {dur // 60}:{dur % 60:02d} | "
-                     f"{'vocal' if t.has_vocals else 'instrumental'}")
-    return "\n".join(lines)
+    return "\n".join(_track_line(t) for t in picked)
 
 
 # ---------------------------------------------------------------- validação
@@ -205,11 +235,11 @@ def _ref_problem(ref: SceneRef, media: dict[str, MediaInfo]) -> str | None:
     return None
 
 
-def _track_map(idx: MusicIndex) -> dict[str, str]:
-    return {_norm(t.path): t.path for t in idx.all()}
+def _track_map(idx: MusicIndex) -> dict[str, TrackInfo]:
+    return {_norm(t.path): t for t in idx.all()}
 
 
-def _track_problem(ms: MusicSuggestion, tracks: dict[str, str]) -> str | None:
+def _track_problem(ms: MusicSuggestion, tracks: dict[str, TrackInfo]) -> str | None:
     if ms.origem == "popular":
         ms.exige_licenca = True
     if ms.origem != "biblioteca":
@@ -217,8 +247,29 @@ def _track_problem(ms: MusicSuggestion, tracks: dict[str, str]) -> str | None:
     real = tracks.get(_norm(ms.path or ""))
     if real is None:
         return f"a trilha '{ms.titulo}' ({ms.path}) não existe na biblioteca"
-    ms.path = real
+    ms.path = real.path
     return None
+
+
+def inicio_valido(inicio: float | None, duracao_s: float) -> bool:
+    """trecho_inicio_s utilizável: 0 ≤ início < duração da trilha."""
+    return inicio is not None and 0 <= inicio < duracao_s
+
+
+def _check_inicio(ms: MusicSuggestion, tracks: dict[str, TrackInfo], lab: str,
+                  r: Roteiro) -> None:
+    """Início de trilha fora da música (ou sem a música no índice) é descartado com alerta."""
+    if ms.trecho_inicio_s is None:
+        return
+    info = tracks.get(_norm(ms.path or "")) if ms.origem == "biblioteca" else None
+    if info is not None and inicio_valido(ms.trecho_inicio_s, info.duration_s):
+        return
+    dur = f" (duração {info.duration_s:.0f} s)" if info is not None else ""
+    aviso = (f"{lab}, trilhas: início {ms.trecho_inicio_s:.0f} s ignorado na trilha "
+             f"'{ms.titulo}'{dur} — a música começa do início")
+    ms.trecho_inicio_s = None
+    if aviso not in r.alertas:
+        r.alertas.append(aviso)
 
 
 def _label(p: Piece) -> str:
@@ -255,6 +306,8 @@ def validate_refs(r: Roteiro, db: ProjectDB, idx: MusicIndex) -> list[str]:
             e = _track_problem(ms, tracks)
             if e:
                 probs.append(f"{lab}, trilhas: {e}")
+            else:
+                _check_inicio(ms, tracks, lab, r)
     eps = _episodes(r)
     nums = [p.numero for p in eps]
     if nums != list(range(1, len(eps) + 1)):
@@ -355,7 +408,9 @@ def _context(db: ProjectDB, idx: MusicIndex, style: StyleProfile | None,
         "", "CATÁLOGO DO MATERIAL (dias em ordem cronológica; rel_path | início–fim do segmento | "
         "dia | momento | emoção | qualidade | descrição | falas | gancho):",
         build_catalog(db, compact=compact) or "(vazio)",
-        "", "TRILHAS DA BIBLIOTECA (path | BPM | perfil | duração | voz):",
+        "", "TRILHAS DA BIBLIOTECA (path | BPM | perfil | duração | instrumental ou cantada | "
+        "clima | instrumentos | tipo de voz | intro instrumental | tonalidade; campos sem análise "
+        "ficam de fora):",
         music_shortlist(idx) or "(nenhuma trilha indexada)",
     ]
     return "\n".join(partes)

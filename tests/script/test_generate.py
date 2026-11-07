@@ -358,3 +358,89 @@ def test_validate_normaliza_som_camera_sem_audio(env):
     assert r.pecas[0].abertura.usar_som_camera is True
     assert r.pecas[0].desenvolvimento[0].usar_som_camera is False
     assert any("C\\C0001.MP4" in a and "som da câmera" in a for a in r.alertas)
+
+
+# ---------------------------------------------------------------- trilhas pela melodia
+
+def test_shortlist_traz_clima_voz_intro_e_tom(tmp_path):
+    s = Settings(system_dir=str(tmp_path / "sys"), protected_roots=[])
+    idx = MusicIndex(tmp_path / "t.db", s)
+    idx.upsert(tr(r"M:\inst.mp3").model_copy(update={
+        "climas": ["romântica", "emotiva", "calma"], "instrumentos": ["piano", "cordas", "violão"],
+        "tipo_voz": "sem voz", "tonalidade": "Lá menor", "modo": "menor", "versao_analise": 2}))
+    idx.upsert(tr(r"M:\cant.mp3", vocals=True).model_copy(update={
+        "climas": ["épica", "inspiradora", "alegre"], "instrumentos": ["orquestra"],
+        "tipo_voz": "feminina", "voz_proporcao": 0.62, "voz_inicio_s": 18.0,
+        "intro_instrumental_s": 18.0, "tonalidade": "Dó maior", "modo": "maior",
+        "versao_analise": 2}))
+    linhas = {ln.split(" | ")[0]: ln for ln in music_shortlist(idx).splitlines()}
+    inst, cant = linhas[r"M:\inst.mp3"], linhas[r"M:\cant.mp3"]
+    assert "instrumental" in inst and "clima romântica, emotiva, calma" in inst
+    assert "instrumentos piano, cordas, violão" in inst and "tom Lá menor" in inst
+    assert "intro" not in inst
+    assert "cantada (voz 62%)" in cant and "voz feminina" in cant
+    assert "intro instrumental de 18 s" in cant and "tom Dó maior" in cant
+    idx.close()
+
+
+def test_shortlist_espalha_por_clima(tmp_path):
+    s = Settings(system_dir=str(tmp_path / "sys"), protected_roots=[])
+    idx = MusicIndex(tmp_path / "t.db", s)
+    for i in range(6):
+        idx.upsert(tr(fr"M:\a{i}.mp3").model_copy(update={"climas": ["romântica"]}))
+    idx.upsert(tr(r"M:\z.mp3").model_copy(update={"climas": ["épica"]}))
+    out = music_shortlist(idx, n=2)
+    assert r"M:\z.mp3" in out  # mesmo perfil e BPM, mas outro clima
+    idx.close()
+
+
+def test_regras_de_trilha_pela_melodia():
+    r = REGRAS_FOKUSS.lower()
+    assert "instrumental" in r and "fala real" in r and "intro instrumental" in r
+    assert "cantada" in r and "épica" in r and "inspiradora" in r and "piano" in r
+    assert "trecho_inicio_s" in REGRAS_FOKUSS
+
+
+def test_prompt_traz_regras_e_cabecalho_novo(env):
+    db, idx = env
+    c = FakeClient([rot(piece(gancho=None))])
+    generate_roteiro(db, c, idx, None, "m", 1, set())
+    pr = c.calls[0][3]
+    assert "fala real" in pr and "clima" in pr and "tonalidade" in pr
+
+
+def test_trecho_inicio_invalido_vira_alerta(env):
+    db, idx = env
+    ok = MusicSuggestion(origem="biblioteca", path=r"M:\Trilhas\lenta.mp3", titulo="lenta",
+                         bpm=80, clima="calmo", motivo="m", padrao_corte="1-3",
+                         exige_licenca=False, trecho_inicio_s=12.0)
+    ruim = ok.model_copy(update={"trecho_inicio_s": 250.0})  # a trilha tem 200 s
+    r = rot(piece(trilhas=[ok, ruim], gancho=None))
+    assert validate_refs(r, db, idx) == []
+    assert r.pecas[0].trilhas[0].trecho_inicio_s == 12.0
+    assert r.pecas[0].trilhas[1].trecho_inicio_s is None
+    assert any("250" in a and "lenta" in a for a in r.alertas)
+    assert MusicSuggestion.model_validate(
+        {k: v for k, v in ok.model_dump().items() if k != "trecho_inicio_s"}).trecho_inicio_s is None
+
+
+def test_shortlist_nao_descarta_epica_com_muitos_grupos(tmp_path):
+    s = Settings(system_dir=str(tmp_path / "sys"), protected_roots=[])
+    idx = MusicIndex(tmp_path / "t.db", s)
+    climas = ["", "alegre", "calma", "emotiva", "festiva", "inspiradora", "nostálgica",
+              "romântica", "tensa"]
+    for c in climas:  # 9 climas × 3 perfis × 3 faixas de BPM = 81 grupos
+        for perfil in ("calma", "crescente", "intensa"):
+            for bpm in (70, 100, 130):
+                for k in range(2):
+                    idx.upsert(tr(f"M:/{c or 'x'}-{perfil}-{bpm}-{k}.mp3", bpm=bpm,
+                                  perfil=perfil).model_copy(update={"climas": [c] if c else []}))
+    idx.upsert(tr("M:/zz-epica.mp3", bpm=130, perfil="intensa").model_copy(
+        update={"climas": ["épica"]}))  # 82º grupo, o último na ordem dos grupos
+    linhas = music_shortlist(idx, n=80).splitlines()
+    assert len(linhas) == 80
+    assert any(ln.startswith("M:/zz-epica.mp3") for ln in linhas)
+    # todo clima aparece antes de qualquer clima se repetir
+    primeiros = [ln.split(" | ")[0].split("/")[1].split("-")[0] for ln in linhas[:10]]
+    assert len(set(primeiros)) == 10
+    idx.close()

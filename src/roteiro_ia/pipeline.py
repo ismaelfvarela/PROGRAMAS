@@ -21,7 +21,7 @@ from roteiro_ia.inventory import scan
 from roteiro_ia.media.audio import analyze_audio
 from roteiro_ia.media.proxies import make_proxies
 from roteiro_ia.models import FolderAssignment, Role
-from roteiro_ia.music_index import MusicIndex, update_index
+from roteiro_ia.music_index import MusicIndex, trilhas_antigas, update_index
 from roteiro_ia.paths import (EventPaths, build_event_paths, check_free_space, create_event_folders,
                               estimate_proxy_gb)
 from roteiro_ia.premiere.fcpxml import build_xml, write_xml
@@ -400,16 +400,26 @@ class Pipeline:
     def _st_trilhas(self) -> str:
         idx = self._index()
         try:
+            # Só novas/alteradas: reanalisar a biblioteca de versão antiga leva horas e é feito
+            # pela aba Trilhas (ou `roteiro-ia trilhas`).
             n = update_index(self.s, idx, on_progress=self._progress("trilhas"),
-                             tracker=self._tracker)
+                             tracker=self._tracker, atualizar_versao=False)
         except FileNotFoundError as e:
             if not idx.all():
                 raise PipelineError(
                     f"{e} Não há trilhas no índice: conecte a pasta de músicas e use "
                     "'roteiro-ia trilhas' para criar o índice.") from None
             self._emit("trilhas", f"{e} Usando o índice existente ({len(idx.all())} trilhas).", 1.0)
+            self._avisar_trilhas_antigas(idx)
             return "índice existente (pasta de músicas inacessível)"
+        self._avisar_trilhas_antigas(idx)
         return f"{n} trilhas analisadas"
+
+    def _avisar_trilhas_antigas(self, idx: MusicIndex) -> None:
+        n = trilhas_antigas(idx)
+        if n:
+            self._emit("trilhas", f"Há {n} trilhas com análise antiga — rode 'Atualizar índice' "
+                       "na aba Trilhas (pode levar horas)", 1.0)
 
     def _st_roteiro(self) -> None:
         _, model = self._models()
@@ -423,7 +433,8 @@ class Pipeline:
         return Roteiro.model_validate_json(txt)
 
     def _st_pdf(self) -> None:
-        html = render_html(self._roteiro(), self.p, collect_technical_alerts(self.db))
+        html = render_html(self._roteiro(), self.p, collect_technical_alerts(self.db),
+                           idx=self._index())
         out = html_to_pdf(html, self.p.pdf_path, self.s,
                           html_path=Path(self.p.analysis_dir) / "roteiro.html")
         if out is not None and Path(out) != Path(self.p.pdf_path):
