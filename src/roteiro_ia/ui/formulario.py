@@ -6,7 +6,7 @@ import re
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import QStorageInfo, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QGridLayout,
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QSpinBox, QVBoxLayout, QWidget)
@@ -46,6 +46,21 @@ def espaco_livre_gb(valor: str) -> float | None:
         return shutil.disk_usage(base).free / 1024**3
     except OSError:
         return None
+
+
+def listar_discos() -> list[str]:
+    """Letras de unidade ("C:", "Y:"...) sem consultar cada volume.
+
+    QStorageInfo.mountedVolumes() pergunta a cada disco (inclusive de rede desconectado) e
+    chegou a travar a abertura da janela por 20 s; GetLogicalDrives só lê as letras.
+    """
+    if os.name == "nt":
+        import ctypes
+        mascara = ctypes.windll.kernel32.GetLogicalDrives()
+        return [f"{chr(65 + i)}:" for i in range(26) if mascara >> i & 1]
+    from PySide6.QtCore import QStorageInfo
+    return sorted({v.rootPath()[:2].upper() for v in QStorageInfo.mountedVolumes()
+                   if v.isValid() and len(v.rootPath()) >= 2 and v.rootPath()[1] == ":"})
 
 
 def estimar_necessario_gb(source: Path) -> float:
@@ -113,9 +128,7 @@ class FormularioEvento(QWidget):
         self.combo_disco = QComboBox()
         self.combo_disco.setEditable(True)
         self.combo_disco.setFixedWidth(120)
-        discos = sorted({v.rootPath()[:2].upper() for v in QStorageInfo.mountedVolumes()
-                         if v.isValid() and len(v.rootPath()) >= 2 and v.rootPath()[1] == ":"})
-        self.combo_disco.addItems(discos)
+        self.combo_disco.addItems(listar_discos())
         self.combo_disco.setCurrentText(s.work_drive)
         self.lbl_espaco = QLabel()
         self.lbl_espaco.setProperty("muted", True)
