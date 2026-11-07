@@ -6,16 +6,20 @@ import sys
 from importlib.resources import files
 from pathlib import Path
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtGui import QColor, QFont, QPalette, QPixmap
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QSplashScreen, QTabWidget
 
 from roteiro_ia import proc
 from roteiro_ia.config import DEFAULT_CONFIG_PATH, Settings, load_settings
-from roteiro_ia.ui.abas import ConfigTab, EstiloTab, TrilhasTab
-from roteiro_ia.ui.projeto import PipelineFactory, ProjetoTab
-from roteiro_ia.ui.widgets import BarraGeral
-from roteiro_ia.ui.worker import Runner
+
+if TYPE_CHECKING:
+    from roteiro_ia.ui.projeto import PipelineFactory
+
+# As abas (e o que elas importam: Gemini, pipeline, scipy...) só são carregadas dentro de
+# MainWindow, depois que a trava de instância única e o aviso "Abrindo…" já apareceram.
 
 WAIT_ON_EXIT_MS = 10_000  # Parar tudo ao fechar: espera até 10 s antes de sair
 
@@ -44,6 +48,10 @@ def apply_theme(app: QApplication) -> None:
 
 class MainWindow(QMainWindow):
     def __init__(self, s: Settings, settings_path: Path, factory: PipelineFactory | None = None):
+        from roteiro_ia.ui.abas import ConfigTab, EstiloTab, TrilhasTab
+        from roteiro_ia.ui.projeto import ProjetoTab
+        from roteiro_ia.ui.widgets import BarraGeral
+        from roteiro_ia.ui.worker import Runner
         super().__init__()
         self.s = s
         self.setWindowTitle("Roteiro IA — Fokuss")
@@ -120,20 +128,43 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
+def _aviso_abrindo() -> QSplashScreen:
+    pix = QPixmap(360, 120)
+    pix.fill(QColor("#1b1b1d"))
+    sp = QSplashScreen(pix)
+    sp.setFont(QFont("Segoe UI", 13))
+    sp.showMessage("Roteiro IA\nAbrindo…", Qt.AlignCenter, QColor("#e8e8ea"))
+    sp.show()
+    QApplication.processEvents()
+    return sp
+
+
 def main() -> int:
+    from roteiro_ia.ui.instancia import Servidor, Trava, avisar_primeira, trazer_para_frente
     proc.esconder_consoles()  # sob o pythonw, nenhum subprocesso abre tela preta
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Roteiro IA")
+    trava = Trava()
+    if not trava.primeira:
+        # já está aberto (ou abrindo): só traz a janela existente para frente
+        avisar_primeira()
+        return 0
+    servidor = Servidor()
     apply_theme(app)
+    aviso = _aviso_abrindo()
     cfg = Path(os.environ.get("ROTEIRO_IA_CONFIG", str(DEFAULT_CONFIG_PATH)))
     try:
         s = load_settings(cfg)
     except Exception as e:  # noqa: BLE001
+        aviso.close()
         QMessageBox.critical(None, "Roteiro IA", f"Não consegui ler a configuração {cfg}: {e}")
         return 1
     w = MainWindow(s, cfg)
+    servidor.mostrar.connect(lambda: trazer_para_frente(w))
     w.show()
+    aviso.finish(w)
     code = app.exec()
+    trava.liberar()
     if w.runner.ativo():
         if w.sair_com_tarefas:
             # o pipeline é retomável: encerra sem esperar a etapa atual terminar
