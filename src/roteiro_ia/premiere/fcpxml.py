@@ -20,7 +20,8 @@
   Observação: o Premiere limita o nível de clipe a +12 dB (3,98109 linear), então o valor
   linear é limitado a 3,98109 mesmo quando `gain_for` pede mais (até +20 dB).
 - A trilha nº 1 da biblioteca vai para a faixa MÚSICA desde o quadro 0; o `in` é o
-  `trecho_inicio_s` sugerido (0 ≤ início < duração; inválido → começo da música + marcador TRILHA).
+  `trecho_inicio_s` sugerido (0 ≤ início < duração; inválido → começo da música + marcador TRILHA;
+  o fim nunca passa da duração e, se não sobrar nenhum quadro, só o marcador TRILHA).
 - Os caminhos apontam para os ORIGINAIS (source_root / rel_path), nunca para proxies:
   os proxies são anexados depois pelo painel do Premiere.
 - Tempos: segundos → quadros com round(s * fps_real); start/end na taxa da sequência,
@@ -485,10 +486,17 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
             else:
                 markers.append(("TRILHA", f"Início sugerido da trilha ({music.trecho_inicio_s:.0f} s) "
                                 f"fora da música ({info.duration_s:.0f} s): usado o começo.", 0, None))
-        length = min(cursor, _frames(info.duration_s - inicio, rate))
+        # Quadros que sobram da música a partir do `in` (na taxa do clipe; sem passar do fim).
+        resto = _frames(info.duration_s, mrate) - _frames(inicio, mrate)
+        if timebase(*mrate) != timebase(*rate):
+            resto = int(resto / _real(mrate) * _real(rate))
+        length = min(cursor, resto)
         if length > 0:
             _place_audio(a_tracks, "MÚSICA", ctx, src, PureWindowsPath(mpath).name, 0, length,
                          inicio, length / _real(rate), rate, 1.0)
+        else:
+            markers.append(("TRILHA", f"Início sugerido da trilha ({inicio:.2f} s) além do fim "
+                            f"da música ({info.duration_s:.2f} s): trilha não colocada.", 0, None))
 
     for t in v_tracks:
         _sub(t, "enabled", "TRUE")

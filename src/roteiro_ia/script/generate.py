@@ -191,7 +191,15 @@ def music_shortlist(idx: MusicIndex, n: int = 80) -> str:
     for t in idx.all():
         p = _PERFIS.index(t.perfil) if t.perfil in _PERFIS else len(_PERFIS)
         buckets.setdefault((p, _band(t.bpm), t.climas[0] if t.climas else ""), []).append(t)
-    queues = [sorted(buckets[k], key=lambda t: t.path) for k in sorted(buckets)]
+    # Ordem dos grupos intercalada por clima: o 1º grupo de cada clima, depois o 2º de cada…
+    # Assim todo clima entra antes de algum se repetir, mesmo com mais grupos do que n.
+    por_clima: dict[str, list] = {}
+    for k in sorted(buckets):
+        por_clima.setdefault(k[2], []).append(k)
+    listas = [por_clima[c] for c in sorted(por_clima)]
+    ordem = [lst[j] for j in range(max(map(len, listas), default=0))
+             for lst in listas if j < len(lst)]
+    queues = [sorted(buckets[k], key=lambda t: t.path) for k in ordem]
     picked = []
     i = 0
     while len(picked) < n and any(queues):

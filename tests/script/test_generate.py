@@ -422,3 +422,25 @@ def test_trecho_inicio_invalido_vira_alerta(env):
     assert any("250" in a and "lenta" in a for a in r.alertas)
     assert MusicSuggestion.model_validate(
         {k: v for k, v in ok.model_dump().items() if k != "trecho_inicio_s"}).trecho_inicio_s is None
+
+
+def test_shortlist_nao_descarta_epica_com_muitos_grupos(tmp_path):
+    s = Settings(system_dir=str(tmp_path / "sys"), protected_roots=[])
+    idx = MusicIndex(tmp_path / "t.db", s)
+    climas = ["", "alegre", "calma", "emotiva", "festiva", "inspiradora", "nostálgica",
+              "romântica", "tensa"]
+    for c in climas:  # 9 climas × 3 perfis × 3 faixas de BPM = 81 grupos
+        for perfil in ("calma", "crescente", "intensa"):
+            for bpm in (70, 100, 130):
+                for k in range(2):
+                    idx.upsert(tr(f"M:/{c or 'x'}-{perfil}-{bpm}-{k}.mp3", bpm=bpm,
+                                  perfil=perfil).model_copy(update={"climas": [c] if c else []}))
+    idx.upsert(tr("M:/zz-epica.mp3", bpm=130, perfil="intensa").model_copy(
+        update={"climas": ["épica"]}))  # 82º grupo, o último na ordem dos grupos
+    linhas = music_shortlist(idx, n=80).splitlines()
+    assert len(linhas) == 80
+    assert any(ln.startswith("M:/zz-epica.mp3") for ln in linhas)
+    # todo clima aparece antes de qualquer clima se repetir
+    primeiros = [ln.split(" | ")[0].split("/")[1].split("-")[0] for ln in linhas[:10]]
+    assert len(set(primeiros)) == 10
+    idx.close()

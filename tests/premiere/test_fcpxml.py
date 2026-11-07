@@ -500,3 +500,23 @@ def test_musica_trecho_inicio_invalido_ignorado_com_alerta(env):
     seq = build_sequence(p, db, idx, {}, SRC)
     assert _musica_clip(seq).findtext("in") == "0"
     assert any(n == "TRILHA" for n, *_ in _markers(seq))
+
+
+def test_musica_nao_passa_do_fim(env):
+    s, db, idx, ids = env
+    p = _piece()
+    p.trilhas[1].trecho_inicio_s = 199.99  # válido, mas não sobra nenhum quadro
+    seq = build_sequence(p, db, idx, {}, SRC)
+    assert not _tracks(seq, "audio")[AUDIO_TRACKS.index("MÚSICA L")].findall("clipitem")
+    assert any(n == "TRILHA" for n, *_ in _markers(seq))
+    com = [m.findtext("comment") for m in seq.findall("marker") if m.findtext("name") == "TRILHA"]
+    assert "além do fim da música" in com[0]
+
+
+def test_musica_out_nunca_ultrapassa_duracao(env):
+    s, db, idx, ids = env
+    for inicio in (195.0, 195.02, 199.5):
+        p = _piece()
+        p.trilhas[1].trecho_inicio_s = inicio
+        m = _musica_clip(build_sequence(p, db, idx, {}, SRC))
+        assert int(m.findtext("out")) <= round(200.0 * NTSC)
