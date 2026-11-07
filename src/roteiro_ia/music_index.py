@@ -689,10 +689,26 @@ def resumo_indice(idx: MusicIndex) -> tuple[int, int]:
 def update_index(s: Settings, idx: MusicIndex,
                  on_progress: Callable[[int, int, str], None] | None = None,
                  tracker: BeatTracker | None = None, separator: VocalSeparator | None = None,
-                 tagger: AudioTagger | None = None) -> int:
+                 tagger: AudioTagger | None = None, atualizar_versao: bool = True) -> int:
     """Varre music_root (somente leitura) e analisa só o que é novo, foi alterado, tem análise
     de versão antiga ou ficou parcial (quando os modelos agora carregam). Os modelos ausentes
-    são carregados uma única vez por execução, e só se houver algo a analisar."""
+    são carregados uma única vez por execução, e só se houver algo a analisar.
+
+    `atualizar_versao=False` (etapa do pipeline): só arquivos novos ou alterados; registros
+    antigos ou parciais ficam como estão (a reanálise da biblioteca leva horas e é feita pela
+    aba Trilhas / `roteiro-ia trilhas`)."""
+    try:
+        return _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_versao)
+    finally:
+        _liberar_gpu()
+
+
+def trilhas_antigas(idx: MusicIndex) -> int:
+    """Quantas trilhas do índice têm análise de versão anterior à atual."""
+    return sum(t.versao_analise < ANALISE_VERSAO for t in idx.all())
+
+
+def _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_versao) -> int:
     root = Path(s.music_root)
     if not root.is_dir():
         raise FileNotFoundError(
@@ -713,8 +729,10 @@ def update_index(s: Settings, idx: MusicIndex,
             on_progress(i, len(files), f.name)
         try:
             old = idx.get(key)
-            atual = (old is not None and old.mtime == f.stat().st_mtime
-                     and old.versao_analise >= ANALISE_VERSAO)
+            inalterada = old is not None and old.mtime == f.stat().st_mtime
+            if inalterada and not atualizar_versao:
+                continue
+            atual = inalterada and old.versao_analise >= ANALISE_VERSAO
             if atual and not old.analise_parcial:
                 continue
             if not tentou_modelos:

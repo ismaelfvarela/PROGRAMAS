@@ -407,3 +407,29 @@ def test_resumo_indice(tmp_path):
     t = idx.all()[0]
     idx.upsert(t.model_copy(update={"analise_parcial": False}))
     assert resumo_indice(idx) == (2, 1)
+
+
+def test_sem_atualizar_versao_so_analisa_novas_e_alteradas(tmp_path):
+    s, idx = _biblioteca(tmp_path, 2)
+    update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(), tagger=FakeTagger())
+    a, b = idx.all()
+    idx.upsert(a.model_copy(update={"versao_analise": 1}))          # antiga
+    idx.upsert(b.model_copy(update={"analise_parcial": True}))      # parcial
+    sf.write(str(tmp_path / "musicas" / "nova.wav"), _musica_com_voz(15), SR)
+    n = update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                     tagger=FakeTagger(), atualizar_versao=False)
+    assert n == 1  # só a nova
+    por = {t.path: t for t in idx.all()}
+    assert por[a.path].versao_analise == 1 and por[b.path].analise_parcial is True
+    assert update_index(s, idx, tracker=LibrosaTracker(), separator=FakeSeparator(),
+                        tagger=FakeTagger()) == 2  # a Trilhas (padrão True) atualiza as duas
+
+
+def test_libera_gpu_no_fim(tmp_path, monkeypatch):
+    from roteiro_ia import music_index
+
+    chamadas = []
+    monkeypatch.setattr(music_index, "_liberar_gpu", lambda: chamadas.append(1))
+    s, idx = _biblioteca(tmp_path, 1)
+    update_index(s, idx, tracker=LibrosaTracker())
+    assert chamadas == [1]

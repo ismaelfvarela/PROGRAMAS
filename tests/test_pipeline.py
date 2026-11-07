@@ -597,3 +597,31 @@ def test_analise_usa_maximo_de_video_das_settings(tmp_path, monkeypatch):
     pipe._st_analise()
     assert got["max_video_s"] == 600
     pipe.close()
+
+
+def test_trilhas_no_pipeline_nao_reanalisa_versao_antiga_e_avisa(tmp_path, sleeps, monkeypatch):
+    import os
+
+    s = mk_settings(tmp_path)
+    (tmp_path / "M").mkdir()
+    f = tmp_path / "M" / "a.wav"
+    f.write_bytes(b"x")
+    antiga = tr(os.path.abspath(f)).model_copy(update={"mtime": f.stat().st_mtime})
+    with MusicIndex(tmp_path / "SIS" / "trilhas.db", s) as idx:
+        idx.upsert(antiga)
+    chamadas = []
+    real = pipeline.update_index
+
+    def espiao(*a, **k):
+        chamadas.append(k)
+        return real(*a, **k)
+
+    monkeypatch.setattr(pipeline, "update_index", espiao)
+    pipe, _, events = mk_pipe(tmp_path, settings=s)
+    pipe.impl["trilhas"] = pipe._st_trilhas
+    assert pipe.run() == "concluido"
+    assert chamadas and chamadas[0]["atualizar_versao"] is False
+    avisos = [e[1] for e in events if e[0] == "trilhas" and "análise antiga" in e[1]]
+    assert avisos == ["Há 1 trilhas com análise antiga — rode 'Atualizar índice' na aba "
+                      "Trilhas (pode levar horas)"]
+    pipe.close()
