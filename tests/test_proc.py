@@ -94,3 +94,53 @@ def test_pacote_nao_usa_subprocess_run_direto():
                for i, linha in enumerate(f.read_text(encoding="utf-8").splitlines(), 1)
                if re.search(r"subprocess\.(run|call|check_output|check_call)\(", linha)]
     assert achados == []
+
+
+def test_parar_mata_tambem_os_processos_filhos(tmp_path):
+    """Como o Edge: o pai cria um filho; depois do Parar nenhum dos dois fica vivo."""
+    pidfile = tmp_path / "filho.pid"
+    pai = tmp_path / "pai.py"
+    pai.write_text(
+        "import subprocess, sys, time\n"
+        "f = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open(r'{pidfile}', 'w').write(str(f.pid))\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    c = Controle()
+    out = {}
+
+    def alvo():
+        with controle.usar(c):
+            try:
+                proc.run([sys.executable, str(pai)])
+            except BaseException as e:  # noqa: BLE001
+                out["e"] = e
+    t = threading.Thread(target=alvo, daemon=True)
+    t.start()
+    t0 = time.monotonic()
+    while not pidfile.exists() or not pidfile.read_text():
+        assert time.monotonic() - t0 < 15
+        time.sleep(0.1)
+    filho = int(pidfile.read_text())
+    c.parar()
+    t.join(10)
+    assert isinstance(out.get("e"), Interrompido)
+    time.sleep(0.5)
+    assert not _vivo(filho)
+
+
+def _vivo(pid: int) -> bool:
+    if WIN:
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True,
+                           text=True)
+        return str(pid) in r.stdout
+    import os
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def test_esconder_consoles_tem_trava():
+    import threading as th
+    assert isinstance(proc._TRAVA_CONSOLES, type(th.Lock()))

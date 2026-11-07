@@ -261,3 +261,73 @@ def test_revise_parado_mantem_roteiro_anterior(tmp_path):
     assert pipe.db.stage_status("roteiro") == "feito"  # o roteiro anterior continua valendo
     assert pipe.db.stage_status("pdf") == "feito"
     pipe.close()
+
+
+# ------------------------------------------------------------------ revisão 1
+
+def _oserror_apos_parar(c):
+    def impl():
+        c.parar()
+        raise OSError("NAS caiu")
+    return impl
+
+
+def test_parar_na_espera_de_nova_tentativa_volta_a_pendente(tmp_path):
+    from roteiro_ia import pipeline
+    pipe, calls = _pipe(tmp_path)
+    c = Controle()
+    pipe.impl["audio"] = _oserror_apos_parar(c)
+    old = pipeline._sleep
+    pipeline._sleep = controle.dormir  # a espera real, que acorda no Parar
+    try:
+        with controle.usar(c):
+            assert pipe.run() == "parado"
+    finally:
+        pipeline._sleep = old
+    assert pipe.db.stage_status("audio") == "pendente"
+    pipe.close()
+
+
+def test_revise_parado_na_espera_de_nova_tentativa_mantem_feito(tmp_path):
+    from roteiro_ia import pipeline
+    pipe, calls = _pipe(tmp_path)
+    assert pipe.run() == "concluido"
+    c = Controle()
+    pipe.impl["roteiro"] = _oserror_apos_parar(c)
+    old = pipeline._sleep
+    pipeline._sleep = controle.dormir
+    try:
+        with controle.usar(c), pytest.raises(Interrompido):
+            pipe.revise("mais votos")
+    finally:
+        pipeline._sleep = old
+    assert pipe.db.stage_status("roteiro") == "feito"
+    pipe.close()
+
+
+def test_update_index_parado_dentro_da_trilha_devolve_o_feito(tmp_path, monkeypatch):
+    """Interrompido vindo de dentro da análise (ex.: ffmpeg via proc.run) também devolve o feito."""
+    from roteiro_ia import music_index as mi
+    s = Settings(work_drive=str(tmp_path / "Y"), system_dir=str(tmp_path / "sis"),
+                 music_root=str(tmp_path / "musicas"), protected_roots=[str(tmp_path / "musicas")])
+    root = tmp_path / "musicas"
+    root.mkdir()
+    for n in ("a", "b", "c"):
+        (root / f"{n}.wav").write_bytes(b"RIFF")
+    c = Controle()
+    vistos = []
+
+    def fake_analyze(f, *a, **k):
+        vistos.append(f.name)
+        if len(vistos) == 2:
+            c.parar()
+            raise Interrompido()
+        return TrackInfo(path=os.path.abspath(f), bpm=120, beats_s=[0.5], downbeats_s=[0.5],
+                         energy=[0.1], duration_s=1, has_vocals=False, perfil="calma",
+                         mtime=Path(f).stat().st_mtime)
+    monkeypatch.setattr(mi, "analyze_track", fake_analyze)
+    idx = mi.MusicIndex(tmp_path / "sis" / "trilhas.db", s)
+    with controle.usar(c):
+        assert mi.update_index(s, idx, tracker=object()) == 1
+    assert len(idx.all()) == 1
+    idx.close()

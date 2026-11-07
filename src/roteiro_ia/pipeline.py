@@ -316,6 +316,24 @@ class Pipeline:
         antes = (status, db.stage_detail(name))
         self._emit(name, f"Iniciando: {label}", 0.0)
         db.set_stage(name, "rodando")
+        try:
+            detail = self._tentativas(name, label)
+        except Interrompido:
+            # Parar (também durante a espera de nova tentativa): nada de erro. Volta a pendente
+            # (ou ao 'feito' anterior num ajuste, cujo roteiro/PDF/XML antigos continuam
+            # valendo) e o próximo run retoma daqui.
+            if antes[0] == "feito":
+                db.set_stage(name, "feito", antes[1])
+            else:
+                db.set_stage(name, "pendente")
+            self._emit(name, f"Parado: {label}", 0.0)
+            raise
+        db.set_stage(name, "feito", detail)
+        self._emit(name, f"Concluído: {label}", 1.0)
+
+    def _tentativas(self, name: str, label: str) -> str:
+        """Roda a etapa com novas tentativas em erro de rede/disco; devolve o detalhe."""
+        db = self.db
         attempt = 0
         while True:
             try:
@@ -330,16 +348,7 @@ class Pipeline:
                 n_falhas = db.count_falhas(name) if name in FALHA_STAGES else 0
                 if n_falhas:
                     detail = f"{FALHAS_PREFIX}{n_falhas}"
-                break
-            except Interrompido:
-                # Parar: nada de erro. Volta a pendente (ou ao 'feito' anterior num ajuste,
-                # cujo roteiro/PDF/XML antigos continuam valendo) e o próximo run retoma daqui.
-                if antes[0] == "feito":
-                    db.set_stage(name, "feito", antes[1])
-                else:
-                    db.set_stage(name, "pendente")
-                self._emit(name, f"Parado: {label}", 0.0)
-                raise
+                return detail
             except QuotaPaused as e:
                 self.resume_at = e.resume_at
                 db.set_stage(name, "pausado", e.resume_at.isoformat())
@@ -368,8 +377,6 @@ class Pipeline:
                 db.set_stage(name, "erro", msg)
                 self._emit(name, msg, 0.0)
                 raise
-        db.set_stage(name, "feito", detail)
-        self._emit(name, f"Concluído: {label}", 1.0)
 
     # ------------------------------------------------------------ etapas
     def _st_inventario(self) -> str:
