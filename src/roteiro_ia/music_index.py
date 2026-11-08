@@ -9,8 +9,10 @@ import bisect
 import logging
 import math
 import os
+import functools
 import sqlite3
 import subprocess
+import threading
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -48,6 +50,21 @@ _SR_MODELOS = 44100       # áudio para Demucs/CLAP (o 22050 do BPM corta o agud
 # Coletâneas de horas não são trilha de edição e a análise carrega o áudio inteiro várias vezes
 # na memória: um MP3 de 11 h 54 min esgotou os 32 GB de RAM e travou/desligou a máquina.
 TRILHA_MAX_S = 30 * 60
+
+
+# Carregar o CLAP (transformers.init_empty_weights) troca nn.Module.register_parameter no
+# processo inteiro: um modelo criado ao mesmo tempo em outra thread (ex.: índice da aba Trilhas
+# e etapa Trilhas do projeto juntos) nascia "meta" e falhava com "Cannot copy out of meta
+# tensor". Toda carga de modelo passa por esta trava (só a carga; a análise segue em paralelo).
+_CARGA_MODELOS = threading.RLock()
+
+
+def _carga_exclusiva(fn):
+    @functools.wraps(fn)
+    def envolvida(*a, **k):
+        with _CARGA_MODELOS:
+            return fn(*a, **k)
+    return envolvida
 
 
 class TrilhaLongaDemais(ValueError):
@@ -156,23 +173,29 @@ class BeatThisTracker:
         self.device = device
         self._model = None
 
+    @_carga_exclusiva
     def _load(self):
         if self._model is not None:
             return self._model
-        from beat_this.inference import File2Beats
+        from beat_this.inference import Audio2Beats
 
         try:
-            self._model = File2Beats(checkpoint_path="final0", device=self.device, dbn=False)
+            self._model = Audio2Beats(checkpoint_path="final0", device=self.device, dbn=False)
         except Exception as e:
             if self.device == "cpu":
                 raise
             log.warning("Não foi possível usar a GPU para os tempos das trilhas (%s); usando CPU.", e)
             self.device = "cpu"
-            self._model = File2Beats(checkpoint_path="final0", device="cpu", dbn=False)
+            self._model = Audio2Beats(checkpoint_path="final0", device="cpu", dbn=False)
         return self._model
 
     def track(self, path: Path) -> tuple[list[float], list[float]]:
-        beats, downbeats = self._load()(str(path))
+        return self.track_signal(_load_audio(path))
+
+    def track_signal(self, y: np.ndarray) -> tuple[list[float], list[float]]:
+        """Sinal mono a _SR (o beat_this trabalha a 22050 Hz). Usa o áudio já decodificado
+        pelo nosso leitor, que abre também MP3 que na verdade é M4A (o do beat_this não)."""
+        beats, downbeats = self._load()(y, _SR)
         return [float(b) for b in beats], [float(d) for d in downbeats]
 
 
@@ -211,6 +234,7 @@ class DemucsSeparator:
         self.model_name = model
         self._model = None
 
+    @_carga_exclusiva
     def _load(self):
         if self._model is not None:
             return self._model
@@ -305,6 +329,7 @@ class ClapTagger:
         self._ultimo: tuple[np.ndarray, int, object] | None = None
         self._textos: dict[tuple[str, ...], object] = {}
 
+    @_carga_exclusiva
     def _load(self):
         if self._model is not None:
             return self._model, self._proc
@@ -594,7 +619,7 @@ def analyze_track(path: Path, tracker: BeatTracker | None = None,
     if tagger is None and carregar_modelos:
         tagger = _default_tagger()
     y = _load_audio(path)
-    if isinstance(tracker, LibrosaTracker):
+    if hasattr(tracker, "track_signal"):
         beats, downbeats = tracker.track_signal(y)
     else:
         beats, downbeats = tracker.track(path)

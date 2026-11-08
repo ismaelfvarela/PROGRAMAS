@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -70,6 +71,37 @@ def is_gpu_error(e: BaseException) -> bool:
     return any(k in str(e).lower() for k in _GPU_ERR)
 
 
+WHISPER_SR = 16000
+_DLLS_CUDA: list = []  # handles do os.add_dll_directory (precisam ficar vivos)
+
+
+def preparar_dlls_cuda() -> Path | None:
+    """Põe a pasta torch/lib (cuBLAS 12 e cuDNN 9) no caminho de DLLs do Windows sem importar
+    o torch. Sem isso o Whisper (ctranslate2) não acha cublas64_12.dll e cai para a CPU,
+    muito mais lenta, sempre que a transcrição roda antes de algo importar o torch."""
+    if os.name != "nt":
+        return None
+    import importlib.util
+    spec = importlib.util.find_spec("torch")
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    pasta = Path(list(spec.submodule_search_locations)[0]) / "lib"
+    if not (pasta / "cublas64_12.dll").is_file():
+        return None
+    if not _DLLS_CUDA:
+        _DLLS_CUDA.append(os.add_dll_directory(str(pasta)))
+        os.environ["PATH"] = str(pasta) + os.pathsep + os.environ.get("PATH", "")
+    return pasta
+
+
+def _carregar_audio(path: Path):
+    """Áudio 16 kHz mono float32 pelo nosso ffmpeg. O faster-whisper 1.2.1 abre arquivos com
+    av.open(metadata_errors=...), parâmetro removido no PyAV 19: entregando o sinal pronto,
+    a transcrição não depende do PyAV (e lê tudo que o ffmpeg lê)."""
+    from .media.audio import load_mono
+    return load_mono(Path(path), sr=WHISPER_SR)
+
+
 class Transcriber(Protocol):
     def transcribe(self, path: Path) -> list[Word]: ...
 
@@ -83,6 +115,7 @@ class WhisperTranscriber:
         self._model = None
 
     def _load(self):
+        preparar_dlls_cuda()
         from faster_whisper import WhisperModel
         try:
             return WhisperModel(self.model_name, device=self.device,
@@ -98,9 +131,10 @@ class WhisperTranscriber:
     def transcribe(self, path: Path) -> list[Word]:
         if self._model is None:
             self._model = self._load()
+        audio = _carregar_audio(path)  # erro de leitura: falha do arquivo, sem cair p/ CPU
         try:
             segs, _ = self._model.transcribe(
-                str(path), language="pt", word_timestamps=True, vad_filter=True)
+                audio, language="pt", word_timestamps=True, vad_filter=True)
             segs = list(segs)  # gerador: erros de CUDA/cuDNN podem surgir aqui
         except Exception as e:
             if self.device == "cpu" or not is_gpu_error(e):
@@ -110,7 +144,7 @@ class WhisperTranscriber:
             self.device, self.compute_type = "cpu", "int8"
             self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
             segs, _ = self._model.transcribe(
-                str(path), language="pt", word_timestamps=True, vad_filter=True)
+                audio, language="pt", word_timestamps=True, vad_filter=True)
             segs = list(segs)
         words: list[Word] = []
         for seg in segs:
