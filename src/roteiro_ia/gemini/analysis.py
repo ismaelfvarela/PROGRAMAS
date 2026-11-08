@@ -62,6 +62,30 @@ def segment_speech(db: ProjectDB, media: MediaInfo, seg: Segment) -> str:
     return ""
 
 
+def _pendente(db: ProjectDB, m: MediaInfo, s: Segment, sem_fala: set[int],
+              fala: str | None = None) -> bool:
+    """Sem análise, ou analisado sem fala transcrita e a fala existe agora (ex.: a transcrição
+    falhou na primeira vez): a análise antiga fica valendo até a nova ser gravada."""
+    if db.get_analysis(s.id) is None:
+        return True
+    if s.id not in sem_fala:
+        return False
+    return bool(segment_speech(db, m, s) if fala is None else fala)
+
+
+def analises_desatualizadas(db: ProjectDB) -> int:
+    """Trechos analisados sem fala que agora têm fala transcrita (serão refeitos)."""
+    sem_fala = db.segmentos_sem_fala()
+    if not sem_fala:
+        return 0
+    n = 0
+    for m in db.list_media():
+        for s in db.list_segments(m.id):
+            if s.id in sem_fala and _pendente(db, m, s, sem_fala):
+                n += 1
+    return n
+
+
 def _style_text(style: StyleProfile) -> str:
     pad = "; ".join([*style.padroes_abertura, *style.padroes_gancho])
     return (f"Estilo da Fokuss (use este vocabulário nas descrições): {style.resumo}"
@@ -151,7 +175,8 @@ def _clamp(items, seg: Segment):
 
 
 def _ask(db: ProjectDB, c, model: str, segs: list[Segment],
-         request: Callable[[list[Segment]], tuple[list, str]]) -> tuple[list[Segment], str]:
+         request: Callable[[list[Segment]], tuple[list, str]],
+         sem_fala: set[int] = frozenset()) -> tuple[list[Segment], str]:
     """Até MAX_ATTEMPTS chamadas. Depois de cada uma, grava na hora toda análise válida (id
     pedido, sem repetição) e a próxima pede SÓ os segmentos que faltam (`request(faltando)`
     devolve parts e prompt). Devolve (segmentos ainda sem análise, motivo)."""
@@ -170,7 +195,7 @@ def _ask(db: ProjectDB, c, model: str, segs: list[Segment],
             if a.segment_id in pending and a.segment_id not in seen:
                 seen.add(a.segment_id)
                 ok.append(a)
-        _save(db, FileAnalysis(segmentos=ok), [pending[i] for i in seen])
+        _save(db, FileAnalysis(segmentos=ok), [pending[i] for i in seen], sem_fala)
         for i in seen:
             del pending[i]
         if not pending:
@@ -206,7 +231,8 @@ def _analyze_media(db: ProjectDB, c, m: MediaInfo, todo: list[Segment], uploaded
             db.add_falha("analise", m.rel_path, _MSG_MINUTO)
             return
         try:
-            missing, msg = _ask(db, c, model, batch, request)
+            missing, msg = _ask(db, c, model, batch, request,
+                                {s.id for s in batch if not speech[s.id]})
         except QuotaPaused as e:
             if e.daily or db.bump_quota_strike(key) < MAX_MINUTE_PAUSES:
                 raise
@@ -223,13 +249,15 @@ def _analyze_media(db: ProjectDB, c, m: MediaInfo, todo: list[Segment], uploaded
             return
 
 
-def _save(db: ProjectDB, resp: FileAnalysis, segs: list[Segment]) -> None:
+def _save(db: ProjectDB, resp: FileAnalysis, segs: list[Segment],
+          sem_fala: set[int] = frozenset()) -> None:
     by_id = {s.id: s for s in segs}
     for a in resp.segmentos:
         seg = by_id[a.segment_id]
         db.set_analysis(a.model_copy(update={
             "melhores_trechos": _clamp(a.melhores_trechos, seg),
             "falas_chave": _clamp(a.falas_chave, seg)}))
+        db.marcar_sem_fala(a.segment_id, a.segment_id in sem_fala)
 
 
 def _delete(c, uploaded) -> None:
@@ -323,8 +351,10 @@ def _split(items: list[_Item]) -> tuple[list[_Item], list[_Item]] | None:
 
 
 def _pack_call(db: ProjectDB, c, items: list[_Item], model: str, style: StyleProfile | None) -> None:
-    # só o que ainda não foi analisado (ex.: salvo antes de uma pausa)
-    items = [(m, [s for s in todo if db.get_analysis(s.id) is None], sp, f) for m, todo, sp, f in items]
+    # só o que ainda falta (ex.: salvo antes de uma pausa)
+    sem_fala = db.segmentos_sem_fala()
+    items = [(m, [s for s in todo if _pendente(db, m, s, sem_fala, sp[s.id])], sp, f)
+             for m, todo, sp, f in items]
     items = [it for it in items if it[1]]
     if not items:
         return
@@ -349,7 +379,8 @@ def _pack_call(db: ProjectDB, c, items: list[_Item], model: str, style: StylePro
         dividir()  # já desistido numa execução anterior: segue direto com as metades
         return
     try:
-        missing, msg = _ask(db, c, model, segs, lambda want: _pack_request(items, style, want))
+        missing, msg = _ask(db, c, model, segs, lambda want: _pack_request(items, style, want),
+                            {s.id for _m, todo, sp, _f in items for s in todo if not sp[s.id]})
     except QuotaPaused as e:
         if e.daily or db.bump_quota_strike(key) < MAX_MINUTE_PAUSES:
             raise
@@ -358,7 +389,8 @@ def _pack_call(db: ProjectDB, c, items: list[_Item], model: str, style: StylePro
     except Exception as e:  # noqa: BLE001 — erro da API/rede: falha das mídias do pacote, segue
         db.clear_quota_strike(key)
         falha(f"Falha na análise pelo Gemini: {e}",
-              {s.id for s in segs if db.get_analysis(s.id) is None})
+              {s.id for m, todo, sp, _f in items for s in todo
+               if _pendente(db, m, s, db.segmentos_sem_fala(), sp[s.id])})
         return
     db.clear_quota_strike(key)
     if missing:
@@ -394,6 +426,7 @@ def analyze_event(db: ProjectDB, c, p: EventPaths, model: str, style: StyleProfi
     segmentos por chamada, na ordem do banco); mídia longa vai sozinha, em lotes por intervalo."""
     medias = [m for m in db.list_media() if m.role not in (Role.ignorar, Role.outro_dia)]
     total = len(medias)
+    sem_fala = db.segmentos_sem_fala()
     pack: list[tuple[MediaInfo, list[Segment]]] = []
     video_s = 0.0
     n_segs = 0
@@ -409,7 +442,7 @@ def analyze_event(db: ProjectDB, c, p: EventPaths, model: str, style: StyleProfi
         controle.atual().checkpoint()  # Pausar/Parar entre mídias
         if on_progress:
             on_progress(i, total, m.rel_path)
-        todo = [s for s in db.list_segments(m.id) if db.get_analysis(s.id) is None]
+        todo = [s for s in db.list_segments(m.id) if _pendente(db, m, s, sem_fala)]
         if not todo:
             continue
         if m.kind == "video" and not db.proxy_for(m.id):

@@ -545,3 +545,43 @@ def test_maximo_de_video_por_chamada_configuravel(tmp_path):
     db2.add_segments([Segment(media_id=mid, start_s=0, end_s=1000)])
     analyze_event(db2, c2, None, "m", max_video_s=900)  # > 900 s: vai sozinha
     assert len(c2.calls[0][1]) == 1 and not isinstance(c2.calls[0][1][0], str)
+
+
+def test_analise_sem_fala_e_refeita_quando_a_fala_aparece(tmp_path):
+    # a transcrição falhou na 1ª vez: o trecho foi analisado sem fala; com a transcrição
+    # pronta, só ele é refeito (o que continua sem fala não gasta cota de novo)
+    from roteiro_ia.gemini.analysis import analises_desatualizadas
+    db = new_db(tmp_path)
+    mid = db.add_media(mi("A\C1.MP4"))
+    db.set_proxy(mid, str(tmp_path / "prx.mp4"), "gerado")
+    a, b = db.add_segments([Segment(media_id=mid, start_s=0, end_s=10),
+                            Segment(media_id=mid, start_s=10, end_s=20)])
+    c = FakeClient([FileAnalysis(segmentos=[sa(a), sa(b)])])
+    analyze_event(db, c, None, "flash")
+    assert db.segmentos_sem_fala() == {a, b} and analises_desatualizadas(db) == 0
+
+    db.set_transcript(Transcript(media_id=mid, source_role=Role.camera,
+                                 words=[Word(text="aceito", start_s=2, end_s=3)]))
+    assert analises_desatualizadas(db) == 1
+    c2 = FakeClient([FileAnalysis(segmentos=[sa(a)])])
+    analyze_event(db, c2, None, "flash")
+    assert len(c2.calls) == 1
+    prompt = c2.calls[0][3]
+    assert f"segment_id={a}" in prompt and "aceito" in prompt and f"segment_id={b}" not in prompt
+    assert db.segmentos_sem_fala() == {b} and analises_desatualizadas(db) == 0
+    c3 = FakeClient([])
+    analyze_event(db, c3, None, "flash")
+    assert c3.calls == []
+
+
+def test_analise_antiga_continua_se_a_nova_falhar(tmp_path):
+    db = new_db(tmp_path)
+    mid = db.add_media(mi("A\C1.MP4"))
+    db.set_proxy(mid, str(tmp_path / "prx.mp4"), "gerado")
+    (a,) = db.add_segments([Segment(media_id=mid, start_s=0, end_s=10)])
+    db.set_analysis(sa(a))
+    db.marcar_sem_fala(a, True)
+    db.set_transcript(Transcript(media_id=mid, source_role=Role.camera,
+                                 words=[Word(text="sim", start_s=2, end_s=3)]))
+    analyze_event(db, FakeClient(exc=RuntimeError("rede")), None, "flash")
+    assert db.get_analysis(a) is not None and db.segmentos_sem_fala() == {a}

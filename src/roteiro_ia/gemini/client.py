@@ -31,6 +31,9 @@ TOKENS_PER_SECOND = 100
 _sleep = controle.dormir  # patchável nos testes; o Parar interrompe a espera
 _POLL_S = 2.0
 _UPLOAD_TIMEOUT_S = 600.0
+# por requisição HTTP: sem isso uma conexão que para de responder trava a etapa para sempre
+# (o padrão do google-genai é esperar sem limite); estourado, vira erro de rede e é tentado de novo
+HTTP_TIMEOUT_MS = 10 * 60 * 1000
 MAX_TRANSPORT_RETRIES = 5
 _EXCLUDE = ("lite", "image", "tts", "live", "audio", "embedding", "thinking-exp")
 # candidatos do revezamento no grátis: gemini-<versão>-flash e -flash-lite (sem variantes)
@@ -170,7 +173,8 @@ class GeminiClient:
                 raise RuntimeError(
                     "Chave do Gemini não configurada. Use 'Configurar chave' para informar sua chave de API."
                 )
-            backend = genai.Client(api_key=key)
+            backend = genai.Client(api_key=key,
+                                   http_options=types.HttpOptions(timeout=HTTP_TIMEOUT_MS))
         self.backend = backend
         self._names: list[str] | None = None
         self._esgotados: dict[str, datetime] = {}  # modelo -> retomar em (cota diária)
