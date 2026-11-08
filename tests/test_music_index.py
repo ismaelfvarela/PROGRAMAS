@@ -433,3 +433,40 @@ def test_libera_gpu_no_fim(tmp_path, monkeypatch):
     s, idx = _biblioteca(tmp_path, 1)
     update_index(s, idx, tracker=LibrosaTracker())
     assert chamadas == [1]
+
+
+def test_duracao_lida_sem_carregar_audio(tmp_path):
+    from roteiro_ia import music_index as mi
+    f = tmp_path / "t.wav"
+    sf.write(str(f), np.zeros(SR * 3, dtype=np.float32), SR)
+    assert mi._duracao_s(f) == pytest.approx(3.0, abs=0.05)
+    assert mi._duracao_s(tmp_path / "nao_existe.wav") is None
+
+
+def test_trilha_longa_demais_e_pulada_sem_carregar(tmp_path, monkeypatch, caplog):
+    # coletânea de 11 h 54 min (M:\TRILHAS - EFEITOS SONOROS\1.mp3) esgotava a RAM e travava a máquina
+    from roteiro_ia import music_index as mi
+    s = _settings(tmp_path)
+    root = tmp_path / "musicas"
+    root.mkdir()
+    longa = root / "1.mp3"
+    longa.write_bytes(b"x")
+    _click(root / "curta.wav", seconds=10)
+    real = mi._duracao_s
+    monkeypatch.setattr(mi, "_duracao_s", lambda p: 42831.7 if p.name == "1.mp3" else real(p))
+    monkeypatch.setattr(mi, "_default_separator", lambda: None)
+    monkeypatch.setattr(mi, "_default_tagger", lambda: None)
+    carregou = []
+    orig_load = mi._load_audio
+    monkeypatch.setattr(mi, "_load_audio", lambda p, *a, **k: carregou.append(p.name) or orig_load(p, *a, **k))
+    with pytest.raises(mi.TrilhaLongaDemais):
+        analyze_track(longa, LibrosaTracker(), carregar_modelos=False)
+    assert carregou == []
+    idx = MusicIndex(tmp_path / "sis" / "trilhas.db", s)
+    with caplog.at_level("WARNING"):
+        n = update_index(s, idx, tracker=LibrosaTracker(), separator=None, tagger=None)
+    assert n == 1
+    assert [p.split("\\")[-1].split("/")[-1] for p in (t.path for t in idx.all())] == ["curta.wav"]
+    assert "1.mp3" not in carregou
+    assert any("longa" in r.getMessage() and "1.mp3" in r.getMessage() for r in caplog.records)
+    idx.close()

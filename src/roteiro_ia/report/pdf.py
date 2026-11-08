@@ -4,12 +4,13 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader, select_autoescape
 from markupsafe import Markup
 
-from roteiro_ia import proc
+from roteiro_ia import controle, proc
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.models import TrackInfo
@@ -23,6 +24,9 @@ EDGE_PATHS = (
     Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
 )
 PDF_TIMEOUT_S = 120
+# O Edge 157 devolve o controle (rc=0) antes de gravar o PDF, que chega segundos depois por
+# outro processo: espera o arquivo aparecer e o tamanho parar de mudar.
+PDF_ESPERA_S = 60
 _ORDEM_TIPO = {"episodio": 0, "trailer": 1, "teaser": 2, "stories": 3}
 _ROTULO_TIPO = {"episodio": "Episódio", "trailer": "Trailer", "teaser": "Teaser",
                 "stories": "Stories / Reels"}
@@ -147,6 +151,22 @@ def _next_numbered(out: Path) -> Path:
         n += 1
 
 
+def _esperar_pdf(pdf: Path, prazo_s: float) -> bool:
+    fim = time.monotonic() + prazo_s
+    anterior = -1
+    while time.monotonic() < fim:
+        controle.atual().checkpoint()  # Parar não fica preso esperando o Edge
+        try:
+            tam = pdf.stat().st_size
+        except OSError:
+            tam = -1
+        if tam > 0 and tam == anterior:
+            return True
+        anterior = tam
+        time.sleep(0.5)
+    return False
+
+
 def html_to_pdf(html: str, out: Path, s: Settings, html_path: Path | None = None) -> Path:
     """Grava o HTML (por padrão ao lado do PDF; o pipeline passa ANALISE/roteiro.html) e
     imprime em PDF com o Edge. Se o PDF anterior estiver aberto (travado no visualizador),
@@ -169,6 +189,8 @@ def html_to_pdf(html: str, out: Path, s: Settings, html_path: Path | None = None
                 res = proc.run(cmd, timeout=PDF_TIMEOUT_S)
             except subprocess.TimeoutExpired:
                 raise RuntimeError("O Edge demorou demais para gerar o PDF do roteiro.") from None
+            if res.returncode == 0:
+                _esperar_pdf(tmp_pdf, PDF_ESPERA_S)
         if res.returncode != 0 or not tmp_pdf.exists():
             detalhe = res.stderr.decode("utf-8", "replace").strip()[-300:]
             raise RuntimeError(f"Não consegui gerar o PDF do roteiro com o Edge. {detalhe}")
