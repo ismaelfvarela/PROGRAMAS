@@ -155,6 +155,20 @@ class WhisperTranscriber:
         return words
 
 
+def _transcrever_preferindo_proxy(db: ProjectDB, mid: int, original: Path,
+                                  t: Transcriber) -> list[Word]:
+    """O proxy 480p (disco de trabalho) guarda o som em AAC 128k, de sobra para o Whisper (que
+    usa 16 kHz mono) e muito mais rápido de ler que o original no R:. Se o proxy não abrir ou
+    não tiver som, usa o original."""
+    proxy = db.proxy_for(mid)
+    if proxy and Path(proxy).is_file():
+        try:
+            return t.transcribe(Path(proxy))
+        except Exception as e:  # noqa: BLE001 - erro do proxy: tenta o original
+            log.info("Proxy sem áudio utilizável (%s); transcrevendo o original %s.", e, original.name)
+    return t.transcribe(original)
+
+
 def transcribe_event(db: ProjectDB, source_root: Path, t: Transcriber,
                      on_progress: Callable[[int, int, str], None] | None = None) -> None:
     ids = plan_sources(db)
@@ -167,7 +181,7 @@ def transcribe_event(db: ProjectDB, source_root: Path, t: Transcriber,
         if db.get_transcript(mid) is not None:
             continue
         try:
-            words = t.transcribe(Path(source_root) / m.rel_path)
+            words = _transcrever_preferindo_proxy(db, mid, Path(source_root) / m.rel_path, t)
             db.set_transcript(Transcript(media_id=mid, words=words, source_role=m.role))
         except Exception as e:
             db.add_falha("transcricao", m.rel_path, f"Falha ao transcrever o áudio: {e}")
