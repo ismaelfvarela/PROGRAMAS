@@ -15,7 +15,7 @@ from roteiro_ia import controle
 from roteiro_ia.config import Settings, save_settings
 from roteiro_ia.controle import Interrompido
 from roteiro_ia.db import ProjectDB
-from roteiro_ia.gemini.analysis import analyze_event
+from roteiro_ia.gemini.analysis import analises_desatualizadas, analyze_event
 from roteiro_ia.gemini.client import GeminiClient, QuotaPaused
 from roteiro_ia.gemini.style import build_style_profile, load_style_profile
 from roteiro_ia.inventory import scan
@@ -270,6 +270,7 @@ class Pipeline:
             self.req.save(self._project_file(), self.s)
         h = self._open_log()
         try:
+            self._reabrir_analise_sem_fala()
             for name in STAGES:
                 controle.atual().checkpoint()  # Pausar/Parar entre etapas
                 self._run_stage(name, refazer_falhas=refazer_falhas)
@@ -281,6 +282,21 @@ class Pipeline:
         finally:
             self._close_log(h)
         return "concluido"
+
+    def _reabrir_analise_sem_fala(self) -> None:
+        """Trechos analisados sem fala que agora têm transcrição: a análise é refeita e o
+        roteiro, o PDF e o Premiere são regerados com ela."""
+        db = self.db
+        if db.stage_status("analise") != "feito":
+            return  # a análise ainda vai rodar e já pega esses trechos
+        n = analises_desatualizadas(db)
+        if not n:
+            return
+        _log.info("%d trecho(s) foram analisados sem as falas, que agora estão transcritas: "
+                  "refazendo a análise deles e regerando roteiro, PDF e Premiere.", n)
+        for name in STAGES[STAGES.index("analise"):]:
+            if db.stage_status(name) == "feito":
+                db.set_stage(name, "pendente")
 
     def revise(self, pedido: str, aprovado_custo: bool = False) -> None:
         """Regera roteiro, PDF e XML a partir do banco; nunca refaz etapas de mídia."""

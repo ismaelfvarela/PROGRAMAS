@@ -625,3 +625,18 @@ def test_trilhas_no_pipeline_nao_reanalisa_versao_antiga_e_avisa(tmp_path, sleep
     assert avisos == ["Há 1 trilhas com análise antiga — rode 'Atualizar índice' na aba "
                       "Trilhas (pode levar horas)"]
     pipe.close()
+
+
+def test_analise_sem_fala_reabre_analise_e_regera_roteiro(tmp_path, sleeps, monkeypatch):
+    # trechos analisados quando a transcrição falhou: quando a fala aparece, a análise deles é
+    # refeita e roteiro/PDF/Premiere são regerados
+    pipe, calls, _ = mk_pipe(tmp_path)
+    assert pipe.run() == "concluido"
+    calls.clear()
+    monkeypatch.setattr(pipeline, "analises_desatualizadas", lambda db: 3)
+    assert pipe.run() == "concluido"
+    assert calls == ["analise", "roteiro", "pdf", "premiere"]
+    monkeypatch.setattr(pipeline, "analises_desatualizadas", lambda db: 0)
+    calls.clear()
+    assert pipe.run() == "concluido" and calls == []
+    pipe.close()

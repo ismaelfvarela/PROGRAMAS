@@ -447,3 +447,26 @@ def test_save_cota_junta_o_que_outra_janela_gravou(tmp_path):
     assert set(dados["esgotados"]) == {"gemini-3.6-flash", "gemini-3.5-flash"}
     assert dados["indisponiveis"] == ["gemini-3.6-pro"]
     assert not list((tmp_path / "sys").glob("*.part"))  # escrita atômica, sem sobras
+
+
+def test_cliente_real_tem_limite_de_tempo_por_requisicao(monkeypatch):
+    # sem limite, um envio que parou de responder travou a análise por 11 h (Nicole e Osny)
+    monkeypatch.setattr(gc, "get_api_key", lambda: "AQ.chave-de-teste")
+    c = gc.GeminiClient(Settings())
+    assert c.backend._api_client._http_options.timeout == gc.HTTP_TIMEOUT_MS
+    assert 60_000 <= gc.HTTP_TIMEOUT_MS <= 30 * 60_000
+
+
+def test_tempo_esgotado_e_tentado_de_novo(monkeypatch):
+    import httpx
+    sleeps = []
+    monkeypatch.setattr(gc, "_sleep", sleeps.append)
+    n = {"x": 0}
+
+    def fn():
+        n["x"] += 1
+        if n["x"] == 1:
+            raise httpx.ReadTimeout("sem resposta")
+        return "ok"
+    c = gc.GeminiClient(Settings(), backend=object())
+    assert c._retrying(fn) == "ok" and len(sleeps) == 1

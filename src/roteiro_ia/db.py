@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS falhas(
   id INTEGER PRIMARY KEY AUTOINCREMENT, etapa TEXT, rel_path TEXT, msg TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS quota_strikes(
   chave TEXT PRIMARY KEY, n INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS analises_sem_fala(
+  segment_id INTEGER PRIMARY KEY);
 """
 
 _MEDIA_COLS = [
@@ -165,6 +167,18 @@ class ProjectDB:
 
     def get_analysis(self, segment_id: int) -> SceneAnalysis | None:
         return self._get("analyses", segment_id, SceneAnalysis)
+
+    def marcar_sem_fala(self, segment_id: int, sem_fala: bool) -> None:
+        """Análise feita sem fala transcrita: refeita quando a fala aparecer."""
+        if sem_fala:
+            self._c.execute("INSERT OR IGNORE INTO analises_sem_fala(segment_id) VALUES(?)",
+                            (segment_id,))
+        else:
+            self._c.execute("DELETE FROM analises_sem_fala WHERE segment_id=?", (segment_id,))
+        self._c.commit()
+
+    def segmentos_sem_fala(self) -> set[int]:
+        return {r[0] for r in self._c.execute("SELECT segment_id FROM analises_sem_fala")}
 
     # --- segments
     def add_segments(self, segs: list[Segment]) -> list[int]:
