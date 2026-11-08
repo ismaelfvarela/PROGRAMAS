@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -179,3 +181,32 @@ def test_dlls_cuda_do_torch_registradas_para_o_whisper():
     if os.name == "nt":
         assert pasta is not None and (pasta / "cublas64_12.dll").is_file()
     assert preparar_dlls_cuda() == pasta  # idempotente
+
+
+def test_transcricao_usa_proxy_do_y_e_volta_ao_original(db, tmp_path):
+    # o original (R:) é lento; o proxy 480p no disco de trabalho tem o som (AAC 128k)
+    cam = _add(db, "A/a.MP4", Role.camera, 10, 0)
+    cam2 = _add(db, "A/b.MP4", Role.camera, 10, 20)
+    h4 = _add(db, "E/h4.wav", Role.mesa, 10, 40, kind="audio")
+    px = tmp_path / "Y" / "a_Proxy.mp4"
+    px2 = tmp_path / "Y" / "b_Proxy.mp4"
+    px.parent.mkdir()
+    px.write_bytes(b"x")
+    px2.write_bytes(b"x")
+    db.set_proxy(cam, str(px), "gerado")
+    db.set_proxy(cam2, str(px2), "lrf")
+
+    class T:
+        calls = []
+
+        def transcribe(self, path):
+            T.calls.append(Path(path))
+            if Path(path) == px2:
+                raise RuntimeError("proxy sem áudio")
+            return []
+    transcribe_event(db, tmp_path / "R", T())
+    assert px in T.calls and tmp_path / "R" / "A/a.MP4" not in T.calls
+    assert T.calls.index(px2) < T.calls.index(tmp_path / "R" / "A/b.MP4")  # volta ao original
+    assert tmp_path / "R" / "E/h4.wav" in T.calls  # sem proxy: original
+    assert not db.list_falhas()
+    assert all(db.get_transcript(m) is not None for m in (cam, cam2, h4))
