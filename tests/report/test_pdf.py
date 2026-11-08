@@ -125,6 +125,7 @@ def test_pdf_antigo_nao_mascara_falha(tmp_path, monkeypatch):
     from roteiro_ia.report import pdf as mod
     monkeypatch.setattr(mod, "find_edge", lambda: Path("edge.exe"))
     monkeypatch.setattr(mod.proc, "run", lambda cmd, **kw: _Res())
+    monkeypatch.setattr(mod, "PDF_ESPERA_S", 1.5)
     out = tmp_path / "r.pdf"
     out.write_bytes(b"%PDF-antigo")
     with pytest.raises(RuntimeError):
@@ -215,3 +216,23 @@ def test_coluna_clima_voz_e_inicio(tmp_path):
     assert "começar em 0:00" in html and "começar em 1:15" in html
     # sem índice continua funcionando (só o clima sugerido)
     assert "romântico" in render_html(sample_roteiro(), make_paths(tmp_path), [])
+
+
+def test_edge_que_retorna_antes_de_gravar_o_pdf(tmp_path, monkeypatch):
+    # Edge 157: o msedge.exe devolve rc=0 em ~1 s e o PDF é gravado segundos depois
+    import threading
+    from roteiro_ia.report import pdf as mod
+    monkeypatch.setattr(mod, "find_edge", lambda: Path("edge.exe"))
+
+    def fake_run(cmd, **kw):
+        alvo = Path(next(a for a in cmd if a.startswith("--print-to-pdf=")).split("=", 1)[1])
+
+        def gravar():
+            import time
+            time.sleep(1.0)
+            alvo.write_bytes(b"%PDF-1.4 novo")
+        threading.Thread(target=gravar).start()
+        return _Res()
+    monkeypatch.setattr(mod.proc, "run", fake_run)
+    out = html_to_pdf("<p>x</p>", tmp_path / "r.pdf", Settings())
+    assert out.read_bytes() == b"%PDF-1.4 novo"

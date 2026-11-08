@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import sqlite3
+import subprocess
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -44,6 +45,13 @@ TRECHO_INICIO_S = 60.0
 TRECHO_CURTO_S = 20.0     # meio e clímax
 MUSICA_CURTA_S = 100.0    # abaixo disso a música é analisada inteira
 _SR_MODELOS = 44100       # áudio para Demucs/CLAP (o 22050 do BPM corta o agudo da voz)
+# Coletâneas de horas não são trilha de edição e a análise carrega o áudio inteiro várias vezes
+# na memória: um MP3 de 11 h 54 min esgotou os 32 GB de RAM e travou/desligou a máquina.
+TRILHA_MAX_S = 30 * 60
+
+
+class TrilhaLongaDemais(ValueError):
+    """Arquivo de áudio acima de TRILHA_MAX_S: não é analisado."""
 
 # --- tonalidade (Krumhansl–Schmuckler)
 NOTAS = ("Dó", "Dó#", "Ré", "Ré#", "Mi", "Fá", "Fá#", "Sol", "Sol#", "Lá", "Lá#", "Si")
@@ -392,6 +400,19 @@ def _default_tagger() -> AudioTagger | None:
     return tg
 
 
+def _duracao_s(path: Path) -> float | None:
+    """Duração pelo cabeçalho (ffprobe), sem decodificar o áudio; None se não der para ler."""
+    from .media.tools import ffprobe_bin
+    from . import proc
+    try:
+        r = proc.run([ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
+                      "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                     text=True, encoding="utf-8", errors="replace", timeout=60)
+        return float(r.stdout.strip()) if r.returncode == 0 else None
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+        return None
+
+
 def _load_audio(path: Path, sr: int = _SR) -> np.ndarray:
     import librosa
 
@@ -562,6 +583,10 @@ def analyze_track(path: Path, tracker: BeatTracker | None = None,
     """Analisa uma trilha. Modelos ausentes (None) são carregados aqui, a menos que
     `carregar_modelos=False` (o update_index carrega uma vez e passa o que conseguiu)."""
     path = Path(path)
+    duracao = _duracao_s(path)
+    if duracao is not None and duracao > TRILHA_MAX_S:
+        raise TrilhaLongaDemais(
+            f"{duracao / 3600:.1f} h de áudio; acima de {TRILHA_MAX_S // 60} min não é analisada")
     if tracker is None:
         tracker = _default_tracker()
     if separator is None and carregar_modelos:
@@ -750,6 +775,8 @@ def _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_ver
                     tracker = _default_tracker()
                 idx.upsert(analyze_track(f, tracker, separator, tagger, carregar_modelos=False))
                 done += 1
+            except TrilhaLongaDemais as e:
+                log.warning("Trilha longa demais, ignorada: '%s' (%s).", f.name, e)
             except Exception as e:
                 log.warning("Não foi possível analisar a trilha '%s': %s", f.name, e)
     except controle.Interrompido:
