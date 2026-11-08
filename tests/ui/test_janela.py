@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -222,3 +223,37 @@ def test_fechar_com_tarefa_auxiliar_pergunta(janela, monkeypatch):
     e = QCloseEvent()
     janela.closeEvent(e)
     assert perguntas and not e.isAccepted()
+
+
+def test_continuar_lista_recentes_e_abre_sem_pedir_pasta(qtbot, settings_tmp, tmp_path, evento,
+                                                        monkeypatch):
+    # "Continuar projeto existente" mostra os projetos recentes; um clique abre e retoma
+    chamadas, pedidos = [], []
+
+    def factory(req, s, eventos):
+        pedidos.append(req)
+        return _PipeFalso(chamadas)
+
+    w = _janela_com(qtbot, settings_tmp, tmp_path, factory)
+    pj = w.projeto
+    pj.set_event_folder(evento)
+    pj.btn_iniciar.click()  # cria o projeto e entra na lista
+    qtbot.waitUntil(lambda: pj.status.painel_final.isVisibleTo(pj), timeout=5000)
+    w.runner.wait_all(5000)
+    from roteiro_ia.pipeline import ProjectRequest
+    from roteiro_ia.paths import build_event_paths
+    an = Path(build_event_paths(evento, settings_tmp).analysis_dir)
+    an.mkdir(parents=True, exist_ok=True)
+    pedidos[0].save(an / "projeto.json", settings_tmp)
+
+    monkeypatch.setattr(pj.form, "escolher_pasta",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("pediu a pasta")))
+    menu = pj.menu_recentes()
+    acoes = [a for a in menu.actions() if a.text() and not a.isSeparator()]
+    assert acoes[0].text().startswith("2023-09-09 CASAMENTO TESTE\talterado hoje ")
+    assert acoes[-1].text() == "Outra pasta…"
+    pj.form.set_event_folder(tmp_path)  # outra pasta selecionada antes
+    acoes[0].trigger()
+    qtbot.waitUntil(lambda: len(pedidos) == 2, timeout=5000)
+    w.runner.wait_all(5000)
+    assert pedidos[1].source_dir == evento and isinstance(pedidos[1], ProjectRequest)

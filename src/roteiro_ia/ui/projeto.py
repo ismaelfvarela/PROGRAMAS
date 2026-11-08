@@ -7,9 +7,10 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox,
+from PySide6.QtWidgets import (QDialog, QMenu, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox,
                                QPlainTextEdit, QVBoxLayout, QWidget)
 
+from roteiro_ia import recentes
 from roteiro_ia.config import Settings
 from roteiro_ia.models import Role
 from roteiro_ia.paths import build_event_paths
@@ -121,6 +122,7 @@ class ProjetoTab(QWidget):
                                             "como \"Ignorar\").")
             return
         self._req = req
+        recentes.registrar(self.s, req.source_dir, req.work_drive)
         self.timer_retomar.stop()
         self.status.limpar_avisos()
         self.status.etapas.reset()
@@ -319,7 +321,39 @@ class ProjetoTab(QWidget):
         self.status.log_line(f"Pedido de ajuste: {dlg.pedido()}")
         self._start("revise", aprovado=True, pedido=dlg.pedido())
 
+    def menu_recentes(self) -> QMenu:
+        """Lista suspensa: projetos abertos por último primeiro, com a última alteração."""
+        menu = QMenu(self)
+        discos = [self.form.combo_disco.currentText().strip(), self.s.work_drive]
+        itens = recentes.listar(self.s, discos)
+        if not itens:
+            menu.addAction("Nenhum projeto recente").setEnabled(False)
+        for r in itens:
+            a = menu.addAction(f"{r.nome}	alterado {recentes.quando_texto(r.alterado_em)}")
+            a.setToolTip(str(r.pasta))
+            a.triggered.connect(lambda _=False, r=r: self.abrir_recente(r))
+        menu.setToolTipsVisible(True)
+        menu.addSeparator()
+        menu.addAction("Outra pasta…").triggered.connect(self.continuar_outra_pasta)
+        return menu
+
     def continuar_existente(self) -> None:
+        if self.rodando:
+            return
+        b = self.form.btn_continuar
+        self.menu_recentes().exec(b.mapToGlobal(b.rect().bottomLeft()))
+
+    def abrir_recente(self, r: recentes.Recente) -> bool:
+        if self.rodando:
+            return False
+        self.form.combo_disco.setCurrentText(r.disco)
+        if not self.form.set_event_folder(r.pasta):
+            self.status.banner_erro.mostrar(
+                f"Não consegui abrir a pasta do evento {r.pasta}. O disco de origem está conectado?")
+            return False
+        return self.abrir_existente(r.pasta)
+
+    def continuar_outra_pasta(self) -> None:
         if self.rodando:
             return
         pasta = self.form.escolher_pasta("Escolha a pasta do evento (no R:) para continuar")
