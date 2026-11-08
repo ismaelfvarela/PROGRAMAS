@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from roteiro_ia.config import Settings
@@ -107,6 +108,7 @@ class _FakeWhisper:
         _FakeWhisper.criados.append(device)
 
     def transcribe(self, path, **kw):
+        _FakeWhisper.entradas.append(path)
         fila = _FakeWhisper.erros.get(self.device, [])
         if fila:
             raise fila.pop(0)
@@ -122,6 +124,9 @@ def fake_whisper(monkeypatch):
     monkeypatch.setitem(sys.modules, "faster_whisper", mod)
     _FakeWhisper.criados = []
     _FakeWhisper.erros = {}
+    _FakeWhisper.entradas = []
+    from roteiro_ia import transcribe as tr
+    monkeypatch.setattr(tr, "_carregar_audio", lambda p: np.zeros(16000, dtype=np.float32))
     return _FakeWhisper
 
 
@@ -145,3 +150,32 @@ def test_erro_de_cuda_cai_para_cpu(fake_whisper, tmp_path, msg):
     t = WhisperTranscriber()
     assert t.transcribe(tmp_path / "a.wav") == []
     assert t.device == "cpu" and fake_whisper.criados == ["cuda", "cpu"]
+
+
+def test_whisper_recebe_audio_decodificado_pelo_ffmpeg(fake_whisper, tmp_path):
+    # faster-whisper 1.2.1 abre o arquivo com av.open(metadata_errors=...), removido no PyAV 19:
+    # todas as transcrições falhavam. O áudio vai decodificado (16 kHz mono) pelo nosso ffmpeg.
+    from roteiro_ia.transcribe import WhisperTranscriber
+    WhisperTranscriber().transcribe(tmp_path / "a.wav")
+    entrada = fake_whisper.entradas[0]
+    assert isinstance(entrada, np.ndarray) and entrada.dtype == np.float32
+
+
+def test_carregar_audio_16k_mono(tmp_path):
+    import soundfile as sf
+    from roteiro_ia.transcribe import _carregar_audio
+    f = tmp_path / "s.wav"
+    sf.write(str(f), np.zeros((44100 * 2, 2), dtype=np.float32), 44100)
+    y = _carregar_audio(f)
+    assert y.dtype == np.float32 and y.ndim == 1 and abs(len(y) - 32000) < 400
+
+
+def test_dlls_cuda_do_torch_registradas_para_o_whisper():
+    # o ctranslate2 (Whisper) procura cublas64_12.dll; ela vem no torch/lib, que só entra no
+    # caminho de DLLs quando o torch é importado (a transcrição roda antes das trilhas)
+    import os
+    from roteiro_ia.transcribe import preparar_dlls_cuda
+    pasta = preparar_dlls_cuda()
+    if os.name == "nt":
+        assert pasta is not None and (pasta / "cublas64_12.dll").is_file()
+    assert preparar_dlls_cuda() == pasta  # idempotente

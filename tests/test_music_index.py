@@ -470,3 +470,48 @@ def test_trilha_longa_demais_e_pulada_sem_carregar(tmp_path, monkeypatch, caplog
     assert "1.mp3" not in carregou
     assert any("longa" in r.getMessage() and "1.mp3" in r.getMessage() for r in caplog.records)
     idx.close()
+
+
+def test_carga_de_modelos_nao_contamina_outra_thread(monkeypatch):
+    # o CLAP (transformers) troca nn.Module.register_parameter no processo inteiro enquanto
+    # carrega; um Demucs criado ao mesmo tempo em outra thread nascia "meta" (sem dados)
+    import threading
+    import time
+    import torch
+    import demucs.pretrained
+    from transformers.integrations.accelerate import init_empty_weights
+    from roteiro_ia import music_index as mi
+
+    def clap_lento(revisao):
+        with init_empty_weights():
+            time.sleep(0.8)
+            return torch.nn.Linear(2, 2)
+    monkeypatch.setattr(mi, "_carregar_processador_clap", lambda: object())
+    monkeypatch.setattr(mi, "_carregar_modelo_clap", clap_lento)
+    monkeypatch.setattr(demucs.pretrained, "get_model", lambda name: torch.nn.Linear(2, 2))
+    t = threading.Thread(target=lambda: mi.ClapTagger(device="cpu")._load())
+    t.start()
+    time.sleep(0.2)
+    sep = mi.DemucsSeparator(device="cpu")
+    modelo = sep._load()
+    t.join()
+    assert modelo.weight.device.type == "cpu"
+
+
+def test_beat_this_recebe_o_audio_ja_carregado(tmp_path):
+    # MP3 que na verdade é M4A (download do YouTube): o leitor do beat_this não abre,
+    # o nosso (com ffmpeg) abre; o tracker usa o sinal, não o caminho
+    from roteiro_ia import music_index as mi
+    f = tmp_path / "t.wav"
+    _click(f, seconds=8)
+    visto = {}
+
+    class Modelo:
+        def __call__(self, signal, sr):
+            visto["sr"], visto["n"] = sr, len(signal)
+            return np.array([0.5, 1.0]), np.array([0.5])
+    tr = mi.BeatThisTracker(device="cpu")
+    tr._model = Modelo()
+    info = analyze_track(f, tr, carregar_modelos=False)
+    assert visto["sr"] == SR and visto["n"] == pytest.approx(8 * SR, abs=SR // 10)
+    assert info.beats_s == [0.5, 1.0]
