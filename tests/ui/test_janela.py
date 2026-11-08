@@ -34,6 +34,14 @@ def janela(qtbot, settings_tmp, tmp_path):
     w.runner.wait_all(5000)
 
 
+def test_icone_do_programa_tem_todos_os_tamanhos(qtbot):
+    from roteiro_ia.ui.app import icone_app
+    ic = icone_app()
+    assert not ic.isNull()
+    tamanhos = {s.width() for s in ic.availableSizes()}
+    assert {16, 32, 48, 256} <= tamanhos
+
+
 def test_tema_carrega_do_pacote():
     from roteiro_ia.ui.app import load_theme
     qss = load_theme()
