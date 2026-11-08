@@ -1,0 +1,18 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- Ícone do Roteiro IA: robô cujo rosto é o emblema da Fokuss, escrevendo um roteiro -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#1b1b1d"/>
+  <line x1="128" y1="30" x2="128" y2="50" stroke="#d9dde3" stroke-width="8"/>
+  <circle cx="128" cy="26" r="9" fill="#2f7fd0"/>
+  <rect x="40" y="48" width="176" height="150" rx="60" fill="#e9ecf0"/>
+  <rect x="24" y="100" width="22" height="46" rx="10" fill="#c7ccd3"/>
+  <rect x="210" y="100" width="22" height="46" rx="10" fill="#c7ccd3"/>
+  <ellipse cx="135.8" cy="171.4" rx="59.8" ry="15.6" fill="none" stroke="#9aa3ad" stroke-width="4.7"/>
+  <circle cx="128" cy="122" r="52" fill="#0b0b0d" stroke="#ffffff" stroke-width="5.2"/>
+  <path d="M89 140.2 Q128 119.4 169.6 98.6" stroke="#2f7fd0" stroke-width="14.6" stroke-linecap="round" fill="none"/>
+  <path d="M117.6 145.4 L141 101.2" stroke="#2f7fd0" stroke-width="8.3" stroke-linecap="round"/>
+  <rect x="130" y="176" width="96" height="62" rx="8" fill="#f4f1ea"/>
+  <line x1="144" y1="196" x2="206" y2="196" stroke="#9a948a" stroke-width="6" stroke-linecap="round"/>
+  <line x1="144" y1="216" x2="190" y2="216" stroke="#9a948a" stroke-width="6" stroke-linecap="round"/>
+  <line x1="186" y1="230" x2="234" y2="170" stroke="#d9774a" stroke-width="11" stroke-linecap="round"/>
+  <path d="M186 230 l-6 13 l13 -6z" fill="#0b0b0d"/>
+</svg>

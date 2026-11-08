@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPalette, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QSplashScreen, QTabWidget
 
 from roteiro_ia import proc
@@ -29,6 +29,24 @@ def load_theme() -> str:
     base = files("roteiro_ia.ui")
     icones = str(base.joinpath("icones")).replace("\\", "/")
     return base.joinpath("tema.qss").read_text(encoding="utf-8").replace("{ICONES}", icones)
+
+
+APP_ID = "Fokuss.RoteiroIA"  # o Windows agrupa a barra de tarefas por este id, não pelo pythonw
+
+
+def icone_app() -> QIcon:
+    """Ícone do programa (robô com o emblema da Fokuss), em todos os tamanhos do .ico."""
+    return QIcon(str(files("roteiro_ia.ui").joinpath("icones", "app.ico")))
+
+
+def _registrar_app_id() -> None:
+    """Sem isto a barra de tarefas mostra o ícone do Python em vez do nosso."""
+    if sys.platform == "win32":
+        import ctypes
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        except (AttributeError, OSError):
+            pass
 
 
 def apply_theme(app: QApplication) -> None:
@@ -142,8 +160,10 @@ def _aviso_abrindo() -> QSplashScreen:
 def main() -> int:
     from roteiro_ia.ui.instancia import Servidor, Trava, avisar_primeira, trazer_para_frente
     proc.esconder_consoles()  # sob o pythonw, nenhum subprocesso abre tela preta
+    _registrar_app_id()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Roteiro IA")
+    app.setWindowIcon(icone_app())
     trava = Trava()
     if not trava.primeira:
         # já está aberto (ou abrindo): só traz a janela existente para frente
