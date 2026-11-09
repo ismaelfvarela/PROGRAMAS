@@ -8,7 +8,8 @@ from pathlib import Path
 
 from roteiro_ia.areas.formatura.analise import TEXTOS_POR_TIPO
 from roteiro_ia.areas.formatura.cadastro import carregar
-from roteiro_ia.areas.formatura.ajustes import carregar_ajustes
+from roteiro_ia.areas.formatura.ajustes import carregar_ajustes, modelos_do_ano
+from roteiro_ia.areas.formatura.modelos import carregar_perfil_ano, estudar_modelos
 from roteiro_ia.areas.formatura.colacao.clipes import contexto_abertura_encerramento, nomes_clipes
 from roteiro_ia.areas.formatura.colacao.defeitos import Defeito, classificar, medir
 from roteiro_ia.areas.formatura.colacao.entrega import write_job_integra
@@ -83,10 +84,30 @@ class PipelineFormatura(Pipeline):
         return super().run(aprovado_custo=aprovado_custo, refazer_falhas=refazer_falhas)
 
     # ------------------------------------------------------------ etapas
+    def _ano(self) -> int | None:
+        ficha = carregar(self._base, self.projeto().formatura_id)
+        return ficha.ano if ficha else None
+
+    def _pasta_modelos(self) -> tuple[int, str] | None:
+        ano = self._ano()
+        m = modelos_do_ano(self._base, ano) if ano else None
+        return (ano, m.pasta) if m and m.pasta else None
+
     def _st_estilo(self) -> str:
-        if self._colacao():
-            return "não usado na colação"
-        return super()._st_estilo()
+        """Com vídeos modelo do ano, o estilo vem deles; senão, dos links da aba Estilo."""
+        mod = self._pasta_modelos()
+        if mod is None:
+            return super()._st_estilo()
+        ano, pasta = mod
+        self._models()
+        prof = estudar_modelos(self._client(), self.s, ano, pasta)
+        return f"vídeos modelo de {ano} estudados" if prof else "nenhum vídeo modelo na pasta do ano"
+
+    def _perfil(self):
+        mod = self._pasta_modelos()
+        if mod is not None and (prof := carregar_perfil_ano(self.s, mod[0])) is not None:
+            return prof
+        return super()._perfil()
 
     def _st_trilhas(self) -> str:
         if not self._colacao():
