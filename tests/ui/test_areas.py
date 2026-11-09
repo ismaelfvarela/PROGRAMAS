@@ -94,3 +94,24 @@ def test_abrir_projeto_de_outra_area_recusa(qtbot, settings_tmp, evento, tmp_pat
     assert tab.set_event_folder(evento)
     assert tab.abrir_existente(evento) is False
     assert "Este projeto é de Formatura. Abra pela área Formatura." in tab.status.banner_erro.text()
+
+
+def test_card_musicas_ao_lado_do_disco_e_tabela_sem_aperto(qtbot, settings_tmp, tmp_path):
+    tab = ProjetoTab(settings_tmp, tmp_path / "cfg.json", Runner(), area="casamento")
+    qtbot.addWidget(tab)
+    tab.resize(1280, 860)
+    tab.show()
+    qtbot.waitExposed(tab)
+    form = tab.form
+    assert form.tabela.height() >= form.tabela.minimumHeight() == 150
+    assert form.card_musicas.mapTo(form, form.card_musicas.rect().topLeft()).y() == \
+        form.cards[1].mapTo(form, form.cards[1].rect().topLeft()).y()
+
+
+def test_formatura_numera_gemini_como_5(qtbot, settings_tmp, tmp_path):
+    tab = ProjetoTab(settings_tmp, tmp_path / "cfg.json", Runner(), area="formatura")
+    qtbot.addWidget(tab)
+    assert tab.form.card_gemini.lbl_numero.text() == "5"
+    cas = ProjetoTab(settings_tmp, tmp_path / "cfg.json", Runner(), area="casamento")
+    qtbot.addWidget(cas)
+    assert cas.form.card_gemini.lbl_numero.text() == "6"

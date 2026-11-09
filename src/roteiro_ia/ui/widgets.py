@@ -98,10 +98,12 @@ class Card(QFrame):
         lay.setSpacing(10)
         head = QHBoxLayout()
         head.setSpacing(10)
+        self.lbl_numero: QLabel | None = None
         if numero is not None:
             n = QLabel(str(numero))
             n.setObjectName("numeroPasso")
             head.addWidget(n)
+            self.lbl_numero = n
         t = QLabel(titulo)
         t.setObjectName("tituloCard")
         head.addWidget(t)
@@ -111,6 +113,10 @@ class Card(QFrame):
         self.body = QVBoxLayout()
         self.body.setSpacing(8)
         lay.addLayout(self.body)
+
+    def set_numero(self, numero: int) -> None:
+        if self.lbl_numero is not None:
+            self.lbl_numero.setText(str(numero))
 
 
 class Banner(QLabel):

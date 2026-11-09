@@ -137,10 +137,24 @@ class FormularioEvento(QWidget):
         linha.addWidget(self.combo_disco)
         linha.addWidget(self.lbl_espaco, 1)
         c2.body.addLayout(linha)
-        lay.addWidget(c2)
 
-        # 3. subpastas
-        c3 = Card("O que é cada pasta", 3)
+        # 3. músicas, ao lado do disco
+        c_mus = Card("Músicas", 3)
+        self.campo_musicas = CampoPastaMusicas()
+        self.campo_musicas.set_padrao(pasta_musicas_padrao(s, area))
+        dica_mus = QLabel("Vale a pasta e todas as subpastas.")
+        dica_mus.setProperty("muted", True)
+        c_mus.body.addWidget(self.campo_musicas)
+        c_mus.body.addWidget(dica_mus)
+        self.card_musicas = c_mus
+        disco_mus = QHBoxLayout()
+        disco_mus.setSpacing(12)
+        disco_mus.addWidget(c2, 1)
+        disco_mus.addWidget(c_mus, 1)
+        lay.addLayout(disco_mus)
+
+        # 4. subpastas
+        c3 = Card("O que é cada pasta", 4)
         dica = QLabel("Confira a sugestão. \"Dia\" só vale para pastas de outro dia (despedida, pré…).")
         dica.setProperty("muted", True)
         dica.setWordWrap(True)
@@ -149,17 +163,6 @@ class FormularioEvento(QWidget):
         c3.body.addWidget(dica)
         c3.body.addWidget(self.tabela, 1)
         lay.addWidget(c3, 1)
-
-        # 4. músicas
-        c_mus = Card("Músicas", 4)
-        self.campo_musicas = CampoPastaMusicas()
-        self.campo_musicas.set_padrao(pasta_musicas_padrao(s, area))
-        dica_mus = QLabel("Vale a pasta e todas as subpastas.")
-        dica_mus.setProperty("muted", True)
-        c_mus.body.addWidget(self.campo_musicas)
-        c_mus.body.addWidget(dica_mus)
-        self.card_musicas = c_mus
-        lay.addWidget(c_mus)
 
         # 5. entregas + 6. gemini, lado a lado
         dupla = QHBoxLayout()
@@ -231,6 +234,7 @@ class FormularioEvento(QWidget):
         self.btn_iniciar.setMinimumHeight(46)
         lay.addWidget(self.btn_iniciar)
 
+        self.card_gemini = c5
         self.cards = [c1, c2, c3, c4, c5, c_mus]
         (self.btn_pago if s.gemini_mode == "pago" else self.btn_gratis).setChecked(True)
         self.atualizar_preco()

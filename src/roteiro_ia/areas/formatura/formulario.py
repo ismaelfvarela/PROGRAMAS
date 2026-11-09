@@ -16,6 +16,7 @@ class FormularioFormatura(FormularioEvento):
                  area: str = "formatura"):
         super().__init__(s, runner, parent, area)
         self.card_entregas.hide()  # episódios/trailer… são do Casamento
+        self.card_gemini.set_numero(5)  # sem Entregas, a numeração segue sem buraco
         self.btn_iniciar.setToolTip(AVISO_FORMATURA)
         self.lbl_aviso = QLabel(AVISO_FORMATURA)
         self.lbl_aviso.setProperty("muted", True)
