@@ -742,9 +742,9 @@ def update_index(s: Settings, idx: MusicIndex,
                  tracker: BeatTracker | None = None, separator: VocalSeparator | None = None,
                  tagger: AudioTagger | None = None, atualizar_versao: bool = True,
                  root: Path | None = None) -> int:
-    """Varre music_root (ou `root`, quando dado: pasta de músicas do projeto; só as trilhas
-    dessa pasta são removidas se sumirem) (somente leitura) e analisa só o que é novo, foi alterado, tem análise
-    de versão antiga ou ficou parcial (quando os modelos agora carregam). Os modelos ausentes
+    """Varre music_root (somente leitura) ou, quando dado, `root` (pasta de músicas do
+    projeto; só as trilhas dessa pasta são removidas se sumirem) e analisa só o que é novo,
+    foi alterado, tem análise de versão antiga ou ficou parcial (quando os modelos agora carregam). Os modelos ausentes
     são carregados uma única vez por execução, e só se houver algo a analisar.
 
     `atualizar_versao=False` (etapa do pipeline): só arquivos novos ou alterados; registros
@@ -764,7 +764,7 @@ def trilhas_antigas(idx: MusicIndex) -> int:
 
 def _dentro(caminho: str, pasta: str) -> bool:
     """`caminho` já normalizado está em `pasta` (normalizada) ou nas subpastas dela."""
-    return caminho == pasta or caminho.startswith(pasta.rstrip("\/") + os.sep)
+    return caminho == pasta or caminho.startswith(pasta.rstrip("\\/") + os.sep)
 
 
 def _norm_caminho(p) -> str:
