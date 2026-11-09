@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +63,24 @@ class AjusteDialog(QDialog):
         return self.texto.toPlainText().strip()
 
 
+def projetos_premiere(pasta: Path) -> list[Path]:
+    """Os .prproj da pasta do evento, do mais recente para o mais antigo."""
+    try:
+        return sorted(pasta.glob("*.prproj"), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return []
+
+
+def premiere_exe() -> Path | None:
+    """O Premiere Pro instalado mais novo (pasta "Adobe Premiere Pro <ano>")."""
+    raiz = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Adobe"
+    try:
+        achados = sorted(raiz.glob("Adobe Premiere Pro*/Adobe Premiere Pro.exe"), reverse=True)
+    except OSError:
+        return None
+    return achados[0] if achados else None
+
+
 class ProjetoTab(QWidget):
     mudou = Signal()  # pausa da cota começou/terminou (a barra geral conta como processo)
 
@@ -101,6 +120,9 @@ class ProjetoTab(QWidget):
         self.form.iniciar.connect(self.iniciar)
         self.form.continuar.connect(self.continuar_existente)
         self.status.btn_pdf.clicked.connect(self.abrir_pdf)
+        self.status.btn_premiere.clicked.connect(self.abrir_premiere)
+        self.status.btn_pasta_videos.clicked.connect(self.abrir_pasta_videos)
+        self.status.btn_pasta_projeto.clicked.connect(self.abrir_pasta_projeto)
         self.status.btn_ajuste.clicked.connect(self.pedir_ajuste)
         self.controles = self.status.controles
         self.controles.pausar.connect(self.pausar)
@@ -403,6 +425,45 @@ class ProjetoTab(QWidget):
             self.status.banner_erro.mostrar(f"O PDF ainda não existe: {pdf}")
             return
         os.startfile(str(pdf))  # noqa: S606 - abre no leitor padrão do Windows
+
+    def abrir_premiere(self) -> None:
+        """Abre o .prproj montado (o mais recente: o painel cria _v2, _v3… se clicado de novo);
+        sem projeto montado ainda, abre o Premiere para o editor usar Montar projeto."""
+        try:
+            p = self._paths()
+        except ValueError as e:
+            self.status.banner_erro.mostrar(str(e))
+            return
+        projetos = projetos_premiere(Path(p.premiere_dir))
+        if projetos:
+            os.startfile(str(projetos[0]))  # noqa: S606
+            return
+        exe = premiere_exe()
+        if exe is None:
+            self.status.banner_erro.mostrar("Não encontrei o Premiere Pro instalado neste computador.")
+            return
+        subprocess.Popen([str(exe)], close_fds=True)  # noqa: S603
+        self.status.banner_ok.mostrar("Abrindo o Premiere. O projeto ainda não foi montado: lá, use "
+                                      "Janela → Extensões → Roteiro IA → Montar projeto.")
+
+    def abrir_pasta_videos(self) -> None:
+        self._abrir_pasta(lambda p: p.export_dir,
+                          "A pasta dos vídeos prontos ainda não existe ({}). Ela é criada quando o "
+                          "projeto é montado no Premiere.")
+
+    def abrir_pasta_projeto(self) -> None:
+        self._abrir_pasta(lambda p: p.work_dir, "A pasta do projeto ainda não existe: {}")
+
+    def _abrir_pasta(self, qual, msg_falta: str) -> None:
+        try:
+            pasta = Path(qual(self._paths()))
+        except ValueError as e:
+            self.status.banner_erro.mostrar(str(e))
+            return
+        if not pasta.is_dir():
+            self.status.banner_erro.mostrar(msg_falta.format(pasta))
+            return
+        os.startfile(str(pasta))  # noqa: S606 - abre no Explorador
 
     def pedir_ajuste(self) -> None:
         if self._req is None or self.rodando:

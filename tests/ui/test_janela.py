@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -265,3 +266,41 @@ def test_continuar_lista_recentes_e_abre_sem_pedir_pasta(qtbot, settings_tmp, tm
     qtbot.waitUntil(lambda: len(pedidos) == 2, timeout=5000)
     w.runner.wait_all(5000)
     assert pedidos[1].source_dir == evento and isinstance(pedidos[1], ProjectRequest)
+
+
+def test_tela_final_abre_premiere_e_pastas(janela, evento, monkeypatch, tmp_path):
+    from roteiro_ia.paths import build_event_paths
+    from roteiro_ia.ui import projeto as mod
+    abertos, lancados = [], []
+    monkeypatch.setattr(mod.os, "startfile", abertos.append, raising=False)
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda args, **k: lancados.append(args))
+    exe = tmp_path / "Premiere.exe"
+    monkeypatch.setattr(mod, "premiere_exe", lambda: exe)
+    pj = janela.projeto
+    pj.set_event_folder(evento)
+    pj._req = pj.form.build_request()
+    p = build_event_paths(evento, janela.s, pj._req.work_drive)
+
+    # projeto ainda não montado: abre o Premiere e explica o Montar projeto
+    pj.status.btn_premiere.click()
+    assert lancados == [[str(exe)]] and abertos == []
+    assert "Montar projeto" in pj.status.banner_ok.text()
+    # montado (e montado de novo: _v2): abre o mais recente
+    Path(p.premiere_dir).mkdir(parents=True)
+    a = Path(p.premiere_dir) / "x.prproj"
+    b = Path(p.premiere_dir) / "x_v2.prproj"
+    a.write_text("a")
+    b.write_text("b")
+    os.utime(a, (1, 1))
+    pj.status.btn_premiere.click()
+    assert abertos == [str(b)]
+
+    # pastas: só abre se existe; senão avisa
+    abertos.clear()
+    pj.status.btn_pasta_videos.click()
+    assert abertos == [] and pj.status.banner_erro.isVisibleTo(pj)
+    Path(p.export_dir).mkdir(parents=True)
+    Path(p.work_dir).mkdir(parents=True, exist_ok=True)
+    pj.status.btn_pasta_videos.click()
+    pj.status.btn_pasta_projeto.click()
+    assert abertos == [str(p.export_dir), str(p.work_dir)]
