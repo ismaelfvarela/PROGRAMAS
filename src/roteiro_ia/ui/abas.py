@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QHBoxLayo
                                QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton,
                                QSpinBox, QTextBrowser, QVBoxLayout, QWidget)
 
-from roteiro_ia.config import Settings, save_settings
+from roteiro_ia.config import Settings, save_settings, set_urls_estilo, urls_estilo
 from roteiro_ia.ui.widgets import Banner, Card, ControlesProcesso
 from roteiro_ia.ui.worker import Runner, TarefaWorker, mensagem_erro
 
@@ -194,9 +194,10 @@ def _canonica(url: str) -> str | None:
 
 class EstiloTab(QWidget):
     def __init__(self, s: Settings, settings_path: Path, runner: Runner,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, area: str = "casamento"):
         super().__init__(parent)
         self.s, self.settings_path, self.runner = s, Path(settings_path), runner
+        self.area = area
         self._estado: dict[str, str] = {}  # url canônica -> estado na última geração
         self._w: TarefaWorker | None = None  # geração em andamento
         _w, lay = _pagina(self)
@@ -211,7 +212,7 @@ class EstiloTab(QWidget):
         dica.setWordWrap(True)
         card.body.addWidget(dica)
         self.lista = QListWidget()
-        for u in s.style_urls:
+        for u in urls_estilo(s, area):
             self._novo_item(u)
         card.body.addWidget(self.lista, 1)
         linha = QHBoxLayout()
@@ -257,6 +258,10 @@ class EstiloTab(QWidget):
         self.controles.parar.connect(lambda: self._w and self._w.controle.parar())
         self._atualizar()
 
+    def _kw_area(self) -> dict:
+        """`area` só vai quando não é o Casamento (chamadas do Casamento ficam como sempre foram)."""
+        return {} if self.area == "casamento" else {"area": self.area}
+
     def _urls(self) -> list[str]:
         return [self.lista.item(i).data(Qt.UserRole) for i in range(self.lista.count())]
 
@@ -297,7 +302,7 @@ class EstiloTab(QWidget):
         self.barra.setVisible(total > 0)
 
     def _gravar(self) -> None:
-        self.s.style_urls = self._urls()
+        set_urls_estilo(self.s, self.area, self._urls())
         err = _salvar(self.s, self.settings_path)
         if err:
             self.banner.mostrar(err)
@@ -324,12 +329,13 @@ class EstiloTab(QWidget):
         self.lbl_ignoradas.setVisible(bool(ignoradas))
         self.controles.set_pode_iniciar(bool(videos))
         self._icones()
-        prof = load_style_profile(self.s)
+        prof = load_style_profile(self.s, **self._kw_area())
         self.txt_resumo.setPlainText(prof.resumo if prof else
                                      "Ainda não há perfil. Adicione links e clique em Gerar perfil.")
 
     def gerar(self) -> None:
         s = self.s
+        kw = self._kw_area()
         self.banner.limpar()
         self._estado.clear()
         ultimo = [0, 0]  # (feitos, total) do último aviso — lido só na thread do worker
@@ -342,7 +348,7 @@ class EstiloTab(QWidget):
                 ultimo[:] = [feitos, total]
                 w.video.emit(url, estado, feitos, total)
             try:
-                return st.build_style_profile(gc.GeminiClient(s), s, on_progress=prog)
+                return st.build_style_profile(gc.GeminiClient(s), s, on_progress=prog, **kw)
             except gc.QuotaPaused as e:
                 feitos, total = ultimo
                 tipo = "diária" if e.daily else "por minuto"

@@ -12,7 +12,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Literal
 
 from roteiro_ia import controle
-from roteiro_ia.config import Settings, save_settings
+from roteiro_ia.config import Settings, save_settings, urls_estilo
 from roteiro_ia.controle import Interrompido
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.gemini.analysis import analises_desatualizadas, analyze_event
@@ -436,16 +436,23 @@ class Pipeline:
     def _st_cenas(self) -> None:
         detect_segments(self.db, self.p)
 
+    def _kw_area(self) -> dict:
+        """`area` só vai quando não é o Casamento (a chamada do Casamento fica como sempre foi)."""
+        return {} if self.req.area == "casamento" else {"area": self.req.area}
+
+    def _perfil(self):
+        return load_style_profile(self.s, **self._kw_area())
+
     def _st_estilo(self) -> str:
-        if not self.s.style_urls or load_style_profile(self.s) is not None:
+        if not urls_estilo(self.s, self.req.area) or self._perfil() is not None:
             return ""
         self._models()
-        build_style_profile(self._client(), self.s)
+        build_style_profile(self._client(), self.s, **self._kw_area())
         return "perfil criado"
 
     def _st_analise(self) -> None:
         model, _ = self._models()
-        analyze_event(self.db, self._client(), self.p, model, load_style_profile(self.s),
+        analyze_event(self.db, self._client(), self.p, model, self._perfil(),
                       on_progress=self._progress("analise"),
                       max_video_s=self.s.gemini_pacote_max_s)
 
@@ -479,7 +486,7 @@ class Pipeline:
         idx = self._index()
         if self.req.pasta_musicas:
             idx = IndiceFiltrado(idx, Path(self.req.pasta_musicas))
-        generate_roteiro(self.db, self._client(), idx, load_style_profile(self.s), model,
+        generate_roteiro(self.db, self._client(), idx, self._perfil(), model,
                          self.req.n_episodios, set(self.req.derivados), pedido_ajuste=self._pedido)
 
     def _roteiro(self) -> Roteiro:

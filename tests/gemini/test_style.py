@@ -138,3 +138,27 @@ def test_progresso_para_na_cota(tmp_path):
         build_style_profile(FakeClient(fail={U1: QuotaPaused(datetime.now())}), s,
                             on_progress=lambda *a: ev.append(a))
     assert ev[-1] == (U1, "analisando", 0, 2)
+
+
+def test_perfil_da_formatura_e_separado(tmp_path):
+    from roteiro_ia.config import set_urls_estilo
+    s = settings(tmp_path, [U1])
+    cas = build_style_profile(FakeClient(), s)
+    assert load_style_profile(s, "formatura") is None
+    set_urls_estilo(s, "formatura", [U2])
+    fmt = build_style_profile(FakeClient(), s, area="formatura")
+    assert (tmp_path / "sys" / "perfil_estilo_formatura.json").is_file()
+    assert load_style_profile(s, "formatura") == fmt
+    assert load_style_profile(s) == cas
+    # os vídeos analisados vieram dos links da própria área
+    assert json.loads((tmp_path / "sys" / "perfil_estilo.json").read_text(encoding="utf-8"))["fontes"] == [U1]
+
+
+def test_build_da_formatura_usa_links_da_area(tmp_path):
+    from roteiro_ia.config import set_urls_estilo
+    s = settings(tmp_path, [U1])
+    set_urls_estilo(s, "formatura", [U2])
+    c = FakeClient()
+    build_style_profile(c, s, area="formatura")
+    uris = [p[0].file_data.file_uri for _, p, sch, _ in c.calls if sch is VideoStyleNotes]
+    assert uris == [U2]

@@ -640,3 +640,21 @@ def test_analise_sem_fala_reabre_analise_e_regera_roteiro(tmp_path, sleeps, monk
     calls.clear()
     assert pipe.run() == "concluido" and calls == []
     pipe.close()
+
+
+def test_estilo_do_pipeline_usa_a_area_do_projeto(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from roteiro_ia.config import set_urls_estilo
+    s = mk_settings(tmp_path)
+    set_urls_estilo(s, "formatura", ["https://youtu.be/AAAAAAAAAAA"])
+    req = replace(mk_req(tmp_path), area="formatura")
+    pipe = Pipeline(req, s, FakeGemini(), None, None, settings_path=tmp_path / "SIS" / "config.json")
+    vistas = []
+    monkeypatch.setattr(pipeline, "load_style_profile", lambda s, area="casamento": vistas.append(area))
+    monkeypatch.setattr(pipeline, "build_style_profile",
+                        lambda c, s, model=None, on_progress=None, area="casamento": vistas.append(("b", area)))
+    monkeypatch.setattr(pipe, "_models", lambda: ("m", "m"))
+    monkeypatch.setattr(pipe, "_client", lambda: None)
+    assert pipe._st_estilo() == "perfil criado"
+    assert vistas == ["formatura", ("b", "formatura")]
+    pipe.close()
