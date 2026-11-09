@@ -740,8 +740,10 @@ def resumo_indice(idx: MusicIndex) -> tuple[int, int]:
 def update_index(s: Settings, idx: MusicIndex,
                  on_progress: Callable[[int, int, str], None] | None = None,
                  tracker: BeatTracker | None = None, separator: VocalSeparator | None = None,
-                 tagger: AudioTagger | None = None, atualizar_versao: bool = True) -> int:
-    """Varre music_root (somente leitura) e analisa só o que é novo, foi alterado, tem análise
+                 tagger: AudioTagger | None = None, atualizar_versao: bool = True,
+                 root: Path | None = None) -> int:
+    """Varre music_root (ou `root`, quando dado: pasta de músicas do projeto; só as trilhas
+    dessa pasta são removidas se sumirem) (somente leitura) e analisa só o que é novo, foi alterado, tem análise
     de versão antiga ou ficou parcial (quando os modelos agora carregam). Os modelos ausentes
     são carregados uma única vez por execução, e só se houver algo a analisar.
 
@@ -749,7 +751,8 @@ def update_index(s: Settings, idx: MusicIndex,
     antigos ou parciais ficam como estão (a reanálise da biblioteca leva horas e é feita pela
     aba Trilhas / `roteiro-ia trilhas`)."""
     try:
-        return _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_versao)
+        return _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_versao,
+                             root)
     finally:
         _liberar_gpu()
 
@@ -759,8 +762,34 @@ def trilhas_antigas(idx: MusicIndex) -> int:
     return sum(t.versao_analise < ANALISE_VERSAO for t in idx.all())
 
 
-def _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_versao) -> int:
-    root = Path(s.music_root)
+def _dentro(caminho: str, pasta: str) -> bool:
+    """`caminho` já normalizado está em `pasta` (normalizada) ou nas subpastas dela."""
+    return caminho == pasta or caminho.startswith(pasta.rstrip("\/") + os.sep)
+
+
+def _norm_caminho(p) -> str:
+    return os.path.normcase(os.path.abspath(str(p)))
+
+
+class IndiceFiltrado:
+    """Visão do índice só com as trilhas dentro de `pasta` (subpastas incluídas); o resto
+    (get, upsert...) delega para o índice original."""
+
+    def __init__(self, idx: MusicIndex, pasta: Path):
+        self._idx = idx
+        self._pasta = _norm_caminho(pasta)
+
+    def all(self) -> list[TrackInfo]:
+        return [t for t in self._idx.all() if _dentro(_norm_caminho(t.path), self._pasta)]
+
+    def __getattr__(self, nome):
+        return getattr(self._idx, nome)
+
+
+def _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_versao,
+                  root=None) -> int:
+    filtrar = root is not None
+    root = Path(root) if filtrar else Path(s.music_root)
     if not root.is_dir():
         raise FileNotFoundError(
             f"A pasta de músicas '{root}' não está acessível. Confira se o drive está conectado; "
@@ -815,5 +844,8 @@ def _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_ver
     elif not files and idx.all():
         log.warning("Nenhuma trilha encontrada na pasta de músicas; o índice foi mantido.")
     else:
+        if filtrar:  # pasta do projeto: as trilhas de fora dela não são tocadas
+            pasta = _norm_caminho(root)
+            existing |= {t.path for t in idx.all() if not _dentro(_norm_caminho(t.path), pasta)}
         idx.remove_missing(existing)
     return done

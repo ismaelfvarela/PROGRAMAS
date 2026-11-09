@@ -22,7 +22,7 @@ from roteiro_ia.inventory import scan
 from roteiro_ia.media.audio import analyze_audio
 from roteiro_ia.media.proxies import make_proxies
 from roteiro_ia.models import FolderAssignment, Role
-from roteiro_ia.music_index import MusicIndex, trilhas_antigas, update_index
+from roteiro_ia.music_index import IndiceFiltrado, MusicIndex, trilhas_antigas, update_index
 from roteiro_ia.paths import (EventPaths, build_event_paths, check_free_space, create_event_folders,
                               estimate_proxy_gb)
 from roteiro_ia.premiere.fcpxml import build_xml, write_xml
@@ -143,6 +143,9 @@ class Pipeline:
         self._base = s
         # o modo do pedido vale para esta execução sem alterar as Settings do editor
         self.s = s.model_copy(update={"gemini_mode": req.gemini_mode})
+        if req.pasta_musicas:  # pasta de músicas do projeto: só leitura
+            self.s = self.s.model_copy(
+                update={"protected_roots": [*s.protected_roots, req.pasta_musicas]})
         self.p = build_event_paths(req.source_dir, self.s, req.work_drive)
         self.source = Path(req.source_dir)
         self._gemini = gemini
@@ -452,7 +455,8 @@ class Pipeline:
             # Só novas/alteradas: reanalisar a biblioteca de versão antiga leva horas e é feito
             # pela aba Trilhas (ou `roteiro-ia trilhas`).
             n = update_index(self.s, idx, on_progress=self._progress("trilhas"),
-                             tracker=self._tracker, atualizar_versao=False)
+                             tracker=self._tracker, atualizar_versao=False,
+                             root=Path(self.req.pasta_musicas) if self.req.pasta_musicas else None)
         except FileNotFoundError as e:
             if not idx.all():
                 raise PipelineError(
@@ -472,7 +476,10 @@ class Pipeline:
 
     def _st_roteiro(self) -> None:
         _, model = self._models()
-        generate_roteiro(self.db, self._client(), self._index(), load_style_profile(self.s), model,
+        idx = self._index()
+        if self.req.pasta_musicas:
+            idx = IndiceFiltrado(idx, Path(self.req.pasta_musicas))
+        generate_roteiro(self.db, self._client(), idx, load_style_profile(self.s), model,
                          self.req.n_episodios, set(self.req.derivados), pedido_ajuste=self._pedido)
 
     def _roteiro(self) -> Roteiro:
