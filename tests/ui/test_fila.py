@@ -219,7 +219,7 @@ def test_cota_adianta_a_segunda_e_a_primeira_retoma_com_prioridade(qtbot, duas_a
     assert fila.ativo() is None and cham_b == ["run"]
 
 
-def test_formatura_iniciar_direto_recusa(qtbot, settings_tmp, tmp_path, evento):
+def test_formatura_iniciar_direto_sem_trabalho_recusa(qtbot, settings_tmp, tmp_path, evento):
     from roteiro_ia.ui.projeto import ProjetoTab
     from roteiro_ia.ui.worker import Runner
     chamadas, runner = [], Runner()
@@ -229,7 +229,7 @@ def test_formatura_iniciar_direto_recusa(qtbot, settings_tmp, tmp_path, evento):
     assert tab.set_event_folder(evento)
     tab.iniciar()  # ex.: via abrir_existente/continuar_existente
     assert not tab.rodando and tab._worker is None and chamadas == []
-    assert tab.status.banner_erro.text() == "A Formatura chega na próxima etapa."
+    assert tab.status.banner_erro.text() == "Escolha a formatura."
     runner.wait_all(5000)  # a leitura da pasta roda numa thread
 
 

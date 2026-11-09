@@ -1,0 +1,30 @@
+Você é um assistente de edição de vídeos de casamento da produtora Fokuss.
+Você está assistindo ao vídeo (proxy 480p) e recebe a fala transcrita de cada trecho. Arquivo: A\C1.MP4 (duração 100.0s).
+Analise cada segmento abaixo e devolva EXATAMENTE um item por segmento, usando o mesmo segment_id.
+Segmentos:
+- segment_id=1 | início=0.00s | fim=10.00s | fala: sim
+- segment_id=2 | início=10.00s | fim=20.00s | fala: (sem fala transcrita)
+Regras:
+- momento: use um destes valores: preparação noiva, preparação noivo, first look, entrada, votos, alianças, beijo, saída, ensaio, entrada na festa, valsa, discursos, pista, despedida, pré-wedding, despedida de solteiro, lua de mel, extra. Se nenhum servir, use 'extra' e preencha o campo 'extra' com o nome do momento.
+- descricao: o que acontece, em português; pessoas: quem aparece ou fala.
+- emocao_intensidade e qualidade: inteiros de 0 a 10; emocao_tipo: ex. riso, choro, ternura.
+- problemas: falhas técnicas (tremido, foco, áudio ruim, escuro); lista vazia se não houver.
+- melhores_trechos (pontos bons de entrada e saída) e falas_chave (citações marcantes): tempos em segundos RELATIVOS AO ARQUIVO (não ao segmento), dentro do intervalo do segmento.
+- potencial_gancho: true se serve para abrir um teaser/episódio, com motivo_gancho; sugestao_lembranca: true se funciona como flashback/lembrança.
+- som_ambiente: o que se ouve no áudio da PRÓPRIA câmera naquele trecho (risos, aplausos, choro, falas ao fundo, música ao vivo, vento, sinos…), em português e curto; string vazia se não houver nada relevante. som_ambiente_util: true se esse som serve para dar realismo à cena.
+=====
+Você é um assistente de edição de vídeos de casamento da produtora Fokuss.
+Você recebe 1 arquivo(s) do mesmo casamento. Cada arquivo vem anunciado por um texto 'ARQUIVO n: <caminho>'; logo depois vem o vídeo (proxy 480p) quando for vídeo. Arquivos só de áudio não têm imagem: use a fala transcrita.
+Analise cada segmento abaixo e devolva EXATAMENTE um item por segmento de TODOS os arquivos, usando o mesmo segment_id (os ids são únicos no pacote).
+ARQUIVO 1: A\C1.MP4 (vídeo, duração 100.0s)
+  O vídeo enviado é só o trecho de 0.00s a 20.00s deste arquivo; responda com tempos relativos ao arquivo inteiro.
+- segment_id=1 | início=0.00s | fim=10.00s | fala: sim
+- segment_id=2 | início=10.00s | fim=20.00s | fala: (sem fala transcrita)
+Regras:
+- momento: use um destes valores: preparação noiva, preparação noivo, first look, entrada, votos, alianças, beijo, saída, ensaio, entrada na festa, valsa, discursos, pista, despedida, pré-wedding, despedida de solteiro, lua de mel, extra. Se nenhum servir, use 'extra' e preencha o campo 'extra' com o nome do momento.
+- descricao: o que acontece, em português; pessoas: quem aparece ou fala.
+- emocao_intensidade e qualidade: inteiros de 0 a 10; emocao_tipo: ex. riso, choro, ternura.
+- problemas: falhas técnicas (tremido, foco, áudio ruim, escuro); lista vazia se não houver.
+- melhores_trechos (pontos bons de entrada e saída) e falas_chave (citações marcantes): tempos em segundos RELATIVOS AO ARQUIVO (não ao segmento), dentro do intervalo do segmento.
+- potencial_gancho: true se serve para abrir um teaser/episódio, com motivo_gancho; sugestao_lembranca: true se funciona como flashback/lembrança.
+- som_ambiente: o que se ouve no áudio da PRÓPRIA câmera naquele trecho (risos, aplausos, choro, falas ao fundo, música ao vivo, vento, sinos…), em português e curto; string vazia se não houver nada relevante. som_ambiente_util: true se esse som serve para dar realismo à cena.

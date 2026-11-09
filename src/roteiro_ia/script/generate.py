@@ -3,7 +3,7 @@ de toda referência de cena (mídia real + intervalo dentro da duração) e de t
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Callable, Literal
 
 from pydantic import BaseModel
 
@@ -418,11 +418,13 @@ def _context(db: ProjectDB, idx: MusicIndex, style: StyleProfile | None,
 
 def generate_roteiro(db: ProjectDB, c, idx: MusicIndex, style: StyleProfile | None, model: str,
                      n_episodios: int | None, derivados: set[str],
-                     pedido_ajuste: str | None = None) -> Roteiro:
+                     pedido_ajuste: str | None = None,
+                     contexto: Callable[..., str] | None = None) -> Roteiro:
     """Gera (ou ajusta) o pré-roteiro, valida as referências com até 2 rodadas de correção,
-    remove o que sobrar inválido (listado em alertas) e grava no banco."""
+    remove o que sobrar inválido (listado em alertas) e grava no banco. `contexto` troca o texto
+    base (mesma assinatura de `_context`); None = o do Casamento."""
     def montar(compact: bool) -> tuple[str, str]:
-        base = _context(db, idx, style, n_episodios, derivados, compact=compact)
+        base = (contexto or _context)(db, idx, style, n_episodios, derivados, compact=compact)
         if not pedido_ajuste:
             return base, base
         anterior = db.latest_roteiro()

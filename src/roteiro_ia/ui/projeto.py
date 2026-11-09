@@ -119,7 +119,8 @@ class ProjetoTab(QWidget):
         return self.form.set_event_folder(path)
 
     def _pipeline_padrao(self, req: ProjectRequest, s: Settings, eventos) -> Pipeline:
-        return Pipeline(req, s, None, None, eventos, settings_path=self.settings_path)
+        fab = area_por_id(self.area).pipeline or Pipeline
+        return fab(req, s, None, None, eventos, settings_path=self.settings_path)
 
     # ------------------------------------------------------------ execução
     def iniciar(self) -> None:
@@ -128,6 +129,12 @@ class ProjetoTab(QWidget):
         area = area_por_id(self.area)
         if not area.pode_iniciar:  # ex.: abrir_existente chama iniciar() direto
             self.status.banner_erro.mostrar(area.aviso_iniciar)
+            return
+        # o formulário da área pode exigir mais que a pasta (ex.: Formatura: formatura e turma);
+        # vale também quando iniciar() vem direto do "Continuar projeto existente"
+        motivo = getattr(self.form, "motivo_bloqueio", lambda: "")()
+        if motivo:
+            self.status.banner_erro.mostrar(motivo)
             return
         try:
             req = self.form.build_request()

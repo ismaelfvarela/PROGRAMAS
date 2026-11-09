@@ -82,20 +82,36 @@ def _profile_path(s: Settings, area: str = "casamento") -> Path:
     return Path(s.system_dir) / nome
 
 
-def _cache_path(s: Settings, url: str) -> Path:
-    return Path(s.system_dir) / "estilo_cache" / f"{_video_id(url)}.json"
+# prompts (vídeo, agregado) das áreas que estudam o estilo com textos próprios; o Casamento usa
+# _PROMPT_VIDEO/_PROMPT_AGG e o cache na raiz de estilo_cache
+_PROMPTS: dict[str, tuple[str, str]] = {}
 
 
-def _read_cache(s: Settings, url: str) -> VideoStyleNotes | None:
+def registrar_area(area: str, prompt_video: str, prompt_agg: str) -> None:
+    """A área passa a ter prompts próprios e cache em estilo_cache/<area>/."""
+    _PROMPTS[area] = (prompt_video, prompt_agg)
+
+
+def _cache_dir(s: Settings, area: str = "casamento") -> Path:
+    base = Path(s.system_dir) / "estilo_cache"
+    return base / area if area in _PROMPTS else base
+
+
+def _cache_path(s: Settings, url: str, area: str = "casamento") -> Path:
+    return _cache_dir(s, area) / f"{_video_id(url)}.json"
+
+
+def _read_cache(s: Settings, url: str, area: str = "casamento") -> VideoStyleNotes | None:
     try:
-        return VideoStyleNotes.model_validate_json(_cache_path(s, url).read_text(encoding="utf-8"))
+        return VideoStyleNotes.model_validate_json(
+            _cache_path(s, url, area).read_text(encoding="utf-8"))
     except (OSError, ValueError, ValidationError):
         return None
 
 
-def video_em_cache(s: Settings, url: str) -> bool:
+def video_em_cache(s: Settings, url: str, area: str = "casamento") -> bool:
     """True se o vídeo (URL em qualquer formato aceito) já foi analisado e está no cache."""
-    return _video_id(url) is not None and _read_cache(s, url) is not None
+    return _video_id(url) is not None and _read_cache(s, url, area) is not None
 
 
 def load_style_profile(s: Settings, area: str = "casamento") -> StyleProfile | None:
@@ -135,6 +151,7 @@ def build_style_profile(c, s: Settings, model: str | None = None,
         if on_progress:
             on_progress(url, estado, len(all_notes), len(videos))
 
+    prompt_video, prompt_agg = _PROMPTS.get(area, (_PROMPT_VIDEO, _PROMPT_AGG))
     videos, ignored = expand_playlists(urls_estilo(s, area))
     all_notes: list[VideoStyleNotes] = []
     for u in ignored:
@@ -142,7 +159,7 @@ def build_style_profile(c, s: Settings, model: str | None = None,
         prog(u, "ignorado")
     pendentes = []
     for url in videos:  # os do cache contam como feitos na hora
-        n = _read_cache(s, url)
+        n = _read_cache(s, url, area)
         if n is None:
             pendentes.append(url)
         else:
@@ -152,13 +169,13 @@ def build_style_profile(c, s: Settings, model: str | None = None,
         prog(url, "aguardando")
     if pendentes:
         model = model or s.gemini_model_script or c.pick_default_models()[0]
-        safe_mkdir(Path(s.system_dir) / "estilo_cache", s)
+        safe_mkdir(_cache_dir(s, area), s)
     for url in pendentes:
         controle.atual().checkpoint()  # Pausar/Parar entre vídeos (os já analisados ficam no cache)
         prog(url, "analisando")
         part = types.Part.from_uri(file_uri=url, mime_type="video/*")
         try:
-            n = c.generate_json(model, [part], VideoStyleNotes, _PROMPT_VIDEO)
+            n = c.generate_json(model, [part], VideoStyleNotes, prompt_video)
         except QuotaPaused:
             raise
         except Exception as e:  # noqa: BLE001
@@ -166,7 +183,7 @@ def build_style_profile(c, s: Settings, model: str | None = None,
             prog(url, "erro")
             continue
         n = n.model_copy(update={"url": url})
-        safe_write_text(_cache_path(s, url), n.model_dump_json(indent=2), s)
+        safe_write_text(_cache_path(s, url, area), n.model_dump_json(indent=2), s)
         all_notes.append(n)
         prog(url, "feito")
     if not all_notes:
@@ -177,7 +194,7 @@ def build_style_profile(c, s: Settings, model: str | None = None,
     controle.atual().checkpoint()  # Parar antes do perfil agregado não gera perfil incompleto
     model = model or s.gemini_model_script or c.pick_default_models()[0]
     payload = json.dumps([n.model_dump() for n in all_notes], ensure_ascii=False, indent=1)
-    prof = c.generate_json(model, [], StyleProfile, _PROMPT_AGG + payload)
+    prof = c.generate_json(model, [], StyleProfile, prompt_agg + payload)
     prof = prof.model_copy(update={"fontes": [n.url for n in all_notes]})
     safe_write_text(_profile_path(s, area), prof.model_dump_json(indent=2), s)
     return prof
