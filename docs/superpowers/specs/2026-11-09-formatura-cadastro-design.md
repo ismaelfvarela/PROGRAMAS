@@ -1,316 +1,288 @@
-# Formatura 2.1: cadastro, sub-abas, funções das pastas, momentos e estilo (design)
+# Formatura: clipes funcionando (etapas 2.1 + 2.2), design
 
-Data: 2026-11-09. Etapa 2.1 da área Formatura. Ela vem depois da parte 1, as áreas de trabalho
+Data: 2026-11-09. Esta etapa vem depois da plataforma
 (`docs/superpowers/specs/2026-11-09-areas-de-trabalho-design.md`, merge `bfca6f4`). As decisões
-e o histórico das perguntas estão em `docs/formaturas/briefing.md`.
+e o histórico estão em `docs/formaturas/briefing.md`.
+
+A 2.1 (cadastro e preparação) e a 2.2 (roteiro dos clipes) entram juntas. Sem o Iniciar, a 2.1
+sozinha não grava nada. O usuário autorizou: "faça o que for preciso para deixar as formaturas
+funcionando sem interferir no casamento".
 
 ## Objetivo
 
-Ao fim da 2.1, o editor consegue:
+Na área Formatura, o editor:
 
-- cadastrar uma formatura (escola, ano e semestre, cursos com suas turmas, logo e grafismos);
-- preparar projetos de clipe (Oficina, Feira, Prova de toga, Escolha do paraninfo) e de
-  colação, ligados a essa formatura, com as funções de pasta da Formatura;
-- duplicar uma oficina já preparada para outra turma;
-- estudar o estilo de formatura a partir de vídeos de referência, com um prompt próprio.
+1. cadastra a formatura: escola, logo, ano e semestre, cursos com suas turmas e pasta de
+   grafismos;
+2. prepara um **clipe** (Oficina, Feira, Prova de toga ou Escolha do paraninfo) ligado a uma
+   formatura e a uma turma, com as funções de pasta da Formatura;
+3. clica em **Iniciar** e recebe o mesmo que no Casamento: análise, pré-roteiro do clipe, PDF e
+   XML e painel do Premiere;
+4. duplica uma oficina para outra turma, mantendo a ideia e trocando a música;
+5. prepara a **colação** (formatura, local, cidade e turmas). O processamento da colação é a
+   etapa 2.3, e até lá o Iniciar dela fica desligado com um aviso.
 
-O **Iniciar continua desligado** (`FORMATURA.pode_iniciar = False`). Ele liga na 2.2, junto com
-o roteiro dos clipes.
+## Regras
 
-## Regras herdadas da plataforma
+- **O Casamento não se mexe.** O comportamento, os prompts e os arquivos dele ficam idênticos.
+  Os testes do Casamento não são editados.
+- O código novo fica em `src/roteiro_ia/areas/formatura/`.
+- Mudanças em código comum só como **acréscimo com valor padrão** que reproduz o Casamento
+  exatamente (seção "Ganchos").
+- **Testes provisórios da plataforma.** Três testes de `tests/ui/test_areas.py` descrevem a
+  Formatura "ainda sem processar" e são **substituídos** pelos testes do comportamento novo:
+  - `test_areas_registradas_em_ordem`, que verifica `not pode_iniciar`;
+  - `test_formatura_nao_inicia`;
+  - `test_formatura_numera_gemini_como_5`, se a numeração mudar.
 
-- **O Casamento não se mexe.** Nenhum teste existente é editado. Todo código novo fica em
-  `src/roteiro_ia/areas/formatura/`.
-- Se uma etapa comum tiver algo de casamento por dentro, a Formatura faz a própria versão
-  nessa pasta.
-- Mudanças em código comum só quando não há outro jeito. Elas devem ser **acréscimos com valor
-  padrão** que deixam o Casamento exatamente como está. As mudanças desse tipo estão
-  listadas na seção "Ganchos na plataforma".
+  É a única edição em teste existente, e nenhum deles é do Casamento.
 - Nomes de evento sempre `AAAA-MM-DD NOME`.
 
-## Visão geral
+## Interface
 
-```
-Área FORMATURA
- ├─ Clipes      → projetos de Oficina, Feira, Prova de toga e Escolha do paraninfo
- ├─ Colação     → projeto da cerimônia (chega por último)
- ├─ Formaturas  → cadastro (a ficha), usado pelos clipes e pela colação
- ├─ Estilo      → links de formatura (estudo de estilo próprio da Formatura)
- ├─ Trilhas     → comum
- └─ Configurações → comum (+ "Logo da produtora")
-```
+A janela da plataforma tem as abas fixas Projeto, Trilhas, Estilo e Configurações, garantidas
+por `test_trilhas_e_config_sao_uma_so_instancia`, e a fila roda **um projeto por vez** em todas
+as áreas. Por isso a Formatura **não ganha abas novas**. Tudo acontece dentro da aba Projeto:
 
-Uma oficina pode ser gravada até um ano antes da colação. Por isso o cadastro fica **fora dos
-projetos**, e cada projeto guarda só a referência a ele.
+- Card **"Trabalho"**, logo abaixo da pasta do evento:
+  - seletor em segmentos: **Clipes | Colação**;
+  - Clipes: tipo (Oficina, Feira, Prova de toga, Escolha do paraninfo), **formatura** (lista
+    do cadastro, com os botões **Formaturas…** e **+ Nova**), curso e turma (listas tiradas da
+    ficha) e **duração alvo** em minutos;
+  - botão **"Duplicar de uma oficina…"**;
+  - Colação: formatura, local, cidade e as turmas da noite (caixas de marcar, na ordem da
+    ficha).
+- **Formaturas…** abre o `DialogoCadastro`: a lista das fichas, com Nova, Editar e Duplicar.
+  Editar abre o `DialogoFormatura`, com instituição, logo, ano, semestre, uma tabela de cursos
+  e turmas, e pasta de grafismos.
+- A tabela "O que é cada pasta" passa a usar as **funções da Formatura** e lista dois níveis
+  quando a pasta tem dias.
+- O card Entregas, que é do Casamento, continua escondido.
 
 ## Componentes (`src/roteiro_ia/areas/formatura/`)
 
-### `cadastro.py`: a ficha da formatura
+### `cadastro.py`
 
 ```python
 class Curso(BaseModel):
-    nome: str                 # "Curso Técnico em Eletrônica"
-    turmas: list[str]         # ["Manhã", "Tarde", "T106", "T107"], texto livre
+    nome: str
+    turmas: list[str]
 
 class Formatura(BaseModel):
-    id: str                   # gerado: slug(instituição)-AAAA-S-xxxx (4 caracteres aleatórios)
+    id: str = ""                  # gerado ao salvar: slug(instituição)-AAAA-S-xxxx
     instituicao: str
-    logo_escola: str | None   # caminho do arquivo; opcional
+    logo_escola: str | None = None
     ano: int
     semestre: Literal[1, 2]
     cursos: list[Curso]
-    pasta_grafismos: str | None  # vinhetas e logos da escola; opcional
+    pasta_grafismos: str | None = None
 ```
 
-- Gravada em `<system_dir>\FORMATURAS\<id>.json`, com `safe_write_text`.
-- Funções: `listar(s) -> list[Formatura]` (ordem: ano e semestre, do mais novo ao mais antigo,
-  depois instituição), `carregar(s, id) -> Formatura | None`, `salvar(s, f)`,
-  `duplicar(f) -> Formatura` e `nome_exibicao(f)`.
-  - `duplicar` cria um id novo e sugere o semestre seguinte (2026/2 → 2027/1).
-  - `nome_exibicao` devolve, por exemplo, "ESCOLA X — 2026/2".
-- **Validação ao salvar:** instituição não vazia, pelo menos um curso, cada curso com pelo menos
-  uma turma, sem turma repetida no mesmo curso. Logo e grafismos são opcionais. Se o caminho
-  informado não existir, aparece um aviso, mas a gravação não é bloqueada.
-- Os arquivos de logo e grafismos **nunca são escritos**, só lidos.
+- **Arquivo:** `<system_dir>\FORMATURAS\<id>.json`, gravado com `safe_write_text`.
+- `listar(s)`: ordem por ano e semestre, do mais novo ao mais antigo, depois instituição. Um
+  arquivo ilegível é pulado.
+- `carregar(s, id)` devolve `None` se o arquivo não existir ou não puder ser lido.
+- `salvar(s, f)` gera o id se faltar e valida antes de gravar. `ValueError` com mensagem em
+  português quando:
+  - a instituição está vazia;
+  - não há curso;
+  - um curso está sem turma;
+  - há turma repetida no mesmo curso.
+- `avisos(f)`: logo ou grafismos que não existem. Não bloqueia a gravação.
+- `duplicar(f)`: id vazio e o semestre seguinte (2026/2 → 2027/1).
+- `nome_exibicao(f)`: por exemplo "ESCOLA X — 2026/2".
 
-### `tipos.py`: tipos de trabalho
+### `tipos.py`
 
-| Tipo | Sub-aba | Pertence a |
-|---|---|---|
-| `oficina` | Clipes | **uma turma** (obrigatória) |
-| `feira` | Clipes | um curso, ou a escola inteira (curso opcional) |
-| `prova_toga` | Clipes | uma turma, ou a formatura inteira (turma opcional) |
-| `paraninfo` | Clipes | uma turma, ou a formatura inteira (turma opcional) |
-| `colacao` | Colação | a lista de turmas que se formam naquela noite (pelo menos uma) |
-
-Cada tipo tem um nome para exibir e a lista de momentos (ver `momentos.py`).
-
-### `funcoes.py`: funções das pastas
-
-A Formatura tem **as próprias funções**. Cada uma é traduzida para um `Role` comum, para que as
-etapas comuns (inventário, sincronização, transcrição, Premiere) funcionem sem mudança:
-
-| Função da Formatura | Sub-aba | `Role` comum | Observação |
+| Tipo | Grupo | Turma | Duração padrão |
 |---|---|---|---|
-| Câmera | Clipes | `camera` | áudio embutido (microfone direcional) é a fonte dos depoimentos |
-| Câmera ISO | Colação | `camera` | reserva para a íntegra (2.3) |
-| Câmera com áudio principal | Colação | `camera` | cópia de segurança do áudio |
-| Mesa de corte (programa) | Colação | `mesa` | linha principal da íntegra; prioridade máxima na sincronização e na transcrição |
-| Gravador / lapela | ambas | `audio_ambiente` | H1, H4, MIC LAPELA, microfone do mestre de cerimônias; melhor fonte que a câmera |
-| Imagens extras / frias | ambas | `drone` | só imagem; na colação, alimenta o banco de imagens frias (2.3) |
-| Drone | ambas | `drone` | |
-| Ignorar | ambas | `ignorar` | |
+| `oficina` | clipe | obrigatória | 4 min (3 a 5; o editor pode passar disso) |
+| `feira` | clipe | sem turma; curso opcional (vazio = escola inteira) | 8 min |
+| `prova_toga` | clipe | opcional | 3 min |
+| `paraninfo` | clipe | opcional | 3 min |
+| `colacao` | colação | pelo menos uma turma da noite | — |
 
-**Sugestão pelo nome da pasta** (sem diferença entre maiúsculas e minúsculas, olhando palavras
-inteiras):
+### `funcoes.py`
+
+| Função | Grupo | `Role` comum |
+|---|---|---|
+| Câmera | clipe | `camera` |
+| Câmera ISO | colação | `camera` |
+| Câmera com áudio principal | colação | `camera` |
+| Mesa de corte (programa) | colação | `mesa` |
+| Gravador / lapela | ambos | `audio_ambiente` |
+| Imagens extras / frias | ambos | `drone` |
+| Drone | ambos | `drone` |
+| Ignorar | ambos | `ignorar` |
+
+**Sugestão pelo nome da pasta.** Considera a última parte de `DIA\PASTA`, sem diferença entre
+maiúsculas e minúsculas, e procura palavras inteiras:
 
 - `PGM`, `CORTE`, `ATEM` → Mesa de corte.
-- `CAM A`…`CAM Z`, `CAM 1`… e `CAMERA` → Câmera (nos Clipes) ou Câmera ISO (na Colação).
-- `H1`, `H4`, `H5`, `H6`, `ZOOM`, `LAPELA`, `MIC`, `GRAVADOR` → Gravador / lapela.
-- `FRIAS`, `DECORAÇÃO`, `DECORACAO`, `BASTIDORES`, `AMBIENTE` → Imagens extras / frias.
+- `H1`, `H4`, `H5`, `H6`, `ZOOM`, `LAPELA`, `MIC`, `GRAVADOR` → Gravador.
+- `FRIAS`, `DECORAÇÃO`, `DECORACAO`, `BASTIDORES`, `AMBIENTE`, `EXTRAS` → Imagens extras.
 - `DRONE` → Drone.
-- `PROXIES` e `ADOBE PREMIERE PRO…` → Ignorar.
-- Qualquer outro nome → Câmera.
+- `PROXIES`, `ADOBE PREMIERE PRO…` → Ignorar.
+- O resto → Câmera (clipe) ou Câmera ISO (colação).
 
-**Canais da mesa de corte:** "Já misturado" (padrão) ou "L = mesa de som / R = ambiente". O
-valor é guardado no projeto para a 2.3 usar.
+**Pastas com dias:** `listar_pastas(source) -> list[tuple[str, str]]` devolve pares (pasta
+relativa, dia).
 
-**Oficina com vários dias:** a pasta do projeto leva a data do primeiro dia
-(`2026-03-10 OFICINA ESCOLA X T106`), e cada dia fica numa subpasta. A tabela de pastas lista
-os **dois níveis**: as subpastas de cada dia aparecem como `DIA\CAM A`.
+- Uma subpasta direta é um **dia** quando tem subpastas e nenhum arquivo de mídia solto. Nesse
+  caso entram as subpastas dela, como `DIA\CAM A`, com dia = nome da pasta do dia.
+- As outras subpastas entram com dia `"principal"`.
 
-- `FolderAssignment.folder` recebe esse caminho relativo, e `day_label` recebe o nome da pasta
-  do dia.
-- O inventário comum já aceita isso, porque usa `source_dir / folder` e `os.walk`.
-- **Detecção:** uma subpasta direta é tratada como "dia" quando contém outras pastas e nenhum
-  arquivo de mídia solto. Nos outros casos a listagem fica com um nível só, como no Casamento.
+O inventário comum já aceita caminhos relativos em `FolderAssignment.folder`.
 
-### `projeto.py`: dados próprios do projeto da Formatura
-
-O `projeto.json` comum (`ProjectRequest`) não muda. A Formatura grava **ao lado dele** um
-`formatura.json`:
+### `projeto.py`
 
 ```python
 class ProjetoFormatura(BaseModel):
     tipo: TipoTrabalho
     formatura_id: str
-    curso: str | None = None          # oficina/feira/prova_toga/paraninfo
+    curso: str | None = None
     turma: str | None = None
-    funcoes: dict[str, FuncaoFormatura]   # pasta relativa → função da Formatura
+    duracao_min: float | None = None
+    funcoes: dict[str, FuncaoFormatura] = {}
     canais_mesa: Literal["misturado", "L_mesa_R_ambiente"] = "misturado"
-    duplicado_de: str | None = None   # pasta do evento da oficina original
-    seguir_ideia: bool = True         # usado pela 2.2
-    # só na colação:
+    duplicado_de: str | None = None
+    seguir_ideia: bool = True
+    musica: str | None = None          # trilha da biblioteca usada (gravada após o roteiro)
     local: str | None = None
     cidade: str | None = None
-    turmas_colacao: list[tuple[str, str]] = []   # (curso, turma), na ordem da cerimônia
+    turmas_colacao: list[tuple[str, str]] = []
 ```
 
-- A data do evento vem do nome da pasta (`AAAA-MM-DD`), como nas outras áreas.
-- `ProjectRequest.assignments` recebe as funções já traduzidas para `Role`, e o pipeline comum
-  lê só isso.
+- **Arquivo:** `ANALISE\formatura.json`, ao lado do `projeto.json`. Funções `salvar_projeto`,
+  `carregar_projeto(analysis_dir)` e `caminho(analysis_dir)`.
+- **`RequestFormatura(ProjectRequest)`** (dataclass) leva o `ProjetoFormatura` em memória do
+  formulário até o pipeline. O `projeto.json` é o mesmo do comum.
+- `musicas_usadas(s, formatura_id, exceto)`: as `musica` de outros projetos da mesma formatura,
+  achados por `recentes.listar(s, discos, area="formatura")`.
 
-### `momentos.py`: momentos por tipo
+### `momentos.py`
 
-`MOMENTOS_FORMATURA` fica como está, porque é usado pelos testes da plataforma. Entram:
+- `MOMENTOS_FORMATURA` fica como está.
+- `MOMENTOS_POR_TIPO` traz as listas aprovadas (seção 3 do briefing), cada uma terminando em
+  "extra".
+- `PROBLEMAS_TECNICOS = ["chicote", "desfocado", "mal enquadrado", "tremido", "escuro"]`.
 
-- `MOMENTOS_POR_TIPO: dict[TipoTrabalho, list[str]]`:
-  - **Oficina:** chegada e ambiente, alunos trabalhando, detalhes (mãos, ferramentas, peças),
-    professor ensinando, depoimento, interação e risadas, turma reunida, momento final.
-  - **Feira:** visão geral da feira, estande ou projeto, aluno explicando o projeto,
-    demonstração funcionando, visitantes, equipe reunida.
-  - **Prova de toga:** vestindo a beca, ajudando o colega, espelho e detalhes, reações, fotos em
-    grupo, falas.
-  - **Escolha do paraninfo:** anúncio, reação do escolhido, falas, turma reunida.
-  - **Colação:** as 10 partes da cerimônia do briefing, mais plateia e família, emoção, beca
-    jogada e comemoração.
-- `PROBLEMAS_TECNICOS = ["chicote", "desfocado", "mal enquadrado", "tremido", "escuro"]`,
-  vocabulário que a análise da 2.2 usa para aplicar a regra de qualidade.
+### `estilo.py`: prompts de estilo da Formatura
 
-A análise do Gemini com esses momentos é feita na 2.2, numa versão própria de
-`gemini/analysis.py` dentro desta pasta.
+- **Reaproveita os modelos comuns.** `VideoStyleNotes` e `StyleProfile` servem bem:
+  "episódio" = clipe, "gancho" = fechamento, "teaser/trailer" = estrutura por tipo. Assim a
+  análise e o roteiro usam o perfil sem conversão.
+- **Prompts próprios** de vídeo e de agregado, para vídeos de formatura da Fokuss: clipe de
+  oficina, feira, prova de toga, escolha do paraninfo, abertura ou encerramento da colação, e
+  íntegra. São registrados no `gemini/style.py` por `registrar_area("formatura", PROMPT_VIDEO,
+  PROMPT_AGG)`.
+- **Cache próprio** em `estilo_cache\formatura\`.
 
-### `estilo.py`: estudo de estilo da Formatura (pendência da plataforma)
+### `analise.py`: textos da análise
 
-Hoje `gemini/style.py` usa um prompt de **casamento**, e o cache por vídeo
-(`<system_dir>\estilo_cache\<id>.json`) é **comum às áreas**. A Formatura passa a ter a própria
-versão:
+`TEXTOS_POR_TIPO: dict[TipoTrabalho, TextosAnalise]`:
 
-- Reaproveita sem mudança `expand_playlists`, `urls_estilo(s, "formatura")`, o cliente Gemini,
-  o `controle` (Pausar/Parar) e a gravação segura.
-- **Prompts próprios.**
-  - Por vídeo: "vídeo de formatura publicado pela Fokuss (clipe de oficina, feira, prova de
-    toga, escolha do paraninfo, abertura ou encerramento da colação, ou íntegra)". Ele descreve
-    ritmo, abertura e cartela, uso de falas e depoimentos, trilha e energia, cor e fechamento,
-    sem descrever pessoas.
-  - Agregado: perfil por tipo de clipe.
-- **Notas e perfil próprios:**
-  - `NotasEstiloFormatura` com `tipo` de formatura e os mesmos campos técnicos, menos o
-    "gancho para o próximo episódio".
-  - `PerfilEstiloFormatura` com duração média e ritmo **por tipo**, padrões de abertura e
-    cartela, uso de falas, trilhas, cor, fechamento e resumo.
-- **Cache próprio:** `<system_dir>\estilo_cache\formatura\<id>.json`. Um vídeo estudado como
-  casamento não serve para a Formatura, e vice-versa.
-- **Perfil:** `<system_dir>\perfil_estilo_formatura.json`, o mesmo nome que a plataforma já
-  usa para a área.
-- Funções com a mesma assinatura das comuns: `video_em_cache`, `load_style_profile`,
-  `build_style_profile`.
+- papel: "Você é um assistente de edição de vídeos de formatura da produtora Fokuss. Este
+  material é de um clipe de <tipo>.";
+- evento: "da mesma formatura";
+- momentos do tipo;
+- linha de problemas: "falhas técnicas (chicote, desfocado, mal enquadrado, tremido, escuro,
+  áudio ruim)".
 
-## Ganchos na plataforma (acréscimos com padrão)
+### `roteiro.py`: contexto do roteiro do clipe
 
-1. **`Area` ganha três campos opcionais** (`areas/base.py`):
-   - `abas_projeto: tuple[tuple[str, type], ...] = ()`: abas de projeto da área, no formato
-     (nome, formulário). Vazio quer dizer uma aba "Projeto" com `formulario`, que é o
-     comportamento atual.
-   - `abas_extras: tuple[tuple[str, Callable], ...] = ()`: abas que não são de projeto, no
-     formato (nome, fábrica do widget). A Formatura usa para "Formaturas".
-   - `estilo: ModuleType | None = None`: módulo de estudo de estilo da área. `None` quer dizer
-     `gemini.style`.
+`contexto_clipe(pf, ficha, ideia_json, excluir) -> Callable` devolve a função de contexto que
+`generate_roteiro` usa no lugar do texto do Casamento. As regras:
 
-   O Casamento não passa nenhum deles e fica igual.
-2. **`MainWindow` e `ProjetoTab`** (`ui/app.py`, `ui/projeto.py`):
-   - `MainWindow` cria uma `ProjetoTab` para cada item de `abas_projeto` e depois as
-     `abas_extras`.
-   - `ProjetoTab` aceita um `formulario` opcional (padrão `area.formulario`).
-   - A lista de recentes de cada aba de projeto usa `formulario.aceita_projeto(pasta_trabalho)`,
-     um método de classe opcional que por padrão aceita tudo. Assim a aba Clipes mostra só
-     clipes, e a Colação só colações.
-   - `projetos()`, a fila e as marcas do seletor passam a contar todas as abas de projeto.
-3. **Estudo de estilo e pipeline** (`ui/abas.py` `EstiloTab`, `pipeline.py`): onde hoje chamam
-   `gemini.style`, passam a chamar `area_por_id(area).estilo or gemini.style`.
-4. **Configurações** (`config.py`, `ui/abas.py` `ConfigTab`): novo
-   `Settings.logo_produtora: str = ""`, com um campo para escolher o arquivo. O Casamento não lê
-   esse campo.
+1. **Uma peça só:** `tipo "episodio"`, `numero 1`, `gancho null`. O título é "<Tipo> —
+   <Curso> <Turma>".
+2. **Duração** perto de `duracao_min` minutos.
+3. **Abertura:** os primeiros segundos ficam reservados para a cartela com instituição,
+   curso, turma, semestre e ano. Os dados vêm no prompt. O roteiro indica a cena de fundo.
+4. **Qualidade:** nada de chicote, desfocado ou mal enquadrado. O assunto vale mais que a
+   técnica: se um momento importante só existe numa imagem imperfeita, ele entra, pelo menor
+   tempo possível, com alerta.
+5. **Música comercial, popular e moderna** (público jovem):
+   - 2 a 3 opções da biblioteca, só da pasta de músicas do projeto;
+   - sugestões pelo nome com `origem "popular"`, avisando que podem não ser as da semana;
+   - cortes no ritmo da trilha.
+6. **Por tipo:**
+   - Oficina: trabalho na oficina, mais depoimentos.
+   - Feira: documental, guiada pelas falas dos alunos explicando os projetos.
+   - Prova de toga e Paraninfo: trilha e só os áudios de assuntos importantes.
+7. **Duplicado com `seguir_ideia`:** o roteiro aprovado da original entra como "IDEIA DA
+   ORIGINAL". O clipe mantém os assuntos e a ordem dos blocos, mas usa **outra música**, e o
+   ritmo e as cenas seguem a trilha nova.
 
-Nenhuma dessas mudanças altera o comportamento do Casamento, e os testes atuais seguem
-passando sem edição.
+As trilhas em `excluir` (`musicas_usadas`) saem da lista enviada ao Gemini.
 
-## Interface (`areas/formatura/ui/`)
+### `pipeline.py`
 
-- **`SeletorFormatura`** (widget comum às duas sub-abas): lista de formaturas do cadastro, com
-  os botões "+ Nova" e "Editar", que abrem o `DialogoFormatura`. Abaixo dela vêm os campos que
-  dependem do tipo: curso e turma em listas preenchidas pela ficha, ou, na colação, a lista de
-  turmas com caixas de marcar.
-- **`DialogoFormatura`**: edita a ficha, com instituição, logo (escolher arquivo), ano,
-  semestre, cursos e turmas (tabela com acrescentar, remover e renomear) e pasta de grafismos.
-- **`FormularioClipe(FormularioFormatura)`**: aba Clipes.
-  - Escolhe o tipo (Oficina, Feira, Prova de toga, Paraninfo), a formatura, o curso e a turma.
-  - Tem a tabela de pastas com as funções da Formatura (dois níveis quando houver dias), a
-    pasta de músicas (campo comum) e o modo Gemini.
-  - Botão **"Duplicar de uma oficina…"**:
-    - lista as oficinas já preparadas da mesma área;
-    - copia formatura, tipo, pasta de músicas, modo Gemini e grafismos;
-    - pede a pasta nova e a turma nova;
-    - grava `duplicado_de` e `seguir_ideia` (marcado por padrão, com o texto "Seguir a ideia da
-      original: mesmos assuntos e ordem, com música nova, e ritmo e cenas pela trilha nova").
-  - `aceita_projeto`: o `formatura.json` existe e o tipo é de clipe.
-- **`FormularioColacao(FormularioFormatura)`**: aba Colação.
-  - Escolhe a formatura, local, cidade e as turmas da noite (ordem arrastável).
-  - Tem a tabela de pastas com as funções da Colação, os canais da mesa de corte e a pasta de
-    músicas.
-  - Mostra, só para leitura, as oficinas já preparadas daquelas turmas.
-  - `aceita_projeto`: o tipo é colação.
-- **`CadastroTab`** (aba Formaturas): lista com Nova, Editar e Duplicar, e quantos projetos usam
-  cada ficha.
-- `FORMATURA.formulario` passa a ser `FormularioClipe`, que herda de `FormularioFormatura`.
-  Assim os testes da plataforma (Iniciar desligado com o aviso, numeração do card Gemini, pasta
-  fora do padrão recusada) continuam valendo.
-- `FORMATURA` ganha `abas_projeto=(("Clipes", FormularioClipe), ("Colação",
-  FormularioColacao))`, `abas_extras=(("Formaturas", CadastroTab),)` e
-  `estilo=areas.formatura.estilo`.
+`PipelineFormatura(Pipeline)` reaproveita todas as etapas e muda só estas:
 
-## Fluxo de dados
+- `prepare` e `run` gravam também o `formatura.json`.
+- `_st_estilo` e `_perfil` continuam os do comum. O `area="formatura"` faz o `style.py` usar os
+  prompts e o cache registrados.
+- `_st_analise` chama `analyze_event(..., textos=TEXTOS_POR_TIPO[tipo])`.
+- `_st_roteiro`:
+  - usa o índice filtrado pela pasta de músicas e sem as músicas usadas;
+  - chama `generate_roteiro(..., n_episodios=1, derivados=set(), contexto=contexto_clipe(...))`;
+  - depois grava `musica` no `formatura.json`.
+- Tipo `colacao`: `PipelineError("A colação chega na próxima etapa (2.3).")` antes de qualquer
+  etapa. Na prática o formulário já impede o Iniciar.
 
-1. O editor cria ou escolhe a formatura, e a ficha é gravada em `FORMATURAS\`.
-2. Na aba Clipes ou Colação, escolhe a pasta do evento. O sistema lista as pastas (um ou dois
-   níveis), sugere as funções e o editor confirma.
-3. O editor salva a preparação. O sistema grava `projeto.json` (comum, com `area="formatura"`
-   e os `Role` traduzidos) e `formatura.json` (dados da Formatura).
-4. Na 2.2, o pipeline da Formatura lê os dois arquivos e a ficha.
+## Ganchos no código comum (acréscimos com padrão)
+
+| Arquivo | Acréscimo | Padrão = Casamento |
+|---|---|---|
+| `areas/base.py` | `Area.pipeline: Callable \| None = None` (fábrica `(req, s, eventos, settings_path) -> Pipeline`) | `None` = `Pipeline` |
+| `ui/projeto.py` | `_pipeline_padrao` usa `area.pipeline` quando existe; `abrir_existente` deixa o formulário completar o pedido (`form.load_request` recebe o `req` lido, e o formulário da Formatura lê o `formatura.json`) | igual |
+| `gemini/analysis.py` | `TextosAnalise` (papel, evento, momentos, problemas) e o parâmetro `textos` em `build_prompt`, `build_pack_prompt` e `analyze_event` | `TEXTOS_CASAMENTO`, com os textos atuais idênticos |
+| `script/generate.py` | parâmetro `contexto: Callable[..., str] \| None` em `generate_roteiro` | `_context` |
+| `gemini/style.py` | `registrar_area(area, prompt_video, prompt_agg)`; cache em `estilo_cache\<area>\` para área registrada; `video_em_cache(s, url, area="casamento")` | Casamento: prompts e cache de hoje |
+| `ui/abas.py` | `EstiloTab._icones` passa `**self._kw_area()` a `video_em_cache` | igual no Casamento |
+
+`FORMATURA` passa a ter `pode_iniciar=True` e `pipeline=PipelineFormatura`. O formulário
+desliga o Iniciar quando falta algo, ou na colação, e mostra o motivo em `lbl_aviso`.
 
 ## Erros e casos de borda
 
-- **Ficha não encontrada** (apagada ou movida): o projeto abre com o aviso "Formatura não
-  encontrada. Escolha outra." e os demais dados ficam intactos.
-- **Turma removida da ficha mas usada num projeto:** o projeto mantém o nome antigo e mostra
-  "turma não está mais na ficha".
-- **Logo, grafismos ou logo da produtora que sumiram:** aviso, sem bloquear.
+- **Ficha não encontrada ao abrir um projeto:** aviso "Formatura não encontrada. Escolha
+  outra." Iniciar fica desligado até escolher outra.
+- **Turma que saiu da ficha:** continua no projeto, com o aviso "turma não está mais na ficha".
+- **Oficina sem turma, clipe sem formatura ou colação sem turma:** Iniciar desligado, com o
+  que falta em `lbl_aviso`.
 - **Duplicar com a mesma pasta da original:** recusado com a mensagem "Escolha a pasta da nova
-  turma".
-- **Oficina sem turma, colação sem turmas ou clipe sem formatura:** o formulário não permite
-  salvar e diz o que falta.
-- **Pasta fora do padrão `AAAA-MM-DD NOME`:** recusada com a mensagem de sempre.
-- **Edição da mesma ficha em duas máquinas:** vale a última gravação. Isso fica para a etapa 3.
+  turma."
+- **Nenhuma oficina para duplicar:** mensagem "Ainda não há oficina preparada para duplicar."
+- **Pasta de músicas vazia, ou todas as músicas já usadas:** o roteiro segue só com sugestões
+  pelo nome, e entra um alerta no roteiro.
+- **Logo ou grafismos sumiram:** aviso, sem bloquear.
 
 ## Testes
 
-- **Todos os testes atuais passam sem edição**, incluindo `tests/ui/test_areas.py`.
+- Todos os testes atuais passam, menos os provisórios citados nas Regras, que são substituídos.
 - Novos testes, em `tests/areas/formatura/`:
-  - cadastro: criar, salvar, carregar, listar em ordem, duplicar (id novo e semestre
-    seguinte), validação (sem curso, turma repetida), logo inexistente como aviso;
-  - sugestão de função: `CAM A`, `CAM 1`, `PGM`, `CORTE`, `ATEM`, `H1`, `H4`, `MIC LAPELA`,
-    `FRIAS`, `DRONE`, `Proxies`; Câmera nos Clipes e Câmera ISO na Colação;
-  - tradução função → `Role`;
-  - oficina com vários dias: detecção dos dias, `folder` como `DIA\CAM A` e `day_label`, e o
-    inventário comum achando as mídias;
-  - `formatura.json`: gravar e ler; projeto com ficha apagada; turma removida;
-  - duplicar oficina: campos copiados, pasta igual recusada, `seguir_ideia` marcado;
-  - estilo: prompts de formatura, cache em `estilo_cache\formatura\`, vídeo no cache de
-    casamento que não conta para a Formatura;
-  - ganchos: Casamento com uma aba "Projeto", Formatura com Clipes, Colação e Formaturas;
-    recentes filtrados por aba; `EstiloTab` da Formatura chamando o estudo da Formatura;
-    campo Logo da produtora salvo.
-- Por último, abrir o programa de verdade, criar uma ficha, preparar uma oficina de dois dias,
-  duplicá-la para outra turma e preparar uma colação.
+  - cadastro;
+  - tipos;
+  - sugestão de função e listagem com dias;
+  - `formatura.json` e `musicas_usadas`;
+  - textos da análise: o prompt da Formatura cita formatura e os momentos do tipo, e o do
+    Casamento fica idêntico;
+  - contexto do roteiro: uma peça, duração, cartela, qualidade, música comercial, ideia da
+    original, trilhas excluídas;
+  - pipeline: grava `formatura.json`, usa os textos e o contexto, grava `musica`, recusa a
+    colação;
+  - formulário: tipo e turma ligam o Iniciar, a colação mostra o aviso, o pedido leva o
+    `ProjetoFormatura`, o projeto reaberto preenche tudo, o duplicar copia e recusa a mesma
+    pasta;
+  - diálogos do cadastro;
+  - estilo: cache separado e prompts da Formatura.
+- **Por último:** abrir o programa, criar uma ficha, preparar uma oficina de dois dias e rodar
+  com um material curto de teste até o PDF e o XML.
 
-## Fora da 2.1
+## Fora desta etapa
 
-- Roteiro e montagem dos clipes, música nova ao duplicar, regra de qualidade aplicada e
-  análise Gemini com os momentos da Formatura (2.2). **Na 2.2, ligar o Iniciar contradiz dois
-  testes da plataforma** (`test_areas_registradas_em_ordem` e `test_formatura_nao_inicia`),
-  que descrevem o estado provisório. A 2.2 precisa decidir com o usuário como tratar isso.
-- Íntegra da colação: correção automática, imagens frias, separação em partes e entrega no
-  G (2.3).
-- Abertura com o grande final e encerramento (2.4).
-- Cartela (2.5, depois dos vídeos de referência).
-- Várias máquinas (etapa 3).
+- Íntegra da colação (2.3), abertura e encerramento (2.4), cartela visual (2.5) e várias
+  máquinas (etapa 3).
+- O campo "Logo da produtora" entra na 2.4, que é quem usa.
