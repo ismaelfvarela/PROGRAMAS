@@ -214,3 +214,15 @@ def test_ajuste_da_colacao_reaproveita_medidas(tmp_path, monkeypatch):
     pipe.close()
     assert len(medicoes) == 1 and pedidos == [None, "o hino começa em 0:00:30"]
     assert plano.partes[0].cortes == [(10.5, 19.5)]
+
+
+def test_colacao_nao_precisa_de_musica(tmp_path):
+    pipe, s, _ = _pipe(tmp_path, tipo="colacao", nome="2026-12-10 COLACAO ESCOLA X",
+                       funcoes={"PGM": "mesa_corte"})
+    s.music_root = str(tmp_path / "SEM_HD_M")  # M: desconectado e índice vazio
+    pipe.s.music_root = s.music_root
+    try:
+        assert pipe._st_trilhas() == "não usado na colação"
+        assert pipe._st_estilo() == "não usado na colação"
+    finally:
+        pipe.close()

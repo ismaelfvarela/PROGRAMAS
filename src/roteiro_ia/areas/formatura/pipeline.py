@@ -84,6 +84,11 @@ class PipelineFormatura(Pipeline):
             return "não usado na colação"
         return super()._st_estilo()
 
+    def _st_trilhas(self) -> str:
+        if self._colacao():  # a íntegra não leva música: não depende do HD de músicas
+            return "não usado na colação"
+        return super()._st_trilhas()
+
     def _rels_frias(self) -> set[str]:
         pf = self.projeto()
         pastas = {p for p, f in pf.funcoes.items() if f == FuncaoFormatura.extras}
