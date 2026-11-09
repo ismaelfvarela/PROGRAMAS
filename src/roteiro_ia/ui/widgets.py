@@ -1,9 +1,11 @@
 """Peças reutilizáveis da janela: cartão, faixa de aviso, lista de etapas e tabela de subpastas."""
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QPolygonF
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QHBoxLayout, QHeaderView,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QProgressBar, QPushButton, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -28,6 +30,63 @@ def set_prop(w: QWidget, name: str, value) -> None:
         repolish(w)
 
 
+class CampoPastaMusicas(QWidget):
+    """Pasta de músicas do projeto: mostra o caminho, deixa escolher outra ou voltar ao padrão."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._padrao = ""
+        self._pasta: str | None = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        linha = QHBoxLayout()
+        linha.setSpacing(8)
+        self.lbl_caminho = QLabel()
+        self.lbl_caminho.setObjectName("caminho")
+        self.btn_escolher = QPushButton("Escolher…")
+        self.btn_padrao = QPushButton("Usar padrão")
+        linha.addWidget(self.lbl_caminho, 1)
+        linha.addWidget(self.btn_escolher)
+        linha.addWidget(self.btn_padrao)
+        lay.addLayout(linha)
+        self.aviso = QLabel("Pasta de músicas não encontrada. O roteiro segue sem músicas dela.")
+        self.aviso.setProperty("estado", "aviso")
+        self.aviso.setWordWrap(True)
+        self.aviso.hide()
+        lay.addWidget(self.aviso)
+        self.btn_escolher.clicked.connect(self._escolher)
+        self.btn_padrao.clicked.connect(lambda: self.set_pasta(None))
+        self._atualizar()
+
+    def pasta(self) -> str | None:
+        """None quando está no padrão da área."""
+        return self._pasta
+
+    def set_pasta(self, p: str | None) -> None:
+        self._pasta = p or None
+        self._atualizar()
+
+    def set_padrao(self, p: str) -> None:
+        self._padrao = p
+        self._atualizar()
+
+    def _escolher(self) -> None:
+        atual = self._pasta or self._padrao
+        d = QFileDialog.getExistingDirectory(
+            self, "Escolha a pasta de músicas", atual if os.path.isdir(atual) else "")
+        if d:
+            self.set_pasta(os.path.normpath(d))
+
+    def _atualizar(self) -> None:
+        mostrada = self._pasta or self._padrao
+        self.lbl_caminho.setText(mostrada or "Nenhuma pasta de músicas")
+        self.lbl_caminho.setToolTip(mostrada)
+        self.btn_padrao.setEnabled(self._pasta is not None)
+        self.aviso.setVisible(bool(mostrada) and not os.path.isdir(mostrada))
+        repolish(self.aviso)
+
+
 class Card(QFrame):
     """Cartão com título (e número do passo, se houver); o conteúdo vai em `body`."""
 
@@ -39,10 +98,12 @@ class Card(QFrame):
         lay.setSpacing(10)
         head = QHBoxLayout()
         head.setSpacing(10)
+        self.lbl_numero: QLabel | None = None
         if numero is not None:
             n = QLabel(str(numero))
             n.setObjectName("numeroPasso")
             head.addWidget(n)
+            self.lbl_numero = n
         t = QLabel(titulo)
         t.setObjectName("tituloCard")
         head.addWidget(t)
@@ -52,6 +113,10 @@ class Card(QFrame):
         self.body = QVBoxLayout()
         self.body.setSpacing(8)
         lay.addLayout(self.body)
+
+    def set_numero(self, numero: int) -> None:
+        if self.lbl_numero is not None:
+            self.lbl_numero.setText(str(numero))
 
 
 class Banner(QLabel):

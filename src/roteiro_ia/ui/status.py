@@ -58,6 +58,16 @@ class StatusPanel(QWidget):
         cota.addStretch(1)
         self.acoes_cota.hide()
         lay.addWidget(self.acoes_cota)
+        # projeto esperando a vez na fila (outro projeto está rodando)
+        self.btn_tirar_fila = QPushButton("Tirar da fila")
+        self.btn_tirar_fila.setToolTip("Desiste de esperar: o projeto sai da fila e não começa "
+                                       "sozinho")
+        self.btn_tirar_fila.hide()
+        fila = QHBoxLayout()
+        fila.setContentsMargins(0, 0, 0, 0)
+        fila.addWidget(self.btn_tirar_fila)
+        fila.addStretch(1)
+        lay.addLayout(fila)
 
         self.painel_final = Card("Pronto")
         acoes = QHBoxLayout()

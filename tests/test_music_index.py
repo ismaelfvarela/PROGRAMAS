@@ -515,3 +515,61 @@ def test_beat_this_recebe_o_audio_ja_carregado(tmp_path):
     info = analyze_track(f, tr, carregar_modelos=False)
     assert visto["sr"] == SR and visto["n"] == pytest.approx(8 * SR, abs=SR // 10)
     assert info.beats_s == [0.5, 1.0]
+
+
+def test_update_index_com_root_varre_so_a_pasta(tmp_path):
+    from pathlib import Path
+    s = _settings(tmp_path)
+    m = tmp_path / "musicas"
+    (m / "A").mkdir(parents=True)
+    (m / "B").mkdir()
+    _click(m / "A" / "x.wav")
+    _click(m / "B" / "y.wav")
+    idx = MusicIndex(tmp_path / "t.db", s)
+    assert update_index(s, idx, tracker=LibrosaTracker(), root=m / "A") == 1
+    assert [Path(t.path).name for t in idx.all()] == ["x.wav"]
+
+
+def test_update_index_com_root_nao_remove_trilhas_de_fora(tmp_path):
+    from pathlib import Path
+    s = _settings(tmp_path)
+    m = tmp_path / "musicas"
+    (m / "A").mkdir(parents=True)
+    (m / "B").mkdir()
+    _click(m / "A" / "x.wav")
+    _click(m / "B" / "y.wav")
+    idx = MusicIndex(tmp_path / "t.db", s)
+    update_index(s, idx, tracker=LibrosaTracker())
+    update_index(s, idx, tracker=LibrosaTracker(), root=m / "A")
+    assert sorted(Path(t.path).name for t in idx.all()) == ["x.wav", "y.wav"]
+
+
+def test_indice_filtrado_inclui_subpastas_e_ignora_resto(tmp_path):
+    from pathlib import Path
+    from roteiro_ia.music_index import IndiceFiltrado
+    s = _settings(tmp_path)
+    m = tmp_path / "musicas"
+    idx = MusicIndex(tmp_path / "t.db", s)
+    import os
+    for rel in ("COM/a.wav", "COM/sub/b.wav", "OUTRA/c.wav", "COMPLETA/d.wav"):
+        p = os.path.abspath(m / rel)
+        idx.upsert(TrackInfo(path=p, bpm=120, beats_s=[0.5], downbeats_s=[0.5], energy=[0.1],
+                             duration_s=10, has_vocals=False, perfil="calma", mtime=0))
+    f = IndiceFiltrado(idx, m / "com")  # caixa diferente de propósito
+    assert sorted(Path(t.path).name for t in f.all()) == ["a.wav", "b.wav"]
+    assert f.get(os.path.abspath(m / "OUTRA" / "c.wav")) is not None  # delegação
+
+
+def test_update_index_com_root_de_grafia_diferente_nao_remove_nem_reanalisa(tmp_path):
+    from pathlib import Path
+    s = _settings(tmp_path)
+    m = tmp_path / "musicas"
+    (m / "A").mkdir(parents=True)
+    _click(m / "A" / "x.wav")
+    idx = MusicIndex(tmp_path / "t.db", s)
+    assert update_index(s, idx, tracker=LibrosaTracker(), root=m / "A") == 1
+    antes = [t.path for t in idx.all()]
+    # mesma pasta com a caixa trocada (no Windows o os.walk devolve a grafia do root)
+    assert update_index(s, idx, tracker=LibrosaTracker(), root=m / "a") == 0
+    assert [t.path for t in idx.all()] == antes
+    assert Path(antes[0]).name == "x.wav"

@@ -132,3 +132,44 @@ def test_config_maximo_de_video_por_chamada(qtbot, settings_tmp, tmp_path):
     w.sp_pacote.setValue(900)
     assert w.salvar()
     assert load_settings(tmp_path / "SISTEMA" / "config.json").gemini_pacote_max_s == 900
+
+
+def test_aba_estilo_formatura_grava_links_proprios(qtbot, settings_tmp, tmp_path):
+    from roteiro_ia.config import urls_estilo
+    from roteiro_ia.ui.abas import EstiloTab
+    from roteiro_ia.ui.worker import Runner
+    s = settings_tmp
+    s.style_urls = ["https://youtu.be/c"]
+    runner = Runner()
+    aba = EstiloTab(s, tmp_path / "SISTEMA" / "config.json", runner, area="formatura")
+    qtbot.addWidget(aba)
+    assert aba.lista.count() == 0
+    aba.edit_url.setText("https://youtu.be/f")
+    aba.adicionar()
+    assert s.style_urls == ["https://youtu.be/c"]
+    assert urls_estilo(s, "formatura") == ["https://youtu.be/f"]
+    runner.wait_all(5000)
+
+
+def test_aba_estilo_formatura_gera_com_a_area(aba, qtbot, monkeypatch):
+    from roteiro_ia.gemini import client as gc
+    from roteiro_ia.gemini import style as st
+    from roteiro_ia.ui.abas import EstiloTab
+    from roteiro_ia.ui.worker import Runner
+    visto = {}
+
+    def fake_build(c, s, model=None, on_progress=None, area="casamento"):
+        visto["area"] = area
+        return _fake_profile([U1])
+
+    monkeypatch.setattr(gc, "GeminiClient", lambda s: object())
+    monkeypatch.setattr(st, "build_style_profile", fake_build)
+    runner = Runner()
+    w = EstiloTab(aba.s, aba.settings_path, runner, area="formatura")
+    qtbot.addWidget(w)
+    w.edit_url.setText(U1)
+    w.adicionar()
+    w.gerar()
+    qtbot.waitUntil(lambda: w.btn_gerar.text() == "Gerar perfil", timeout=5000)
+    assert visto["area"] == "formatura"
+    runner.wait_all(5000)

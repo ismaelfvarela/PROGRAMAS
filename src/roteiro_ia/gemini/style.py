@@ -12,7 +12,7 @@ from google.genai import types
 from pydantic import BaseModel, ValidationError
 
 from roteiro_ia import controle
-from roteiro_ia.config import Settings
+from roteiro_ia.config import Settings, urls_estilo
 from roteiro_ia.gemini.client import QuotaPaused
 from roteiro_ia.safety import safe_mkdir, safe_write_text
 
@@ -77,8 +77,9 @@ def expand_playlists(urls: list[str]) -> tuple[list[str], list[str]]:
     return videos, ignored
 
 
-def _profile_path(s: Settings) -> Path:
-    return Path(s.system_dir) / "perfil_estilo.json"
+def _profile_path(s: Settings, area: str = "casamento") -> Path:
+    nome = "perfil_estilo.json" if area == "casamento" else f"perfil_estilo_{area}.json"
+    return Path(s.system_dir) / nome
 
 
 def _cache_path(s: Settings, url: str) -> Path:
@@ -97,9 +98,9 @@ def video_em_cache(s: Settings, url: str) -> bool:
     return _video_id(url) is not None and _read_cache(s, url) is not None
 
 
-def load_style_profile(s: Settings) -> StyleProfile | None:
+def load_style_profile(s: Settings, area: str = "casamento") -> StyleProfile | None:
     try:
-        return StyleProfile.model_validate_json(_profile_path(s).read_text(encoding="utf-8"))
+        return StyleProfile.model_validate_json(_profile_path(s, area).read_text(encoding="utf-8"))
     except (OSError, ValueError, ValidationError):
         return None
 
@@ -126,14 +127,15 @@ ESTADOS = ("aguardando", "analisando", "feito", "erro", "ignorado")
 
 
 def build_style_profile(c, s: Settings, model: str | None = None,
-                        on_progress: ProgressoVideo | None = None) -> StyleProfile:
+                        on_progress: ProgressoVideo | None = None,
+                        area: str = "casamento") -> StyleProfile:
     """`on_progress(url, estado, feitos, total)`: estados em ESTADOS; `url` é a canônica
     (watch?v=) para vídeos e a original para as ignoradas; `feitos` conta só os analisados."""
     def prog(url: str, estado: str) -> None:
         if on_progress:
             on_progress(url, estado, len(all_notes), len(videos))
 
-    videos, ignored = expand_playlists(s.style_urls)
+    videos, ignored = expand_playlists(urls_estilo(s, area))
     all_notes: list[VideoStyleNotes] = []
     for u in ignored:
         log.warning("URL ignorada (playlist ou link inválido; adicione os vídeos individualmente): %s", u)
@@ -177,5 +179,5 @@ def build_style_profile(c, s: Settings, model: str | None = None,
     payload = json.dumps([n.model_dump() for n in all_notes], ensure_ascii=False, indent=1)
     prof = c.generate_json(model, [], StyleProfile, _PROMPT_AGG + payload)
     prof = prof.model_copy(update={"fontes": [n.url for n in all_notes]})
-    safe_write_text(_profile_path(s), prof.model_dump_json(indent=2), s)
+    safe_write_text(_profile_path(s, area), prof.model_dump_json(indent=2), s)
     return prof

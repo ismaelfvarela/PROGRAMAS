@@ -12,7 +12,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Literal
 
 from roteiro_ia import controle
-from roteiro_ia.config import Settings, save_settings
+from roteiro_ia.config import Settings, pasta_musicas_padrao, save_settings, urls_estilo
 from roteiro_ia.controle import Interrompido
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.gemini.analysis import analises_desatualizadas, analyze_event
@@ -22,7 +22,7 @@ from roteiro_ia.inventory import scan
 from roteiro_ia.media.audio import analyze_audio
 from roteiro_ia.media.proxies import make_proxies
 from roteiro_ia.models import FolderAssignment, Role
-from roteiro_ia.music_index import MusicIndex, trilhas_antigas, update_index
+from roteiro_ia.music_index import IndiceFiltrado, MusicIndex, trilhas_antigas, update_index
 from roteiro_ia.paths import (EventPaths, build_event_paths, check_free_space, create_event_folders,
                               estimate_proxy_gb)
 from roteiro_ia.premiere.fcpxml import build_xml, write_xml
@@ -79,6 +79,8 @@ class ProjectRequest:
     n_episodios: int | None
     derivados: set[str]
     gemini_mode: Literal["gratis", "pago"]
+    area: str = "casamento"
+    pasta_musicas: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +90,8 @@ class ProjectRequest:
             "n_episodios": self.n_episodios,
             "derivados": sorted(self.derivados),
             "gemini_mode": self.gemini_mode,
+            "area": self.area,
+            "pasta_musicas": self.pasta_musicas,
         }
 
     @classmethod
@@ -95,7 +99,8 @@ class ProjectRequest:
         return cls(source_dir=Path(d["source_dir"]), work_drive=d["work_drive"],
                    assignments=[FolderAssignment.model_validate(a) for a in d["assignments"]],
                    n_episodios=d.get("n_episodios"), derivados=set(d.get("derivados", [])),
-                   gemini_mode=d.get("gemini_mode", "gratis"))
+                   gemini_mode=d.get("gemini_mode", "gratis"),
+                   area=d.get("area", "casamento"), pasta_musicas=d.get("pasta_musicas"))
 
     def save(self, path: Path, s: Settings) -> None:
         safe_write_text(Path(path), json.dumps(self.to_dict(), ensure_ascii=False, indent=2), s)
@@ -138,6 +143,9 @@ class Pipeline:
         self._base = s
         # o modo do pedido vale para esta execução sem alterar as Settings do editor
         self.s = s.model_copy(update={"gemini_mode": req.gemini_mode})
+        if req.pasta_musicas:  # pasta de músicas do projeto: só leitura
+            self.s = self.s.model_copy(
+                update={"protected_roots": [*s.protected_roots, req.pasta_musicas]})
         self.p = build_event_paths(req.source_dir, self.s, req.work_drive)
         self.source = Path(req.source_dir)
         self._gemini = gemini
@@ -428,16 +436,23 @@ class Pipeline:
     def _st_cenas(self) -> None:
         detect_segments(self.db, self.p)
 
+    def _kw_area(self) -> dict:
+        """`area` só vai quando não é o Casamento (a chamada do Casamento fica como sempre foi)."""
+        return {} if self.req.area == "casamento" else {"area": self.req.area}
+
+    def _perfil(self):
+        return load_style_profile(self.s, **self._kw_area())
+
     def _st_estilo(self) -> str:
-        if not self.s.style_urls or load_style_profile(self.s) is not None:
+        if not urls_estilo(self.s, self.req.area) or self._perfil() is not None:
             return ""
         self._models()
-        build_style_profile(self._client(), self.s)
+        build_style_profile(self._client(), self.s, **self._kw_area())
         return "perfil criado"
 
     def _st_analise(self) -> None:
         model, _ = self._models()
-        analyze_event(self.db, self._client(), self.p, model, load_style_profile(self.s),
+        analyze_event(self.db, self._client(), self.p, model, self._perfil(),
                       on_progress=self._progress("analise"),
                       max_video_s=self.s.gemini_pacote_max_s)
 
@@ -447,13 +462,16 @@ class Pipeline:
             # Só novas/alteradas: reanalisar a biblioteca de versão antiga leva horas e é feito
             # pela aba Trilhas (ou `roteiro-ia trilhas`).
             n = update_index(self.s, idx, on_progress=self._progress("trilhas"),
-                             tracker=self._tracker, atualizar_versao=False)
+                             tracker=self._tracker, atualizar_versao=False,
+                             root=Path(self.req.pasta_musicas) if self.req.pasta_musicas else None)
         except FileNotFoundError as e:
             if not idx.all():
                 raise PipelineError(
                     f"{e} Não há trilhas no índice: conecte a pasta de músicas e use "
                     "'roteiro-ia trilhas' para criar o índice.") from None
-            self._emit("trilhas", f"{e} Usando o índice existente ({len(idx.all())} trilhas).", 1.0)
+            vistas = IndiceFiltrado(idx, Path(self.req.pasta_musicas))                 if self.req.pasta_musicas else idx
+            self._emit("trilhas", f"{e} Usando o índice existente ({len(vistas.all())} trilhas).",
+                       1.0)
             self._avisar_trilhas_antigas(idx)
             return "índice existente (pasta de músicas inacessível)"
         self._avisar_trilhas_antigas(idx)
@@ -467,7 +485,11 @@ class Pipeline:
 
     def _st_roteiro(self) -> None:
         _, model = self._models()
-        generate_roteiro(self.db, self._client(), self._index(), load_style_profile(self.s), model,
+        # sempre filtrado: sem pasta própria vale a pasta padrão da área (Casamento sem config
+        # = music_root); trilhas que outro projeto indexou de pasta privada ficam de fora
+        pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
+        idx = IndiceFiltrado(self._index(), Path(pasta))
+        generate_roteiro(self.db, self._client(), idx, self._perfil(), model,
                          self.req.n_episodios, set(self.req.derivados), pedido_ajuste=self._pedido)
 
     def _roteiro(self) -> Roteiro:

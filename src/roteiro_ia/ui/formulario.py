@@ -11,12 +11,12 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, 
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
-from roteiro_ia.config import Settings
+from roteiro_ia.config import Settings, pasta_musicas_padrao
 from roteiro_ia.inventory import VIDEO_EXTS, list_subfolders
 from roteiro_ia.models import FolderAssignment, Role
 from roteiro_ia.paths import EventNameError, estimate_proxy_gb, parse_event_name
 from roteiro_ia.pipeline import ProjectRequest
-from roteiro_ia.ui.widgets import Card, SubfolderTable, set_prop
+from roteiro_ia.ui.widgets import Card, CampoPastaMusicas, SubfolderTable, set_prop
 from roteiro_ia.ui.worker import Runner, TarefaWorker
 
 _PREFIXO_DATA = re.compile(r"^\d{4}-\d{2}-\d{2}\s*-?\s*")
@@ -85,9 +85,11 @@ class FormularioEvento(QWidget):
     iniciar = Signal()
     continuar = Signal()
 
-    def __init__(self, s: Settings, runner: Runner, parent: QWidget | None = None):
+    def __init__(self, s: Settings, runner: Runner, parent: QWidget | None = None,
+                 area: str = "casamento"):
         super().__init__(parent)
         self.s = s
+        self.area = area
         self.runner = runner
         self.source: Path | None = None
         self._livre_gb: float | None = None
@@ -135,10 +137,24 @@ class FormularioEvento(QWidget):
         linha.addWidget(self.combo_disco)
         linha.addWidget(self.lbl_espaco, 1)
         c2.body.addLayout(linha)
-        lay.addWidget(c2)
 
-        # 3. subpastas
-        c3 = Card("O que é cada pasta", 3)
+        # 3. músicas, ao lado do disco
+        c_mus = Card("Músicas", 3)
+        self.campo_musicas = CampoPastaMusicas()
+        self.campo_musicas.set_padrao(pasta_musicas_padrao(s, area))
+        dica_mus = QLabel("Vale a pasta e todas as subpastas.")
+        dica_mus.setProperty("muted", True)
+        c_mus.body.addWidget(self.campo_musicas)
+        c_mus.body.addWidget(dica_mus)
+        self.card_musicas = c_mus
+        disco_mus = QHBoxLayout()
+        disco_mus.setSpacing(12)
+        disco_mus.addWidget(c2, 1)
+        disco_mus.addWidget(c_mus, 1)
+        lay.addLayout(disco_mus)
+
+        # 4. subpastas
+        c3 = Card("O que é cada pasta", 4)
         dica = QLabel("Confira a sugestão. \"Dia\" só vale para pastas de outro dia (despedida, pré…).")
         dica.setProperty("muted", True)
         dica.setWordWrap(True)
@@ -148,10 +164,11 @@ class FormularioEvento(QWidget):
         c3.body.addWidget(self.tabela, 1)
         lay.addWidget(c3, 1)
 
-        # 4. entregas + 5. gemini, lado a lado
+        # 5. entregas + 6. gemini, lado a lado
         dupla = QHBoxLayout()
         dupla.setSpacing(12)
-        c4 = Card("Entregas", 4)
+        c4 = Card("Entregas", 5)
+        self.card_entregas = c4
         g = QGridLayout()
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(10)
@@ -181,7 +198,7 @@ class FormularioEvento(QWidget):
         c4.body.addStretch(1)
         dupla.addWidget(c4, 1)
 
-        c5 = Card("Gemini", 5)
+        c5 = Card("Gemini", 6)
         seg = QHBoxLayout()
         seg.setSpacing(0)
         self.btn_gratis = QPushButton("Grátis")
@@ -210,14 +227,15 @@ class FormularioEvento(QWidget):
         dupla.addWidget(c5, 1)
         lay.addLayout(dupla)
 
-        # 6. iniciar
+        # 7. iniciar
         self.btn_iniciar = QPushButton("Iniciar")
         self.btn_iniciar.setObjectName("primario")
         self.btn_iniciar.setCursor(Qt.PointingHandCursor)
         self.btn_iniciar.setMinimumHeight(46)
         lay.addWidget(self.btn_iniciar)
 
-        self.cards = [c1, c2, c3, c4, c5]
+        self.card_gemini = c5
+        self.cards = [c1, c2, c3, c4, c5, c_mus]
         (self.btn_pago if s.gemini_mode == "pago" else self.btn_gratis).setChecked(True)
         self.atualizar_preco()
         self.grupo_modo.buttonToggled.connect(lambda *_: self._atualizar_modo())
@@ -347,7 +365,8 @@ class FormularioEvento(QWidget):
             source_dir=self.source, work_drive=self.combo_disco.currentText().strip(),
             assignments=self.assignments(),
             n_episodios=None if self.chk_livre.isChecked() else self.spin_episodios.value(),
-            derivados=derivados, gemini_mode=self.modo())
+            derivados=derivados, gemini_mode=self.modo(), area=self.area,
+            pasta_musicas=self.campo_musicas.pasta())
 
     def load_request(self, req: ProjectRequest) -> None:
         """Preenche o formulário com um projeto salvo (Continuar projeto existente)."""
@@ -366,6 +385,7 @@ class FormularioEvento(QWidget):
         self.chk_teaser.setChecked("teaser" in req.derivados)
         self.chk_stories.setChecked("stories" in req.derivados)
         (self.btn_pago if req.gemini_mode == "pago" else self.btn_gratis).setChecked(True)
+        self.campo_musicas.set_pasta(req.pasta_musicas)
 
     # ------------------------------------------------------------ estado
     def set_rodando(self, rodando: bool) -> None:
