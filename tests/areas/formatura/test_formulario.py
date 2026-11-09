@@ -83,13 +83,17 @@ def test_colacao_avisa(form, ficha, tmp_path):
     _escolher(form.combo_formatura, ficha.id)
     assert form.lbl_aviso.text() == "Marque as turmas da colação."
     form.lista_turmas.item(0).setCheckState(Qt_Checked())
-    assert form.lbl_aviso.text() == "A colação chega na próxima etapa (2.3)."
-    assert not form.btn_iniciar.isEnabled()
+    assert form.lbl_aviso.text() == "" and form.btn_iniciar.isEnabled()
     t = form.tabela_f
     assert [t.cellWidget(r, 1).currentText() for r in range(t.rowCount())] == [
         "Câmera ISO", "Imagens extras / frias", "Gravador / lapela", "Mesa de corte (programa)"]
     pf = form.projeto_formatura()
     assert pf.tipo == "colacao" and pf.turmas_colacao == [("Eletrônica", "T106")]
+    pgm = t.cellWidget(3, 1)
+    pgm.setCurrentIndex(pgm.findData("camera_iso"))
+    form._atualizar_iniciar()
+    assert form.lbl_aviso.text() == "Marque a pasta da mesa de corte (PGM, CORTE ou ATEM)."
+    assert not form.btn_iniciar.isEnabled()
 
 
 def Qt_Checked():

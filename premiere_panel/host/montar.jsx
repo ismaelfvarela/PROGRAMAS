@@ -185,3 +185,74 @@ function montarProjeto(job) {
         return _ri_resumo(msgs, true);
     }
 }
+
+// ------------------------------------------------------------ entregas (Formatura: colacao)
+// exportarEntregas(job): manda cada sequencia de job.entregas para a fila do Media Encoder,
+// com o nome de entrega, na pasta de exportacao (G). O preset (.epr) e pedido uma vez e
+// guardado em Folder.userData/RoteiroIA/preset_exportacao.txt.
+
+function _ri_presetExportacao() {
+    var pasta = new Folder(Folder.userData.fsName + "/RoteiroIA");
+    if (!pasta.exists) { pasta.create(); }
+    var arq = new File(pasta.fsName + "/preset_exportacao.txt");
+    var caminho = "";
+    if (arq.exists && arq.open("r")) { caminho = arq.read(); arq.close(); }
+    caminho = String(caminho).replace(/^\s+|\s+$/g, "");
+    if (caminho && new File(caminho).exists) { return caminho; }
+    var escolhido = File.openDialog("Escolha o preset de exporta\u00e7\u00e3o (.epr) das entregas", "*.epr", false);
+    if (!escolhido) { return ""; }
+    if (arq.open("w")) { arq.write(escolhido.fsName); arq.close(); }
+    return escolhido.fsName;
+}
+
+function _ri_acharSequencia(nome) {
+    var seqs = app.project.sequences;
+    for (var i = 0; i < seqs.numSequences; i++) {
+        if (seqs[i].name === nome) { return seqs[i]; }
+    }
+    return null;
+}
+
+function exportarEntregas(job) {
+    var msgs = [];
+    try {
+        var lista = (job && job.entregas) ? job.entregas : [];
+        if (!lista.length) {
+            msgs.push("erro:Este job n\u00e3o tem entregas (s\u00f3 a \u00edntegra da cola\u00e7\u00e3o tem).");
+            return _ri_resumo(msgs, true);
+        }
+        if (!app.project) {
+            msgs.push("erro:Abra o projeto da cola\u00e7\u00e3o no Premiere antes de exportar.");
+            return _ri_resumo(msgs, true);
+        }
+        var preset = _ri_presetExportacao();
+        if (!preset) {
+            msgs.push("erro:Nenhum preset de exporta\u00e7\u00e3o escolhido; nada foi exportado.");
+            return _ri_resumo(msgs, true);
+        }
+        if (job.export_dir && !_ri_garantirPasta(job.export_dir)) {
+            msgs.push("erro:N\u00e3o consegui criar a pasta de exporta\u00e7\u00e3o: " + job.export_dir);
+            return _ri_resumo(msgs, true);
+        }
+        app.encoder.launchEncoder();
+        var n = 0;
+        for (var i = 0; i < lista.length; i++) {
+            var e = lista[i];
+            var seq = _ri_acharSequencia(e.sequencia);
+            if (!seq) {
+                msgs.push("aviso:Sequ\u00eancia n\u00e3o encontrada no projeto: " + e.sequencia);
+                continue;
+            }
+            var id = app.encoder.encodeSequence(seq, e.arquivo, preset, app.encoder.ENCODE_ENTIRE, 0);
+            if (id) { n++; } else { msgs.push("aviso:O Media Encoder recusou: " + e.sequencia); }
+        }
+        if (n > 0) {
+            app.encoder.startBatch();
+            msgs.push("ok:" + n + " entrega(s) na fila do Media Encoder, para " + (job.export_dir || "a pasta de exporta\u00e7\u00e3o") + ".");
+        }
+        return _ri_resumo(msgs, n === 0);
+    } catch (err) {
+        msgs.push("erro:Erro inesperado: " + err);
+        return _ri_resumo(msgs, true);
+    }
+}

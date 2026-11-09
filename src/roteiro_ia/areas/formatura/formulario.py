@@ -16,7 +16,7 @@ from roteiro_ia.areas.base import Area
 from roteiro_ia.areas.formatura.cadastro import Formatura, carregar, listar, nome_exibicao
 from roteiro_ia.areas.formatura.funcoes import (ROLE_DA_FUNCAO, ROTULO_FUNCAO, FuncaoFormatura,
                                                 funcoes_do_grupo, listar_pastas, sugerir_funcao)
-from roteiro_ia.areas.formatura.pipeline import MSG_COLACAO, PipelineFormatura
+from roteiro_ia.areas.formatura.pipeline import MSG_SEM_PGM, PipelineFormatura
 from roteiro_ia.areas.formatura.projeto import (ProjetoFormatura, RequestFormatura,
                                                 carregar_projeto, projetos_da_area)
 from roteiro_ia.areas.formatura.tipos import INFO_TIPO, TIPOS_CLIPE, TipoTrabalho
@@ -519,7 +519,10 @@ class FormularioFormatura(FormularioEvento):
             if not any(self.lista_turmas.item(i).checkState() == Qt.Checked
                        for i in range(self.lista_turmas.count())):
                 return "Marque as turmas da colação."
-            return MSG_COLACAO
+            if not any(self.funcao(r) == FuncaoFormatura.mesa_corte
+                       for r in range(self.tabela_f.rowCount())):
+                return MSG_SEM_PGM
+            return ""
         if INFO_TIPO[self.tipo()].turma == "obrigatoria" and not self.combo_turma.currentData():
             return "Escolha a turma."
         return ""

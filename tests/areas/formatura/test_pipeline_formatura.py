@@ -62,10 +62,11 @@ def test_run_grava_formatura_json(tmp_path):
     assert (Path(pipe.p.analysis_dir) / "projeto.json").is_file()
 
 
-def test_colacao_recusada(tmp_path):
-    pipe, _, _ = _pipe(tmp_path, tipo="colacao", nome="2026-12-10 COLACAO ESCOLA X")
+def test_colacao_sem_pgm_recusada(tmp_path):
+    pipe, _, _ = _pipe(tmp_path, tipo="colacao", nome="2026-12-10 COLACAO ESCOLA X",
+                       funcoes={"CAM A": "camera_iso"})
     calls = _sem_etapas(pipe)
-    with pytest.raises(PipelineError, match=r"A colação chega na próxima etapa \(2\.3\)\."):
+    with pytest.raises(PipelineError, match=r"Marque a pasta da mesa de corte"):
         pipe.run()
     pipe.close()
     assert calls == []
@@ -181,3 +182,47 @@ def test_continuar_mantem_a_musica_gravada(tmp_path, monkeypatch):
 def test_area_usa_pipeline_da_formatura():
     from roteiro_ia.areas import area_por_id
     assert area_por_id("formatura").pipeline is PipelineFormatura
+
+
+def test_ajuste_da_colacao_reaproveita_medidas(tmp_path, monkeypatch):
+    from roteiro_ia.areas.formatura.colacao.defeitos import Amostras
+    from roteiro_ia.areas.formatura.colacao.partes import ParteNomeada
+    from roteiro_ia.models import MediaInfo, SyncResult
+    import numpy as np
+    pipe, s, _ = _pipe(tmp_path, tipo="colacao", nome="2026-12-10 COLACAO ESCOLA X",
+                       funcoes={"PGM": "mesa_corte"}, turmas_colacao=[("Eletrônica", "T106")])
+    mid = pipe.db.add_media(MediaInfo(rel_path="PGM\p.mp4", folder="PGM", role=Role.mesa,
+                                      day_label="principal", kind="video", duration_s=60, fps_num=30,
+                                      fps_den=1, width=320, height=180, rotation=0, audio_channels=2))
+    proxy = tmp_path / "p480.mp4"
+    proxy.write_bytes(b"x")
+    pipe.db.set_proxy(mid, str(proxy), "gerado")
+    pipe.db.set_sync(SyncResult(media_id=mid, day_label="principal", timeline_start_s=0,
+                                confidence=9, method="audio"))
+    medicoes, pedidos = [], []
+    monkeypatch.setattr(pf_pipeline, "medir", lambda v: medicoes.append(v) or Amostras(
+        np.full(8, 120.0), np.full(8, 20.0), np.full(8, 2.0)))
+    monkeypatch.setattr(pf_pipeline, "silencios", lambda a, limite: [(10.0, 20.0)])
+
+    def partes(c, model, linhas, turmas, fim, pedido=None):
+        pedidos.append(pedido)
+        return [ParteNomeada(codigo="abertura", nome="Abertura", inicio_s=0)], []
+    monkeypatch.setattr(pf_pipeline, "detectar_partes", partes)
+    pipe._plano_integra()
+    pipe._pedido = "o hino começa em 0:00:30"
+    plano = pipe._plano_integra()
+    pipe.close()
+    assert len(medicoes) == 1 and pedidos == [None, "o hino começa em 0:00:30"]
+    assert plano.partes[0].cortes == [(10.5, 19.5)]
+
+
+def test_colacao_nao_precisa_de_musica(tmp_path):
+    pipe, s, _ = _pipe(tmp_path, tipo="colacao", nome="2026-12-10 COLACAO ESCOLA X",
+                       funcoes={"PGM": "mesa_corte"})
+    s.music_root = str(tmp_path / "SEM_HD_M")  # M: desconectado e índice vazio
+    pipe.s.music_root = s.music_root
+    try:
+        assert pipe._st_trilhas() == "não usado na colação"
+        assert pipe._st_estilo() == "não usado na colação"
+    finally:
+        pipe.close()
