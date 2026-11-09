@@ -11,12 +11,13 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (QDialog, QMenu, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox,
                                QPlainTextEdit, QVBoxLayout, QWidget)
 
-from roteiro_ia import recentes
+from roteiro_ia import proc, recentes
 from roteiro_ia.areas import area_por_id
 from roteiro_ia.config import Settings
 from roteiro_ia.models import Role
 from roteiro_ia.paths import build_event_paths
 from roteiro_ia.pipeline import PROJECT_FILE, Pipeline, ProjectRequest
+from roteiro_ia.premiere.job import pedir_ao_premiere, write_job
 from roteiro_ia.ui.fila import FilaProjetos
 from roteiro_ia.ui.status import StatusPanel
 from roteiro_ia.ui.worker import PipelineWorker, Runner
@@ -63,12 +64,16 @@ class AjusteDialog(QDialog):
         return self.texto.toPlainText().strip()
 
 
-def projetos_premiere(pasta: Path) -> list[Path]:
-    """Os .prproj da pasta do evento, do mais recente para o mais antigo."""
+def premiere_aberto() -> bool:
+    """O Premiere Pro está rodando (o pedido é atendido pelo painel sem abrir outro)."""
+    if os.name != "nt":
+        return False
     try:
-        return sorted(pasta.glob("*.prproj"), key=lambda f: f.stat().st_mtime, reverse=True)
-    except OSError:
-        return []
+        r = proc.run(["tasklist", "/FI", "IMAGENAME eq Adobe Premiere Pro.exe", "/NH"],
+                     text=True, errors="replace", timeout=10, controlado=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "adobe premiere pro.exe" in r.stdout.lower()
 
 
 def premiere_exe() -> Path | None:
@@ -121,6 +126,7 @@ class ProjetoTab(QWidget):
         self.form.continuar.connect(self.continuar_existente)
         self.status.btn_pdf.clicked.connect(self.abrir_pdf)
         self.status.btn_premiere.clicked.connect(self.abrir_premiere)
+        self.status.btn_puxar.clicked.connect(self.puxar_roteiro)
         self.status.btn_pasta_videos.clicked.connect(self.abrir_pasta_videos)
         self.status.btn_pasta_projeto.clicked.connect(self.abrir_pasta_projeto)
         self.status.btn_ajuste.clicked.connect(self.pedir_ajuste)
@@ -168,6 +174,7 @@ class ProjetoTab(QWidget):
                                             "como \"Ignorar\").")
             return
         self._req = req
+        self.status.painel_premiere.show()
         recentes.registrar(self.s, req.source_dir, req.work_drive, area=self.area)
         self.timer_retomar.stop()
         self.status.limpar_avisos()
@@ -427,24 +434,48 @@ class ProjetoTab(QWidget):
         os.startfile(str(pdf))  # noqa: S606 - abre no leitor padrão do Windows
 
     def abrir_premiere(self) -> None:
-        """Abre o .prproj montado (o mais recente: o painel cria _v2, _v3… se clicado de novo);
-        sem projeto montado ainda, abre o Premiere para o editor usar Montar projeto."""
+        """Pede ao painel do Premiere o projeto no padrão de pastas da Fokuss (cria ou abre)."""
+        self._pedir_premiere("abrir")
+
+    def puxar_roteiro(self) -> None:
+        """Pede ao painel que leve as timelines do roteiro e as mídias para o projeto."""
+        self._pedir_premiere("puxar")
+
+    def _pedir_premiere(self, acao: str) -> None:
         try:
             p = self._paths()
         except ValueError as e:
             self.status.banner_erro.mostrar(str(e))
             return
-        projetos = projetos_premiere(Path(p.premiere_dir))
-        if projetos:
-            os.startfile(str(projetos[0]))  # noqa: S606
+        xml = Path(p.analysis_dir) / f"{p.event_name} - PREMIERE.xml"
+        if acao == "puxar" and not xml.is_file():
+            self.status.banner_erro.mostrar("O roteiro ainda não foi gerado: o XML do Premiere sai "
+                                            "no fim do processamento (etapa Premiere).")
+            return
+        try:
+            job = write_job(p, self.s, xml if xml.is_file() else None, area=self.area)
+            pedir_ao_premiere(self.s, acao, job)
+        except Exception as e:  # noqa: BLE001 - disco cheio, sem permissão…
+            self.status.banner_erro.mostrar(f"Não consegui preparar o pedido ao Premiere: {e}")
+            return
+        oque = ("abrir o projeto" if acao == "abrir"
+                else "puxar o roteiro (timelines e mídias) para o projeto")
+        if premiere_aberto():
+            self.status.banner_ok.mostrar(
+                f"Pedido enviado ao Premiere para {oque}. O painel Roteiro IA faz sozinho; se ele "
+                "não estiver aberto, use Janela → Extensões → Roteiro IA.")
             return
         exe = premiere_exe()
         if exe is None:
             self.status.banner_erro.mostrar("Não encontrei o Premiere Pro instalado neste computador.")
             return
-        subprocess.Popen([str(exe)], close_fds=True)  # noqa: S603
-        self.status.banner_ok.mostrar("Abrindo o Premiere. O projeto ainda não foi montado: lá, use "
-                                      "Janela → Extensões → Roteiro IA → Montar projeto.")
+        args = [str(exe)]
+        if Path(p.prproj_path).is_file():
+            args.append(str(p.prproj_path))
+        subprocess.Popen(args, close_fds=True)  # noqa: S603
+        self.status.banner_ok.mostrar(
+            f"Abrindo o Premiere para {oque}. Quando ele abrir, o painel Roteiro IA faz sozinho; "
+            "na primeira vez, abra o painel em Janela → Extensões → Roteiro IA.")
 
     def abrir_pasta_videos(self) -> None:
         self._abrir_pasta(lambda p: p.export_dir,

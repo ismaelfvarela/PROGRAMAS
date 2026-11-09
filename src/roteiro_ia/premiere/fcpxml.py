@@ -1,7 +1,8 @@
 """Pré-roteiro aprovado → XML do Final Cut Pro 7 (xmeml v4) importável no Premiere 2024
 (Arquivo → Importar).
 
-- Uma sequência por episódio (EP01, EP02…) e por derivado (TRAILER, TEASER, STORIES).
+- Uma sequência por episódio (EP 01, EP 02…) e por derivado (TRAILER, TEASER, STORIES), soltas
+  na raiz do XML: o painel as põe na pasta de peças (EPS) do padrão da Fokuss.
 - V1: as cenas do roteiro em ordem (abertura, desenvolvimento…, gancho), encostadas a
   partir do quadro 0. V2…Vn: ângulos alternativos sincronizados (até 5, desativados),
   só no trecho sobreposto e alinhados no tempo real (via SyncResult).
@@ -29,7 +30,10 @@
   aparecem pela primeira vez. Quando a taxa do clipe é a da sequência, out = in + (end − start).
 - Cada <file> é definido por completo na sua primeira ocorrência na ORDEM DO DOCUMENTO
   (preenchido numa passada final); as demais ocorrências são só `<file id="..."/>`.
-- Clipitems das sequências apontam (<masterclipid>) para o clip mestre do bin MATERIAL/TRILHAS.
+- SEM clips mestres (bins MATERIAL/TRILHAS): com eles o Premiere 2024 recusava o XML inteiro
+  ("The project appears to be damaged"). As mídias entram no projeto pelo painel, importadas do
+  disco para VÍDEOS/<pasta>; o Premiere cria um item por arquivo usado (agrupado pelo
+  <masterclipid>) e o painel junta os repetidos.
 """
 from __future__ import annotations
 
@@ -288,7 +292,7 @@ def _scenes(piece: Piece) -> list[tuple[str, SceneRef]]:
 
 def piece_name(piece: Piece) -> str:
     if piece.tipo == "episodio":
-        return f"EP{(piece.numero or 0):02d}"
+        return f"EP {(piece.numero or 0):02d}"
     return _DERIVADO_NAME[piece.tipo]
 
 
@@ -523,32 +527,6 @@ def _bin(parent: ET.Element, name: str) -> ET.Element:
     return _sub(b, "children")
 
 
-def _master_clip(parent: ET.Element, ctx: _Ctx, name: str, src: _Src) -> None:
-    cid = _master_id(src.fid)
-    clip = _sub(parent, "clip", id=cid)
-    _sub(clip, "masterclipid", cid)
-    _sub(clip, "ismasterclip", "TRUE")
-    _sub(clip, "name", name)
-    frames = _frames(src.duration_s, src.rate)
-    _sub(clip, "duration", frames)
-    _rate_el(clip, src.rate)
-    media = _sub(clip, "media")
-    items = []
-    if src.video is not None:
-        track = _sub(_sub(media, "video"), "track")
-        ci = _clipitem(track, ctx, src, name, 0, frames, 0.0, src.duration_s, src.rate)
-        items.append((ci, "video", 1, 1))
-    if src.channels > 0:
-        audio = _sub(media, "audio")
-        for ch in range(min(src.channels, 2)):
-            track = _sub(audio, "track")
-            ci = _clipitem(track, ctx, src, name, 0, frames, 0.0, src.duration_s, src.rate,
-                           audio_index=ch + 1)
-            items.append((ci, "audio", ch + 1, 1))
-    if len(items) > 1:
-        _link(items)
-
-
 def build_xml(r: Roteiro, db: ProjectDB, idx: MusicIndex, music_path_map: dict[str, str],
               source_root: Path) -> str:
     ctx = _Ctx()
@@ -556,32 +534,15 @@ def build_xml(r: Roteiro, db: ProjectDB, idx: MusicIndex, music_path_map: dict[s
     project = _sub(root, "project")
     _sub(project, "name", "ROTEIRO IA")
     children = _sub(project, "children")
-    ep_bin = _bin(children, "EPISÓDIOS")
-    der_bin = _bin(children, "DERIVADOS")
 
     eps = sorted((p for p in r.pecas if p.tipo == "episodio"), key=lambda p: p.numero or 0)
     ders = [p for p in r.pecas if p.tipo != "episodio"]
     used: Counter[str] = Counter()
-    for parent, pieces in ((ep_bin, eps), (der_bin, ders)):
-        for p in pieces:
-            base = piece_name(p)
-            used[base] += 1
-            name = base if used[base] == 1 else f"{base} {used[base]}"
-            parent.append(build_sequence(p, db, idx, music_path_map, source_root, ctx, name))
-
-    mat = _bin(children, "MATERIAL")
-    medias = db.list_media()
-    folders: dict[str, ET.Element] = {}
-    for m in sorted(medias, key=lambda m: (m.folder, m.rel_path)):
-        if m.folder not in folders:
-            folders[m.folder] = _bin(mat, m.folder)
-        src = _media_src(m, ctx, source_root, DEFAULT_RATE)
-        _master_clip(folders[m.folder], ctx, PureWindowsPath(m.rel_path).name, src)
-
-    tri = _bin(children, "TRILHAS")
-    for fid, mpath, dur in ctx.music_used:
-        src = _Src(fid, Path(mpath), dur, ctx.file_rates[fid], None, 2)
-        _master_clip(tri, ctx, PureWindowsPath(mpath).name, src)
+    for p in [*eps, *ders]:
+        base = piece_name(p)
+        used[base] += 1
+        name = base if used[base] == 1 else f"{base} {used[base]}"
+        children.append(build_sequence(p, db, idx, music_path_map, source_root, ctx, name))
 
     _fill_files(root, ctx)
     ET.indent(root, space="  ")

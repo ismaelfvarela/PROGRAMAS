@@ -53,14 +53,15 @@ def test_job_json_utf8(tmp_path):
     assert json.loads(copia.read_text(encoding="utf-8")) == job
 
 
-def test_job_prproj_nao_sobrescreve(tmp_path):
+def test_job_aponta_sempre_o_mesmo_projeto(tmp_path):
+    # o painel cria o projeto se não existe e só ABRE se já existe (nunca sobrescreve)
     s, p = env(tmp_path)
     p.prproj_path.parent.mkdir(parents=True)
     p.prproj_path.write_bytes(b"projeto existente")
     with ProjectDB(p.db_path, s) as db:
         out = write_job(p, s, p.analysis_dir / "x.xml", db)
     job = json.loads(out.read_text(encoding="utf-8"))
-    assert job["prproj"] == str(p.premiere_dir / f"{EVENTO}_v2.prproj")
+    assert job["prproj"] == str(p.prproj_path)
     assert p.prproj_path.read_bytes() == b"projeto existente"
 
 
@@ -70,3 +71,49 @@ def test_job_abre_banco_sozinho(tmp_path):
         db.add_media(mi("A\\C0001.MP4"))
     out = write_job(p, s, p.analysis_dir / "x.xml")
     assert json.loads(out.read_text(encoding="utf-8"))["proxies"] == []
+
+
+def test_job_traz_o_padrao_de_pastas_e_as_midias(tmp_path):
+    s, p = env(tmp_path)
+    with ProjectDB(p.db_path, s) as db:
+        db.add_media(mi("A\\C0001.MP4"))
+        db.add_media(mi("E - H4\\4CH001M.wav"))
+        ign = mi("LIXO\\x.MP4")
+        db.add_media(ign.model_copy(update={"role": Role.ignorar}))
+        out = write_job(p, s, None, db)
+    job = json.loads(out.read_text(encoding="utf-8"))
+    assert job["pastas"] == {"fixas": ["COISAS", "CREDITOS"], "pecas": "EPS",
+                             "sequencia": "SEQUENCIA", "trilha": "TRILHA", "videos": "VÍDEOS"}
+    assert job["midias"] == [{"original": str(p.source_dir / "A" / "C0001.MP4"), "pasta": "A"},
+                             {"original": str(p.source_dir / "E - H4" / "4CH001M.wav"),
+                              "pasta": "E - H4"}]
+    assert job["xml"] == ""  # roteiro ainda não pronto: só abrir o projeto
+
+
+def test_job_da_formatura_e_campos_extras_mantidos(tmp_path):
+    s, p = env(tmp_path)
+    p.analysis_dir.mkdir(parents=True)
+    xml = p.analysis_dir / "x.xml"
+    (p.analysis_dir / "job.json").write_text(json.dumps(
+        {"xml": str(xml), "entregas": [{"sequencia": "A", "arquivo": "G:/a.mp4"}],
+         "cartela": {"mogrt": "c.mogrt"}}), encoding="utf-8")
+    out = write_job(p, s, None, area="formatura")
+    job = json.loads(out.read_text(encoding="utf-8"))
+    assert job["pastas"]["pecas"] == "PARTES DA COLAÇÃO" and job["area"] == "formatura"
+    assert job["xml"] == str(xml)  # sem XML novo, mantém o que já havia
+    assert job["entregas"] and job["cartela"] == {"mogrt": "c.mogrt"}
+
+
+def test_pedido_ao_premiere(tmp_path):
+    from datetime import datetime
+
+    import pytest
+
+    from roteiro_ia.premiere.job import pedir_ao_premiere
+    s, p = env(tmp_path)
+    out = pedir_ao_premiere(s, "puxar", p.analysis_dir / "job.json", datetime(2026, 11, 9, 10))
+    assert out == Path(s.system_dir) / "pedido_premiere.json"
+    assert json.loads(out.read_text(encoding="utf-8")) == {
+        "acao": "puxar", "job": str(p.analysis_dir / "job.json"), "quando": "2026-11-09T10:00:00"}
+    with pytest.raises(ValueError):
+        pedir_ao_premiere(s, "apagar", p.analysis_dir / "job.json")

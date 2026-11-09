@@ -1,16 +1,24 @@
 // Painel Roteiro IA (CEP). Roda no Chromium com Node habilitado (ver manifest).
+// O app Roteiro IA deixa pedidos em <SISTEMA>\pedido_premiere.json ({acao: "abrir"|"puxar",
+// job}); o painel confere a cada 2 s, apaga o pedido e executa.
 (function () {
-  var PADRAO = "Y:\\SISTEMA ROTEIRO\\ultimo_job.json";
+  var SISTEMA = "Y:\\SISTEMA ROTEIRO";
+  var PADRAO = SISTEMA + "\\ultimo_job.json";
+  var PEDIDO = SISTEMA + "\\pedido_premiere.json";
+  var PEDIDO_VALIDO_MS = 30 * 60 * 1000;
   var jobPath = PADRAO;
+  var ocupado = false;
   var fs = null;
   try { fs = require("fs"); } catch (e) { fs = null; }
 
   var elJob = document.getElementById("jobCaminho");
   var elLog = document.getElementById("log");
-  var btnMontar = document.getElementById("btnMontar");
+  var btnAbrir = document.getElementById("btnAbrir");
+  var btnPuxar = document.getElementById("btnPuxar");
   var btnExportar = document.getElementById("btnExportar");
   var btnEscolher = document.getElementById("btnEscolher");
   var elArquivo = document.getElementById("arquivo");
+  var botoes = [btnAbrir, btnPuxar, btnExportar, btnEscolher];
 
   function log(texto, tipo) {
     var p = document.createElement("div");
@@ -40,9 +48,9 @@
     else if (f) { log("N\u00e3o foi poss\u00edvel obter o caminho do arquivo escolhido.", "erro"); }
   });
 
-  function lerJob() {
+  function lerJson(caminho) {
     if (!fs) throw new Error("Node n\u00e3o est\u00e1 habilitado no painel (reinstale o painel).");
-    var texto = fs.readFileSync(jobPath, "utf8");
+    var texto = fs.readFileSync(caminho, "utf8");
     if (texto.charCodeAt(0) === 0xFEFF) texto = texto.slice(1);
     return JSON.parse(texto);
   }
@@ -66,37 +74,67 @@
     }
   }
 
-  // Lê o job e chama a função do host (montar.jsx) com ele.
-  function rodar(chamada, botao, inicio, titulos) {
+  function travar(sim) {
+    ocupado = sim;
+    for (var i = 0; i < botoes.length; i++) { botoes[i].disabled = sim; }
+  }
+
+  // L\u00ea o job e chama a fun\u00e7\u00e3o do host (montar.jsx) com ele.
+  function rodar(funcao, inicio, titulos) {
+    if (ocupado) { return; }
     elLog.innerHTML = "";
     var job;
-    try { job = lerJob(); }
+    try { job = lerJson(jobPath); }
     catch (e) { log("N\u00e3o consegui ler o job: " + e.message, "erro"); return; }
     if (!window.__adobe_cep__) { log("Este painel precisa rodar dentro do Premiere.", "erro"); return; }
-    botao.disabled = true;
+    travar(true);
     log(inicio(job));
-    var script = chamada(JSON.stringify(job));
-    window.__adobe_cep__.evalScript(script, function (res) {
-      botao.disabled = false;
+    window.__adobe_cep__.evalScript(funcao + "(" + JSON.stringify(job) + ")", function (res) {
+      travar(false);
       mostrar(String(res || ""), titulos);
     });
   }
 
-  function montar() {
-    rodar(function (j) { return "montarProjeto(" + j + ")"; }, btnMontar, function (job) {
-      return "Montando o projeto \u201C" + (job.evento || "") + "\u201D... isso pode levar alguns minutos.";
-    }, ["Projeto montado", "Projeto montado com avisos", "N\u00e3o foi poss\u00edvel montar"]);
-  }
+  var ACOES = {
+    abrir: function () {
+      rodar("abrirProjeto", function (job) {
+        return "Abrindo o projeto \u201C" + (job.evento || "") + "\u201D no padr\u00e3o da Fokuss...";
+      }, ["Projeto pronto", "Projeto pronto, com avisos", "N\u00e3o foi poss\u00edvel abrir o projeto"]);
+    },
+    puxar: function () {
+      rodar("puxarRoteiro", function (job) {
+        return "Puxando o roteiro de \u201C" + (job.evento || "") + "\u201D... isso pode levar alguns minutos.";
+      }, ["Roteiro no projeto", "Roteiro no projeto, com avisos", "N\u00e3o foi poss\u00edvel puxar o roteiro"]);
+    },
+    // Formatura (cola\u00e7\u00e3o): cada parte vai para a fila do Media Encoder, com o nome de entrega, no G.
+    exportar: function () {
+      rodar("exportarEntregas", function (job) {
+        return "Mandando as entregas de \u201C" + (job.evento || "") + "\u201D para o Media Encoder...";
+      }, ["Entregas na fila do Media Encoder", "Entregas na fila, com avisos", "N\u00e3o foi poss\u00edvel exportar"]);
+    }
+  };
 
-  // Formatura (colação): cada parte vai para a fila do Media Encoder, com o nome de entrega, no G.
-  function exportar() {
-    rodar(function (j) { return "exportarEntregas(" + j + ")"; }, btnExportar, function (job) {
-      return "Mandando as entregas de \u201C" + (job.evento || "") + "\u201D para o Media Encoder...";
-    }, ["Entregas na fila do Media Encoder", "Entregas na fila, com avisos", "N\u00e3o foi poss\u00edvel exportar"]);
+  // Pedido deixado pelo app Roteiro IA (bot\u00f5es "Abrir no Premiere" e "Puxar roteiro").
+  function conferirPedido() {
+    if (ocupado || !fs) { return; }
+    var pedido;
+    try {
+      if (!fs.existsSync(PEDIDO)) { return; }
+      pedido = lerJson(PEDIDO);
+      fs.unlinkSync(PEDIDO);
+    } catch (e) { return; }
+    var quando = Date.parse(pedido.quando || "");
+    if (!isNaN(quando) && Date.now() - quando > PEDIDO_VALIDO_MS) { return; }  // pedido velho
+    if (!ACOES.hasOwnProperty(pedido.acao) || pedido.acao === "exportar") { return; }
+    if (pedido.job) { jobPath = pedido.job; mostrarJob(); }
+    ACOES[pedido.acao]();
   }
 
   btnEscolher.addEventListener("click", escolher);
-  btnMontar.addEventListener("click", montar);
-  btnExportar.addEventListener("click", exportar);
+  btnAbrir.addEventListener("click", ACOES.abrir);
+  btnPuxar.addEventListener("click", ACOES.puxar);
+  btnExportar.addEventListener("click", ACOES.exportar);
   mostrarJob();
+  conferirPedido();
+  setInterval(conferirPedido, 2000);
 })();

@@ -103,7 +103,7 @@ def test_job_cartela(tmp_path):
 
 def test_painel_preenche_mogrt():
     jsx = (PANEL / "host" / "montar.jsx").read_text(encoding="ascii")
-    corpo = jsx[jsx.index("function montarProjeto"):]
+    corpo = jsx[jsx.index("function puxarRoteiro"):]
     assert "_ri_cartela(job, msgs)" in corpo
     for termo in ("function _ri_cartela", "importMGT", "getMGTComponent", "getParamForDisplayName"):
         assert termo in jsx

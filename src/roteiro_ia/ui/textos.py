@@ -43,5 +43,8 @@ def label_to_role(label: str) -> Role:
         raise ValueError(f"Papel desconhecido: '{label}'.") from None
 
 
-PREMIERE_INSTRUCAO = ("Primeira vez: clique em Abrir no Premiere e, no Premiere, use Janela → Extensões → "
-                      "Roteiro IA → Montar projeto. Depois, Abrir no Premiere já abre o projeto montado.")
+PREMIERE_INSTRUCAO = ("Abrir no Premiere cria o projeto com as pastas do padrão (no começo do "
+                      "trabalho). Com o roteiro pronto, Puxar roteiro leva as timelines e as "
+                      "mídias para dentro dele. Na primeira vez, deixe aberto no Premiere o "
+                      "painel Janela → Extensões → Roteiro IA: ele fica no lugar e faz o pedido "
+                      "sozinho.")

@@ -23,7 +23,7 @@ def write_job_integra(p: EventPaths, s: Settings, xml_path: Path, db: ProjectDB,
                       plano: PlanoIntegra,
                       clipes: tuple[str | None, str | None] = (None, None)) -> Path:
     """`clipes`: nomes das sequências de abertura e encerramento (None = não gerada)."""
-    out = write_job(p, s, xml_path, db)
+    out = write_job(p, s, xml_path, db, area="formatura")
     job = json.loads(Path(out).read_text(encoding="utf-8"))
     nomes = ([clipes[0]] if clipes[0] else []) + [nome_sequencia(pt) for pt in plano.partes] \
         + ([clipes[1]] if clipes[1] else [])

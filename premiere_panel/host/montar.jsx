@@ -1,6 +1,14 @@
 // Roteiro IA - ExtendScript (ES3) do Premiere Pro.
-// montarProjeto(job) recebe o objeto do job.json e devolve "ok|msgs" ou "erro|msgs".
+// abrirProjeto(job): cria o projeto no padrao de pastas da Fokuss (ou so abre, se ja existe).
+// puxarRoteiro(job): importa as midias para VIDEOS\<pasta>, as timelines do XML para a pasta
+//   de pecas (EPS / PARTES DA COLACAO) e anexa os proxies. Pode ser repetido: as timelines
+//   antigas vao para <pecas>\ANTERIORES.
+// Devolvem "ok|msgs", "aviso|msgs" ou "erro|msgs".
 // Obs.: textos com acentos em escapes \u para nao depender da codificacao do arquivo.
+
+var _RI_TEMP = "_IMPORTANDO ROTEIRO IA";
+var _RI_ANTERIORES = "ANTERIORES";
+var _RI_AUDIO = /\.(mp3|wav|m4a|aac|aif|aiff|flac|ogg|wma)$/i;
 
 function _ri_norm(p) {
     var s = String(p).replace(/\\/g, "/").toLowerCase();
@@ -17,15 +25,6 @@ function _ri_garantirPasta(pathStr) {
 
 function _ri_pai(pathStr) {
     return String(pathStr).replace(/\\/g, "/").replace(/\/[^\/]*$/, "");
-}
-
-// mesma regra do Python (next_free_prproj): X.prproj, X_v2.prproj, X_v3.prproj...
-function _ri_prprojLivre(pathStr) {
-    if (!new File(pathStr).exists) { return pathStr; }
-    var base = String(pathStr).replace(/\.prproj$/i, "");
-    var n = 2;
-    while (new File(base + "_v" + n + ".prproj").exists) { n++; }
-    return base + "_v" + n + ".prproj";
 }
 
 function _ri_coletar(item, saida) {
@@ -48,143 +47,278 @@ function _ri_resumo(msgs, falhou) {
     return estado + "|" + msgs.join("\n");
 }
 
-function _ri_contarCasados(mapa) {
-    var itens = [];
-    _ri_coletar(app.project.rootItem, itens);
-    var casados = 0;
-    for (var i = 0; i < itens.length; i++) {
-        var mp = "";
-        try { mp = itens[i].getMediaPath(); } catch (e) { mp = ""; }
-        if (mp && mapa.hasOwnProperty(_ri_norm(mp))) { casados++; }
-    }
-    return { itens: itens, total: itens.length, casados: casados };
+function _ri_caminho(item) {
+    var mp = "";
+    try { mp = item.getMediaPath(); } catch (e) { mp = ""; }
+    return mp ? String(mp) : "";
 }
 
-function montarProjeto(job) {
+function _ri_ehSequencia(item) {
+    try { return item.isSequence(); } catch (e) { return false; }
+}
+
+// bin filho com esse nome (cria se nao existe)
+function _ri_binFilho(pai, nome) {
+    var i, n = pai.children ? pai.children.numItems : 0;
+    for (i = 0; i < n; i++) {
+        var c = pai.children[i];
+        if (c.type === ProjectItemType.BIN && c.name === nome) { return c; }
+    }
+    var novo = pai.createBin(nome);
+    if (novo) { return novo; }
+    n = pai.children ? pai.children.numItems : 0;
+    for (i = 0; i < n; i++) {
+        if (pai.children[i].type === ProjectItemType.BIN && pai.children[i].name === nome) { return pai.children[i]; }
+    }
+    return null;
+}
+
+// --- projeto
+
+function _ri_projetoAberto(caminho) {
+    var alvo = _ri_norm(caminho);
+    try {
+        for (var i = 0; i < app.projects.numProjects; i++) {
+            if (_ri_norm(app.projects[i].path) === alvo) { return app.projects[i]; }
+        }
+    } catch (e) { /* sem lista de projetos */ }
+    if (app.project && _ri_norm(app.project.path) === alvo) { return app.project; }
+    return null;
+}
+
+// Abre o projeto do job (ou cria, se ainda nao existe). Devolve o projeto ou null.
+function _ri_abrir(job, msgs) {
+    var proj = _ri_projetoAberto(job.prproj);
+    if (proj) { return proj; }
+    _ri_garantirPasta(_ri_pai(job.prproj));
+    if (job.backup_dir) { _ri_garantirPasta(job.backup_dir); }
+    if (job.export_dir && !_ri_garantirPasta(job.export_dir)) {
+        msgs.push("aviso:N\u00e3o consegui criar a pasta dos v\u00eddeos prontos: " + job.export_dir);
+    }
+    if (new File(job.prproj).exists) {
+        if (!app.openDocument(job.prproj, true, true, true)) {
+            msgs.push("erro:O Premiere n\u00e3o conseguiu abrir o projeto " + job.prproj + ".");
+            return null;
+        }
+        msgs.push("ok:Projeto aberto: " + job.prproj);
+    } else {
+        if (app.newProject(job.prproj) === false) {
+            msgs.push("erro:O Premiere n\u00e3o conseguiu criar o projeto em " + job.prproj + ". Nada foi alterado.");
+            return null;
+        }
+        msgs.push("ok:Projeto criado: " + job.prproj);
+    }
+    proj = _ri_projetoAberto(job.prproj) || app.project;
+    return proj;
+}
+
+// Pastas do padrao Fokuss: COISAS, CREDITOS, <pecas>, SEQUENCIA, TRILHA, VIDEOS\<pasta>.
+function _ri_estrutura(proj, job) {
+    var p = job.pastas || {};
+    var raiz = proj.rootItem;
+    var fixas = p.fixas || ["COISAS", "CREDITOS"];
+    var e = { fixas: {}, videosPor: {} };
+    for (var i = 0; i < fixas.length; i++) { e.fixas[fixas[i]] = _ri_binFilho(raiz, fixas[i]); }
+    e.pecas = _ri_binFilho(raiz, p.pecas || "EPS");
+    e.sequencia = _ri_binFilho(raiz, p.sequencia || "SEQUENCIA");
+    e.trilha = _ri_binFilho(raiz, p.trilha || "TRILHA");
+    e.videos = _ri_binFilho(raiz, p.videos || "V\u00cdDEOS");
+    e.coisas = e.fixas[fixas[0]] || e.videos;
+    var nomes = [], vistos = {}, lista = job.midias || [];
+    for (i = 0; i < lista.length; i++) {
+        var nome = lista[i].pasta;
+        if (nome && !vistos.hasOwnProperty(nome)) { vistos[nome] = true; nomes.push(nome); }
+    }
+    nomes.sort();
+    for (i = 0; i < nomes.length; i++) { e.videosPor[nomes[i]] = _ri_binFilho(e.videos, nomes[i]); }
+    return e;
+}
+
+function _ri_salvar(proj, job, msgs) {
+    proj.save();
+    msgs.push("ok:Projeto salvo.");
+    if (!job.backup_dir) { return; }
+    var d = new Date();
+    var base = decodeURI(new File(job.prproj).name).replace(/\.prproj$/i, "");
+    var nome = base + " - backup " + d.getFullYear() + "-" + _ri_dois(d.getMonth() + 1) + "-" + _ri_dois(d.getDate())
+        + " " + _ri_dois(d.getHours()) + "h" + _ri_dois(d.getMinutes()) + ".prproj";
+    var destino = String(job.backup_dir).replace(/\\/g, "/").replace(/\/+$/, "") + "/" + nome;
+    if (new File(job.prproj).copy(destino)) {
+        msgs.push("ok:Backup copiado: " + destino);
+    } else {
+        msgs.push("aviso:N\u00e3o consegui copiar o backup para " + job.backup_dir + ".");
+    }
+}
+
+function abrirProjeto(job) {
     var msgs = [];
     try {
-        if (!job || !job.prproj || !job.xml) {
-            msgs.push("erro:Job inv\u00e1lido: faltam os campos prproj ou xml.");
+        if (!job || !job.prproj) {
+            msgs.push("erro:Job inv\u00e1lido: falta o caminho do projeto (prproj).");
             return _ri_resumo(msgs, true);
         }
-        var xmlFile = new File(job.xml);
-        if (!xmlFile.exists) {
-            msgs.push("erro:XML do Premiere n\u00e3o encontrado: " + job.xml);
-            return _ri_resumo(msgs, true);
-        }
-
-        // 1. pastas
-        _ri_garantirPasta(_ri_pai(job.prproj));
-        if (job.backup_dir) { _ri_garantirPasta(job.backup_dir); }
-        if (job.export_dir) {
-            if (_ri_garantirPasta(job.export_dir)) {
-                msgs.push("ok:Pasta de exporta\u00e7\u00e3o pronta: " + job.export_dir);
-            } else {
-                msgs.push("aviso:N\u00e3o consegui criar a pasta de exporta\u00e7\u00e3o: " + job.export_dir);
-            }
-        }
-
-        // 2. projeto novo (nunca sobrescreve)
-        var prproj = _ri_prprojLivre(job.prproj);
-        if (prproj !== job.prproj) {
-            msgs.push("aviso:O projeto " + job.prproj + " j\u00e1 existia; criei uma nova vers\u00e3o sem mexer nele.");
-        }
-        var criado = app.newProject(prproj);
-        if (criado === false) {
-            msgs.push("erro:O Premiere n\u00e3o conseguiu criar o projeto em " + prproj + ". Nada foi alterado.");
-            return _ri_resumo(msgs, true);
-        }
-        msgs.push("ok:Projeto criado: " + prproj);
-
-        // 3. importar XML
-        var imp = app.project.importFiles([job.xml], true, app.project.rootItem, false);
-        if (imp === false) {
-            msgs.push("erro:Falha ao importar o XML: " + job.xml);
-            return _ri_resumo(msgs, true);
-        }
-
-        var mapa = {};
-        var lista = job.proxies || [];
-        var i;
-        for (i = 0; i < lista.length; i++) {
-            mapa[_ri_norm(lista[i].original)] = lista[i].proxy;
-        }
-
-        // 3b. a importacao pode ser assincrona: espera a arvore do projeto popular
-        var estado = _ri_contarCasados(mapa);
-        var ultimo = estado.total, estavel = 0, tentativas = 0;
-        while (estado.casados === 0 && tentativas < 40) {
-            if (estado.total > 0 && estado.total === ultimo) { estavel++; } else { estavel = 0; }
-            if (estavel >= 3) { break; }
-            ultimo = estado.total;
-            $.sleep(500);
-            tentativas++;
-            estado = _ri_contarCasados(mapa);
-        }
-        if (estado.casados === 0) {
-            msgs.push("aviso:Nenhum clipe do XML encontrado ainda \u2014 use Proxy \u2192 Anexar proxies (plano B).");
-        } else {
-            msgs.push("ok:XML importado (sequ\u00eancias por epis\u00f3dio).");
-        }
-
-        // 4. proxies
-        var itens = estado.itens;
-        var anexados = 0, falhas = 0, achados = {};
-        var falhados = [];
-        for (i = 0; i < itens.length; i++) {
-            var it = itens[i];
-            var mp = "";
-            try { mp = it.getMediaPath(); } catch (e1) { mp = ""; }
-            if (!mp) { continue; }
-            var chave = _ri_norm(mp);
-            if (!mapa.hasOwnProperty(chave)) { continue; }
-            achados[chave] = true;
-            try {
-                if (it.canProxy() && it.attachProxy(mapa[chave], 0)) {
-                    anexados++;
-                } else {
-                    falhas++; falhados.push(it.name);
-                }
-            } catch (e2) {
-                falhas++; falhados.push(it.name);
-            }
-        }
-        var naoAchados = 0, k;
-        for (k in mapa) {
-            if (mapa.hasOwnProperty(k) && !achados[k]) { naoAchados++; }
-        }
-        var nivel = (falhas > 0 || (anexados < lista.length && estado.casados > 0)) ? "aviso:" : "ok:";
-        if (estado.casados === 0 && lista.length > 0) { nivel = "aviso:"; }
-        msgs.push(nivel + "Proxies anexados: " + anexados + " de " + lista.length + ".");
-        if (naoAchados > 0) {
-            msgs.push("aviso:" + naoAchados + " original(is) da lista n\u00e3o aparece(m) no projeto (n\u00e3o usados nas sequ\u00eancias).");
-        }
-        if (falhas > 0) {
-            msgs.push("aviso:Falha ao anexar proxy em " + falhas + " clipe(s): " + falhados.slice(0, 10).join(", ")
-                + ". Plano B: selecione a bin MATERIAL, Proxy > Anexar proxies, e aponte para a pasta PROXIES.");
-        }
-
-        // 4b. cartela do ano (Formatura): MOGRT preenchido com os dados da ficha
-        if (job.cartela && job.cartela.mogrt) { _ri_cartela(job, msgs); }
-
-        // 5. salvar e backup
-        app.project.save();
-        msgs.push("ok:Projeto salvo.");
-        if (job.backup_dir) {
-            var d = new Date();
-            var base = decodeURI(new File(prproj).name).replace(/\.prproj$/i, "");
-            var nome = base + " - backup " + d.getFullYear() + "-" + _ri_dois(d.getMonth() + 1) + "-" + _ri_dois(d.getDate())
-                + " " + _ri_dois(d.getHours()) + "h" + _ri_dois(d.getMinutes()) + ".prproj";
-            var destino = String(job.backup_dir).replace(/\\/g, "/").replace(/\/+$/, "") + "/" + nome;
-            if (new File(prproj).copy(destino)) {
-                msgs.push("ok:Backup copiado: " + destino);
-            } else {
-                msgs.push("aviso:N\u00e3o consegui copiar o backup para " + job.backup_dir + ".");
-            }
-        }
+        var proj = _ri_abrir(job, msgs);
+        if (!proj) { return _ri_resumo(msgs, true); }
+        _ri_estrutura(proj, job);
+        msgs.push("ok:Pastas no padr\u00e3o da Fokuss.");
+        _ri_salvar(proj, job, msgs);
         return _ri_resumo(msgs, false);
     } catch (e) {
         msgs.push("erro:Erro inesperado: " + e);
+        return _ri_resumo(msgs, true);
+    }
+}
+
+// --- puxar o roteiro
+
+function _ri_mapaMidias(job) {
+    var m = {}, lista = job.midias || [];
+    for (var i = 0; i < lista.length; i++) { m[_ri_norm(lista[i].original)] = lista[i]; }
+    return m;
+}
+
+function _ri_guardarAnteriores(e) {
+    var seqs = [], i, n = e.pecas.children ? e.pecas.children.numItems : 0;
+    for (i = 0; i < n; i++) {
+        var c = e.pecas.children[i];
+        if (c.type !== ProjectItemType.BIN && _ri_ehSequencia(c)) { seqs.push(c); }
+    }
+    if (!seqs.length) { return 0; }
+    var ant = _ri_binFilho(e.pecas, _RI_ANTERIORES);
+    var d = new Date();
+    var sufixo = " (anterior " + _ri_dois(d.getDate()) + "-" + _ri_dois(d.getMonth() + 1) + " "
+        + _ri_dois(d.getHours()) + "h" + _ri_dois(d.getMinutes()) + ")";
+    for (i = 0; i < seqs.length; i++) {
+        try { seqs[i].name = seqs[i].name + sufixo; } catch (e1) { /* fica com o nome */ }
+        seqs[i].moveBin(ant);
+    }
+    return seqs.length;
+}
+
+// espera a importacao (pode ser assincrona) popular o bin
+function _ri_esperarItens(bin) {
+    var itens = [], ultimo = -1, estavel = 0;
+    for (var t = 0; t < 120; t++) {
+        itens = [];
+        _ri_coletar(bin, itens);
+        if (itens.length > 0 && itens.length === ultimo) { estavel++; } else { estavel = 0; }
+        if (estavel >= 3) { break; }
+        ultimo = itens.length;
+        $.sleep(500);
+    }
+    return itens;
+}
+
+function _ri_distribuir(itens, e, mapa) {
+    var r = { sequencias: 0, videos: 0, trilha: 0, coisas: 0 };
+    for (var i = 0; i < itens.length; i++) {
+        var it = itens[i];
+        if (_ri_ehSequencia(it)) { it.moveBin(e.pecas); r.sequencias++; continue; }
+        var mp = _ri_caminho(it);
+        var m = mp ? mapa[_ri_norm(mp)] : null;
+        if (m && e.videosPor[m.pasta]) { it.moveBin(e.videosPor[m.pasta]); r.videos++; }
+        else if (mp && _RI_AUDIO.test(mp)) { it.moveBin(e.trilha); r.trilha++; }
+        else { it.moveBin(e.coisas); r.coisas++; }
+    }
+    return r;
+}
+
+function _ri_importarFaltando(proj, e, job, msgs) {
+    var presentes = {}, itens = [], i;
+    _ri_coletar(proj.rootItem, itens);
+    for (i = 0; i < itens.length; i++) {
+        var mp = _ri_caminho(itens[i]);
+        if (mp) { presentes[_ri_norm(mp)] = true; }
+    }
+    var porPasta = {}, lista = job.midias || [], total = 0, faltam = 0;
+    for (i = 0; i < lista.length; i++) {
+        var m = lista[i];
+        if (presentes[_ri_norm(m.original)]) { continue; }
+        if (!new File(m.original).exists) { faltam++; continue; }
+        if (!porPasta.hasOwnProperty(m.pasta)) { porPasta[m.pasta] = []; }
+        porPasta[m.pasta].push(m.original);
+        total++;
+    }
+    var falhas = [];
+    for (var pasta in porPasta) {
+        if (!porPasta.hasOwnProperty(pasta)) { continue; }
+        var destino = e.videosPor[pasta] || e.videos;
+        if (proj.importFiles(porPasta[pasta], true, destino, false) === false) { falhas.push(pasta); }
+    }
+    if (total) { msgs.push((falhas.length ? "aviso:" : "ok:") + "M\u00eddias importadas do disco para V\u00cdDEOS: " + total + "."); }
+    if (falhas.length) { msgs.push("aviso:O Premiere recusou a importa\u00e7\u00e3o das pastas: " + falhas.join(", ") + "."); }
+    if (faltam) { msgs.push("aviso:" + faltam + " m\u00eddia(s) n\u00e3o encontrada(s) no disco de origem (o R: est\u00e1 conectado?)."); }
+}
+
+function _ri_proxies(proj, job, msgs) {
+    var mapa = {}, lista = job.proxies || [], i;
+    for (i = 0; i < lista.length; i++) { mapa[_ri_norm(lista[i].original)] = lista[i].proxy; }
+    var itens = [];
+    _ri_coletar(proj.rootItem, itens);
+    var anexados = 0, ja = 0, falhados = [];
+    for (i = 0; i < itens.length; i++) {
+        var it = itens[i], mp = _ri_caminho(it);
+        if (!mp || !mapa.hasOwnProperty(_ri_norm(mp))) { continue; }
+        try {
+            if (it.hasProxy()) { ja++; continue; }
+            if (it.canProxy() && it.attachProxy(mapa[_ri_norm(mp)], 0)) { anexados++; } else { falhados.push(it.name); }
+        } catch (e) { falhados.push(it.name); }
+    }
+    msgs.push((falhados.length ? "aviso:" : "ok:") + "Proxies anexados: " + anexados + (ja ? " (" + ja + " j\u00e1 tinham)" : "") + ".");
+    if (falhados.length) {
+        msgs.push("aviso:Falha ao anexar proxy em " + falhados.length + " clipe(s): " + falhados.slice(0, 10).join(", ")
+            + ". Plano B: selecione a pasta V\u00cdDEOS, Proxy > Anexar proxies, e aponte para a pasta PROXIES.");
+    }
+}
+
+function puxarRoteiro(job) {
+    var msgs = [];
+    try {
+        if (!job || !job.prproj) {
+            msgs.push("erro:Job inv\u00e1lido: falta o caminho do projeto (prproj).");
+            return _ri_resumo(msgs, true);
+        }
+        if (!job.xml || !new File(job.xml).exists) {
+            msgs.push("erro:O roteiro (XML) ainda n\u00e3o foi gerado" + (job.xml ? ": " + job.xml : "") + ".");
+            return _ri_resumo(msgs, true);
+        }
+        var proj = _ri_abrir(job, msgs);
+        if (!proj) { return _ri_resumo(msgs, true); }
+        var e = _ri_estrutura(proj, job);
+        var mapa = _ri_mapaMidias(job);
+
+        var antes = _ri_guardarAnteriores(e);
+        if (antes) { msgs.push("ok:" + antes + " timeline(s) anterior(es) guardada(s) em " + e.pecas.name + "\\" + _RI_ANTERIORES + "."); }
+
+        var temp = _ri_binFilho(proj.rootItem, _RI_TEMP);
+        if (proj.importFiles([job.xml], true, temp, false) === false) {
+            msgs.push("erro:O Premiere n\u00e3o aceitou o XML do roteiro: " + job.xml);
+            return _ri_resumo(msgs, true);
+        }
+        var itens = _ri_esperarItens(temp);
+        if (!itens.length) {
+            msgs.push("erro:O XML do roteiro foi importado, mas nada apareceu no projeto.");
+            return _ri_resumo(msgs, true);
+        }
+        // une os clipes que o XML trouxe aos que ja estavam no projeto (mesmo arquivo)
+        try { proj.consolidateDuplicates(); } catch (e2) { /* versao sem a funcao */ }
+        itens = [];
+        _ri_coletar(temp, itens);
+        var r = _ri_distribuir(itens, e, mapa);
+        try { temp.deleteBin(); } catch (e3) { msgs.push("aviso:Apague a pasta " + _RI_TEMP + " (ficou vazia)."); }
+        msgs.push("ok:Timelines do roteiro em " + e.pecas.name + ": " + r.sequencias + ".");
+        if (r.trilha) { msgs.push("ok:M\u00fasicas em " + e.trilha.name + ": " + r.trilha + "."); }
+
+        _ri_importarFaltando(proj, e, job, msgs);
+        _ri_proxies(proj, job, msgs);
+
+        // cartela do ano (Formatura): MOGRT preenchido com os dados da ficha
+        if (job.cartela && job.cartela.mogrt) { _ri_cartela(job, msgs); }
+
+        _ri_salvar(proj, job, msgs);
+        return _ri_resumo(msgs, false);
+    } catch (err) {
+        msgs.push("erro:Erro inesperado: " + err);
         return _ri_resumo(msgs, true);
     }
 }

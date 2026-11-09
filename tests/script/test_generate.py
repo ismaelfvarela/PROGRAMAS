@@ -32,11 +32,17 @@ def ref(rel="A\\C0001.MP4", a=0.0, b=5.0):
     return SceneRef(rel_path=rel, start_s=a, end_s=b, descricao="cena", fala=None, motivo=None)
 
 
-def piece(tipo="episodio", numero=1, abertura=None, dev=None, gancho="default", trilhas=None):
-    return Piece(tipo=tipo, numero=numero, titulo="T", tema="tema", abertura=abertura or ref(),
-                 desenvolvimento=dev if dev is not None else [ref(a=5, b=10)],
-                 gancho=ref(a=10, b=15) if gancho == "default" else gancho,
-                 gancho_resolve_em=None, curva_emocao=[5, 7, 9], duracao_estimada_s=360,
+def piece(tipo="episodio", numero=1, abertura=None, dev=None, gancho="default", trilhas=None,
+          dur=None):
+    abertura = abertura or ref()
+    dev = dev if dev is not None else [ref(a=5, b=10)]
+    gancho = ref(a=10, b=15) if gancho == "default" else gancho
+    cenas = [abertura, *dev] + ([gancho] if gancho else [])
+    # sem `dur`, a duração estimada é a soma das cenas (roteiro coerente)
+    dur = sum(s.end_s - s.start_s for s in cenas) if dur is None else dur
+    return Piece(tipo=tipo, numero=numero, titulo="T", tema="tema", abertura=abertura,
+                 desenvolvimento=dev, gancho=gancho,
+                 gancho_resolve_em=None, curva_emocao=[5, 7, 9], duracao_estimada_s=dur,
                  misturas=[], trilhas=trilhas or [], termos_musicbed=["romantic"])
 
 
@@ -444,3 +450,25 @@ def test_shortlist_nao_descarta_epica_com_muitos_grupos(tmp_path):
     primeiros = [ln.split(" | ")[0].split("/")[1].split("-")[0] for ln in linhas[:10]]
     assert len(set(primeiros)) == 10
     idx.close()
+
+
+def test_cenas_que_nao_somam_a_duracao_estimada():
+    from roteiro_ia.script.generate import duracao_problems
+    curto = piece(dur=360)  # 15 s de cenas prometendo 6 min (Nicole e Osny)
+    ok = piece(numero=2, dur=20)  # 15 s ~ 20 s: dentro da folga mínima de 15 s
+    longo = piece("teaser", None, dev=[ref(a=5, b=30)] * 4, gancho=None, dur=45)
+    probs = duracao_problems(rot(curto, ok, longo))
+    assert len(probs) == 2
+    assert probs[0].startswith("episódio 1: as cenas somam 15 s, mas a duração estimada é 360 s")
+    assert "acrescente cenas" in probs[0]
+    assert probs[1].startswith("teaser: as cenas somam 105 s") and "tire cenas" in probs[1]
+
+
+def test_roteiro_curto_volta_para_correcao_e_vira_alerta(env):
+    db, idx = env
+    curto = rot(piece(dur=360))
+    c = FakeClient([curto, curto, curto])
+    r = generate_roteiro(db, c, idx, None, "pro", 1, set())
+    assert len(c.calls) == 3  # 1ª + 2 rodadas de correção
+    assert "as cenas somam 15 s" in c.calls[1][3]
+    assert any(a.startswith("Duração: episódio 1") for a in r.alertas)
