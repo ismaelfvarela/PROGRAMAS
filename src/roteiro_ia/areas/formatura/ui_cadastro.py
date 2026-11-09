@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QInputDialog, QDialogButtonBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from roteiro_ia.areas.formatura.ajustes import AjustesFormatura, carregar_ajustes, salvar_ajustes
+from roteiro_ia.areas.formatura.ajustes import (ModeloAno, carregar_ajustes,
+                                                salvar_ajustes)
 from roteiro_ia.areas.formatura.cadastro import (Curso, Formatura, avisos, duplicar, listar,
                                                  nome_exibicao, salvar)
 from roteiro_ia.config import Settings
@@ -143,6 +144,27 @@ class DialogoCadastro(QDialog):
         linha_logo.addWidget(self.edit_logo, 1)
         linha_logo.addWidget(b_logo)
         lay.addLayout(linha_logo)
+        # modelos do ano: vídeos modelo (estilo) e cartela MOGRT; a versão pode mudar a cada ano
+        lay.addWidget(QLabel("Modelos do ano (vídeos modelo e cartela MOGRT; cada formatura usa "
+                             "os do seu ano ou, se faltar, os do ano anterior mais recente)"))
+        self.tabela_modelos = QTableWidget(0, 3)
+        self.tabela_modelos.setHorizontalHeaderLabels(["Ano", "Pasta dos vídeos modelo", "Cartela MOGRT"])
+        self.tabela_modelos.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tabela_modelos.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.tabela_modelos.verticalHeader().hide()
+        self.tabela_modelos.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tabela_modelos.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tabela_modelos.setMaximumHeight(130)
+        lay.addWidget(self.tabela_modelos)
+        bm = QHBoxLayout()
+        for texto, fn in (("Adicionar ano", self._adicionar_ano), ("Pasta dos vídeos…", self._escolher_pasta_modelo),
+                          ("Cartela MOGRT…", self._escolher_mogrt), ("Remover ano", self._remover_selecionado)):
+            b = QPushButton(texto)
+            b.clicked.connect(fn)
+            bm.addWidget(b)
+        bm.addStretch(1)
+        lay.addLayout(bm)
+        self._mostrar_modelos()
         self.lista = QListWidget()
         lay.addWidget(self.lista, 1)
         self.lbl_avisos = QLabel()
@@ -170,8 +192,63 @@ class DialogoCadastro(QDialog):
             self.definir_logo(v)
 
     def definir_logo(self, caminho: str | None) -> None:
-        salvar_ajustes(self.s, AjustesFormatura(logo_produtora=caminho or None))
+        a = carregar_ajustes(self.s)
+        a.logo_produtora = caminho or None
+        salvar_ajustes(self.s, a)
         self.edit_logo.setText(caminho or "")
+
+    # ------------------------------------------------------------ modelos do ano
+    def _mostrar_modelos(self) -> None:
+        modelos = carregar_ajustes(self.s).modelos
+        self.tabela_modelos.setRowCount(0)
+        for ano in sorted(modelos, reverse=True):
+            r = self.tabela_modelos.rowCount()
+            self.tabela_modelos.insertRow(r)
+            m = modelos[ano]
+            for col, v in enumerate((ano, m.pasta or "(sem pasta)", m.mogrt or "(cartela simples)")):
+                self.tabela_modelos.setItem(r, col, QTableWidgetItem(v))
+
+    def definir_modelo(self, ano: str, pasta: str | None = None, mogrt: str | None = None) -> None:
+        a = carregar_ajustes(self.s)
+        m = a.modelos.get(ano, ModeloAno())
+        upd = {k: v for k, v in (("pasta", pasta), ("mogrt", mogrt)) if v is not None}
+        a.modelos[ano] = m.model_copy(update=upd)
+        salvar_ajustes(self.s, a)
+        self._mostrar_modelos()
+
+    def remover_modelo(self, ano: str) -> None:
+        a = carregar_ajustes(self.s)
+        a.modelos.pop(ano, None)
+        salvar_ajustes(self.s, a)
+        self._mostrar_modelos()
+
+    def _ano_selecionado(self) -> str | None:
+        r = self.tabela_modelos.currentRow()
+        return self.tabela_modelos.item(r, 0).text() if r >= 0 else None
+
+    def _adicionar_ano(self) -> None:
+        from datetime import date
+        ano, ok = QInputDialog.getInt(self, "Modelos do ano", "Ano:", date.today().year, 2000, 2100)
+        if ok:
+            self.definir_modelo(str(ano))
+
+    def _escolher_pasta_modelo(self) -> None:
+        if (ano := self._ano_selecionado()) is None:
+            return
+        v = QFileDialog.getExistingDirectory(self, f"Vídeos modelo de {ano}")
+        if v:
+            self.definir_modelo(ano, pasta=v)
+
+    def _escolher_mogrt(self) -> None:
+        if (ano := self._ano_selecionado()) is None:
+            return
+        v, _ = QFileDialog.getOpenFileName(self, f"Cartela de {ano}", "", "Modelo do Premiere (*.mogrt)")
+        if v:
+            self.definir_modelo(ano, mogrt=v)
+
+    def _remover_selecionado(self) -> None:
+        if (ano := self._ano_selecionado()) is not None:
+            self.remover_modelo(ano)
 
     def recarregar(self, selecionar: str | None = None) -> None:
         self.lista.clear()

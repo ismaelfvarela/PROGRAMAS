@@ -164,6 +164,9 @@ function montarProjeto(job) {
                 + ". Plano B: selecione a bin MATERIAL, Proxy > Anexar proxies, e aponte para a pasta PROXIES.");
         }
 
+        // 4b. cartela do ano (Formatura): MOGRT preenchido com os dados da ficha
+        if (job.cartela && job.cartela.mogrt) { _ri_cartela(job, msgs); }
+
         // 5. salvar e backup
         app.project.save();
         msgs.push("ok:Projeto salvo.");
@@ -254,5 +257,49 @@ function exportarEntregas(job) {
     } catch (err) {
         msgs.push("erro:Erro inesperado: " + err);
         return _ri_resumo(msgs, true);
+    }
+}
+
+// ------------------------------------------------------------ cartela (Formatura)
+// _ri_cartela(job, msgs): insere o MOGRT do ano no inicio de cada sequencia de job.cartela,
+// na faixa de video mais alta (o XML ja traz uma faixa vazia reservada), e preenche cada campo
+// cujo nome de exibicao e igual a um nome de job.cartela.campos.
+
+function _ri_cartela(job, msgs) {
+    var c = job.cartela;
+    var arq = new File(c.mogrt);
+    if (!arq.exists) {
+        msgs.push("aviso:Cartela MOGRT n\u00e3o encontrada: " + c.mogrt);
+        return;
+    }
+    var nomes = c.sequencias || [];
+    for (var i = 0; i < nomes.length; i++) {
+        var seq = _ri_acharSequencia(nomes[i]);
+        if (!seq) {
+            msgs.push("aviso:Sequ\u00eancia da cartela n\u00e3o encontrada: " + nomes[i]);
+            continue;
+        }
+        try {
+            var faixa = seq.videoTracks.numTracks - 1;
+            var clip = seq.importMGT(arq.fsName, "0", faixa, 0);
+            if (!clip) {
+                msgs.push("aviso:O Premiere n\u00e3o p\u00f4s a cartela em " + nomes[i] + ".");
+                continue;
+            }
+            var comp = clip.getMGTComponent();
+            var semLugar = [];
+            for (var campo in c.campos) {
+                if (!c.campos.hasOwnProperty(campo)) { continue; }
+                var prm = comp ? comp.properties.getParamForDisplayName(campo) : null;
+                if (prm) { prm.setValue(c.campos[campo], true); } else { semLugar.push(campo); }
+            }
+            msgs.push("ok:Cartela do ano posta e preenchida em " + nomes[i] + ".");
+            if (semLugar.length) {
+                msgs.push("aviso:Campos sem lugar na cartela (" + nomes[i] + "): " + semLugar.join(", ")
+                    + ". Os nomes dos campos do MOGRT devem ser iguais (Institui\u00e7\u00e3o, Curso, Turma...).");
+            }
+        } catch (e) {
+            msgs.push("aviso:N\u00e3o consegui p\u00f4r a cartela em " + nomes[i] + ": " + e);
+        }
     }
 }

@@ -223,7 +223,7 @@ def test_colacao_nao_precisa_de_musica(tmp_path):
     pipe.s.music_root = s.music_root
     try:
         assert pipe._st_trilhas().startswith("sem trilhas (os clipes saem sem música)")
-        assert pipe._st_estilo() == "não usado na colação"
+        assert pipe._st_estilo() == ""  # sem links nem modelos: nada a estudar
     finally:
         pipe.close()
 
@@ -284,3 +284,45 @@ def test_clipes_usam_contexto_proprio(tmp_path, monkeypatch):
     pipe.close()
     assert visto["n"] is None and visto["der"] == {"trailer", "teaser"}
     assert "10/12/2026" in visto["txt"] and plano.clipes
+
+
+def test_perfil_vem_dos_modelos_do_ano(tmp_path, monkeypatch):
+    from roteiro_ia.areas.formatura.ajustes import AjustesFormatura, ModeloAno, salvar_ajustes
+    from roteiro_ia.gemini.style import StyleProfile
+    pipe, s, _ = _pipe(tmp_path)
+    pasta = tmp_path / "MODELOS"
+    pasta.mkdir()
+    salvar_ajustes(s, AjustesFormatura(modelos={"2025": ModeloAno(pasta=str(pasta))}))
+    prof = StyleProfile(fontes=[], duracao_media_episodio_s=1, ritmo_corte_medio_s=1,
+                        padroes_abertura=[], padroes_gancho=[], uso_falas="", trilhas="", cor="",
+                        estrutura_teaser_trailer="", resumo="do ano")
+    visto = []
+    monkeypatch.setattr(pf_pipeline, "estudar_modelos", lambda c, s_, ano, p: visto.append((ano, p)) or prof)
+    assert pipe._st_estilo() == "vídeos modelo de 2026 estudados"
+    assert visto == [(2026, str(pasta))]
+    (Path(s.system_dir) / "perfil_estilo_formatura_2026.json").write_text(prof.model_dump_json(), encoding="utf-8")
+    assert pipe._perfil().resumo == "do ano"
+    pipe.close()
+
+
+def test_cartela_com_mogrt_do_ano(tmp_path):
+    import json
+    from roteiro_ia.areas.formatura.ajustes import AjustesFormatura, ModeloAno, salvar_ajustes
+    pipe, s, _ = _pipe(tmp_path)
+    mogrt = tmp_path / "cartela 2026.mogrt"
+    mogrt.write_bytes(b"x")
+    salvar_ajustes(s, AjustesFormatura(modelos={"2026": ModeloAno(mogrt=str(mogrt))}))
+    ad = Path(pipe.p.analysis_dir)
+    ad.mkdir(parents=True, exist_ok=True)
+    (ad / f"{pipe.p.event_name} - PREMIERE.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n<xmeml version="4"><sequence>'
+        '<name>EP01</name><rate><timebase>30</timebase><ntsc>TRUE</ntsc></rate>'
+        '<media><video><track/></video></media></sequence></xmeml>\n', encoding="utf-8")
+    (ad / "job.json").write_text("{}", encoding="utf-8")
+    pipe._aplicar_cartela(["EP01"])
+    pipe.close()
+    job = json.loads((ad / "job.json").read_text(encoding="utf-8"))
+    assert job["cartela"]["mogrt"] == str(mogrt) and job["cartela"]["sequencias"] == ["EP01"]
+    assert job["cartela"]["campos"]["Turma"] == "T106" and job["cartela"]["campos"]["Data"] == "10/03/2026"
+    assert not (ad / "cartela.png").exists()
+    assert "CARTELA (MOGRT)" in (ad / f"{pipe.p.event_name} - PREMIERE.xml").read_text(encoding="utf-8")

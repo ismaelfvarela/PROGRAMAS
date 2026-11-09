@@ -101,4 +101,7 @@ def test_oficina_completa(tmp_path, monkeypatch):
     assert p.pdf_path.read_bytes().startswith(b"%PDF")
     xml = p.analysis_dir / f"{EVENTO} - PREMIERE.xml"
     assert xml.is_file() and "C0001.MP4" in xml.read_text(encoding="utf-8")
+    texto = xml.read_text(encoding="utf-8")
+    assert "cartela.png" in texto and "<name>CARTELA</name>" in texto
+    assert (p.analysis_dir / "cartela.png").is_file()
     assert carregar_projeto(p.analysis_dir).musica == track
