@@ -75,6 +75,10 @@ class FilaProjetos(QObject):
         return [c for c in self._ordem
                 if c is not dono and c not in self._comecou and c not in self._cota]
 
+    def suspensos(self) -> list[ClienteFila]:
+        """Projetos com execução pausada porque outro tem a prioridade (só a fila os solta)."""
+        return list(self._suspensos)
+
     # ------------------------------------------------------------ despacho
     def _despachar(self) -> None:
         if self._despachando:  # um cliente mexeu na fila durante o despacho

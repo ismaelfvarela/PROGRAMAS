@@ -28,6 +28,8 @@ TEXTO_PARADO = ("Parado. O que já foi feito está guardado: clique em Continuar
                 "onde parou.")
 TEXTO_PRIORIDADE = ("Pausado: o projeto {nome} tem a prioridade. Este continua sozinho quando "
                     "ele terminar.")
+TEXTO_COMECANDO = "Começando…"
+TEXTO_VEZ = "Retomando: chegou a vez deste projeto."
 TEXTO_FORA_DA_FILA = "Tirado da fila. Clique em Iniciar quando quiser processar."
 
 
@@ -180,6 +182,7 @@ class ProjetoTab(QWidget):
         self.status.banner_pausa.limpar()
         self.status.banner_erro.limpar()
         self.status.acoes_cota.hide()
+        self.status.lbl_mensagem.setText(TEXTO_COMECANDO)  # apaga "Na fila…" e afins
         self.controles.set_estado("rodando")
         self.runner.start(w)
         self.mudou.emit()
@@ -198,8 +201,14 @@ class ProjetoTab(QWidget):
     def retomar_suspenso(self) -> None:
         self._suspenso_fila = False
         if self._worker is not None:
-            self.status.log_line("Retomando: chegou a vez deste projeto.")
+            self.status.lbl_mensagem.setText(TEXTO_VEZ)
+            self.status.log_line(TEXTO_VEZ)
+            self.controles.set_estado("rodando")
             self._worker.controle.continuar()
+
+    def controle_execucao(self):
+        """Controle do worker em andamento (None se nada roda); a janela usa no Continuar tudo."""
+        return self._worker.controle if self._worker is not None else None
 
     def mostrar_espera(self, texto: str | None) -> None:
         if texto is None:

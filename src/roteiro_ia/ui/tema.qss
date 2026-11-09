@@ -122,6 +122,17 @@ QPushButton#segmento[pos="esq"] { border-top-left-radius: 8px; border-bottom-lef
 QPushButton#segmento[pos="dir"] { border-top-right-radius: 8px; border-bottom-right-radius: 8px; border-left: none; }
 QPushButton#segmento:checked { background: #46464c; border-color: #46464c; color: #ffffff; font-weight: 600; }
 
+/* ---------- seletor de áreas (Casamento, Formatura…) ---------- */
+QPushButton#area {
+    background: #1b1b1d;
+    border: 1px solid #333336;
+    border-radius: 8px;
+    padding: 6px 18px;
+    color: #9a9aa0;
+}
+QPushButton#area:hover { color: #e8e8ea; border-color: #46464c; }
+QPushButton#area:checked { background: #d9774a; border-color: #d9774a; color: #ffffff; font-weight: 600; }
+
 /* ---------- campos ---------- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QListWidget {
     background: #1b1b1d;
