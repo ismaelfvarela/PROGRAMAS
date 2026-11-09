@@ -4,6 +4,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QLabel, QWidget
 
 from roteiro_ia.areas.base import Area
+from roteiro_ia.areas.formatura.pipeline import PipelineFormatura
 from roteiro_ia.config import Settings
 from roteiro_ia.ui.formulario import FormularioEvento
 from roteiro_ia.ui.worker import Runner
@@ -27,4 +28,4 @@ class FormularioFormatura(FormularioEvento):
 
 
 FORMATURA = Area("formatura", "Formatura", FormularioFormatura, pode_iniciar=False,
-                 aviso_iniciar=AVISO_FORMATURA)
+                 aviso_iniciar=AVISO_FORMATURA, pipeline=PipelineFormatura)
