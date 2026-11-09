@@ -139,6 +139,9 @@ def test_colacao_completa(tmp_path, monkeypatch):
                           "02 - Hino Nacional", "03 - Encerramento"]
     v1 = [c.findtext("name") for c in seqs["03 - Encerramento"].find("media/video/track").findall("clipitem")]
     assert v1[-1] == "logo.png" and g.schemas.count("Roteiro") == 1
+    trilhas_ab = seqs["00 - Abertura"].findall("media/video/track")
+    assert trilhas_ab[-1].find("clipitem").findtext("name") == "cartela.png"
+    assert "CARTELA" in [m.findtext("name") for m in seqs["00 - Abertura"].findall("marker")]
     nomes = [m.findtext("name") for m in seqs["02 - Hino Nacional"].findall("marker")]
     assert "TROCA: escuro → CAM A" in nomes and any(n.startswith("CORTE:") for n in nomes)
     job = json.loads((p.analysis_dir / "job.json").read_text(encoding="utf-8"))

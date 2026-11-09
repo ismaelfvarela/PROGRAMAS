@@ -303,3 +303,26 @@ def test_perfil_vem_dos_modelos_do_ano(tmp_path, monkeypatch):
     (Path(s.system_dir) / "perfil_estilo_formatura_2026.json").write_text(prof.model_dump_json(), encoding="utf-8")
     assert pipe._perfil().resumo == "do ano"
     pipe.close()
+
+
+def test_cartela_com_mogrt_do_ano(tmp_path):
+    import json
+    from roteiro_ia.areas.formatura.ajustes import AjustesFormatura, ModeloAno, salvar_ajustes
+    pipe, s, _ = _pipe(tmp_path)
+    mogrt = tmp_path / "cartela 2026.mogrt"
+    mogrt.write_bytes(b"x")
+    salvar_ajustes(s, AjustesFormatura(modelos={"2026": ModeloAno(mogrt=str(mogrt))}))
+    ad = Path(pipe.p.analysis_dir)
+    ad.mkdir(parents=True, exist_ok=True)
+    (ad / f"{pipe.p.event_name} - PREMIERE.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n<xmeml version="4"><sequence>'
+        '<name>EP01</name><rate><timebase>30</timebase><ntsc>TRUE</ntsc></rate>'
+        '<media><video><track/></video></media></sequence></xmeml>\n', encoding="utf-8")
+    (ad / "job.json").write_text("{}", encoding="utf-8")
+    pipe._aplicar_cartela(["EP01"])
+    pipe.close()
+    job = json.loads((ad / "job.json").read_text(encoding="utf-8"))
+    assert job["cartela"]["mogrt"] == str(mogrt) and job["cartela"]["sequencias"] == ["EP01"]
+    assert job["cartela"]["campos"]["Turma"] == "T106" and job["cartela"]["campos"]["Data"] == "10/03/2026"
+    assert not (ad / "cartela.png").exists()
+    assert "CARTELA (MOGRT)" in (ad / f"{pipe.p.event_name} - PREMIERE.xml").read_text(encoding="utf-8")

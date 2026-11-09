@@ -314,5 +314,20 @@ momentos (nos clipes) e montagem.
 - Os dois entram nas entregas no G (Abertura antes das partes, Encerramento depois). Se o roteiro
   deles falhar, a íntegra sai assim mesmo, com aviso.
 
-**Próxima:** 2.5 cartela (depois dos vídeos de referência). **Falta testar com material real:** uma colação
+**Entregue também: modelos do ano e cartela (2.5).** Spec em
+`docs/superpowers/specs/2026-11-09-formatura-modelos-cartela-design.md`.
+
+- Na janela "Formaturas…", a seção "Modelos do ano" guarda, por ano, a pasta dos vídeos modelo
+  e a cartela MOGRT. Cada formatura usa os do seu ano ou, se faltarem, os do ano anterior mais
+  recente.
+- Os vídeos modelo são estudados pelo Gemini uma vez (cache por arquivo) e viram o estilo daquele
+  ano, usado nos roteiros dos clipes, da abertura e do encerramento.
+- Cartela (opção C):
+  - com o MOGRT do ano, o painel do Premiere o coloca no início e preenche os campos
+    (Instituição, Curso, Turma, Formatura, Semestre, Ano, Turmas, Local, Cidade, Data);
+  - sem o MOGRT, o sistema desenha uma cartela simples (PNG transparente, com o logo da escola e
+    uma faixa escura atrás do texto) e a põe numa faixa por cima, por 5 s.
+
+**Falta testar com material real:** os vídeos modelo de verdade, o MOGRT dentro do Premiere (os
+nomes dos campos do MOGRT devem ser iguais aos da lista) e o botão de exportar. **Falta testar com material real:** uma colação
 gravada pela mesa de corte, o botão de exportar no Premiere e os limites dos defeitos.

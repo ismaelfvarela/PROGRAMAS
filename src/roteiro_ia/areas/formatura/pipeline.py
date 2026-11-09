@@ -8,6 +8,8 @@ from pathlib import Path
 
 from roteiro_ia.areas.formatura.analise import TEXTOS_POR_TIPO
 from roteiro_ia.areas.formatura.cadastro import carregar
+from roteiro_ia.areas.formatura.cartela import (campos_cartela, colocar_cartela, gerar_cartela_png,
+                                                job_cartela)
 from roteiro_ia.areas.formatura.ajustes import carregar_ajustes, modelos_do_ano
 from roteiro_ia.areas.formatura.modelos import carregar_perfil_ano, estudar_modelos
 from roteiro_ia.areas.formatura.colacao.clipes import contexto_abertura_encerramento, nomes_clipes
@@ -163,7 +165,9 @@ class PipelineFormatura(Pipeline):
 
     def _st_premiere(self) -> None:
         if not self._colacao():
-            return super()._st_premiere()
+            super()._st_premiere()
+            self._aplicar_cartela(["EP01"])  # o clipe é a única peça (EP01 no XML)
+            return
         plano = self._plano_salvo()
         r = self._clipes(plano)
         ab = next((pc for pc in r.pecas if pc.tipo == "trailer"), None) if r else None
@@ -175,6 +179,32 @@ class PipelineFormatura(Pipeline):
         xml_path = write_xml(xml, self.p, self.s)
         write_job_integra(self.p, self.s, xml_path, self.db, plano,
                           clipes=(nome_ab if ab else None, nome_enc if enc else None))
+        if ab is not None:
+            self._aplicar_cartela([nome_ab])
+
+    def _aplicar_cartela(self, nomes: list[str]) -> None:
+        """Cartela no início das sequências: MOGRT do ano (o painel preenche) ou a cartela simples."""
+        pf = self.projeto()
+        ficha = carregar(self._base, pf.formatura_id)
+        try:
+            data = parse_event_name(self.source.name).isoformat()
+        except EventNameError:
+            data = None
+        campos = campos_cartela(pf, ficha, data)
+        ad = Path(self.p.analysis_dir)
+        xml_path = ad / f"{self.p.event_name} - PREMIERE.xml"
+        xml = xml_path.read_text(encoding="utf-8")
+        mod = modelos_do_ano(self._base, ficha.ano) if ficha else None
+        if mod is not None and mod.mogrt and Path(mod.mogrt).is_file():
+            safe_write_text(xml_path, colocar_cartela(xml, nomes, None), self.s)
+            job_cartela(ad / "job.json", self.s, mod.mogrt, nomes, campos)
+            return
+        try:
+            png = gerar_cartela_png(campos, ficha.logo_escola if ficha else None, ad / "cartela.png", self.s)
+        except RuntimeError as e:
+            self._emit("premiere", f"Cartela não gerada: {e}", 1.0)
+            return
+        safe_write_text(xml_path, colocar_cartela(xml, nomes, str(png)), self.s)
 
     # ------------------------------------------------------------ clipes
     def _ideia(self, pf: ProjetoFormatura) -> str | None:
