@@ -11,11 +11,11 @@ from PySide6.QtWidgets import (QDialog, QMenu, QDialogButtonBox, QHBoxLayout, QL
                                QPlainTextEdit, QVBoxLayout, QWidget)
 
 from roteiro_ia import recentes
+from roteiro_ia.areas import area_por_id
 from roteiro_ia.config import Settings
 from roteiro_ia.models import Role
 from roteiro_ia.paths import build_event_paths
 from roteiro_ia.pipeline import PROJECT_FILE, Pipeline, ProjectRequest
-from roteiro_ia.ui.formulario import FormularioEvento
 from roteiro_ia.ui.status import StatusPanel
 from roteiro_ia.ui.worker import PipelineWorker, Runner
 
@@ -60,11 +60,14 @@ class ProjetoTab(QWidget):
     mudou = Signal()  # pausa da cota começou/terminou (a barra geral conta como processo)
 
     def __init__(self, s: Settings, settings_path: Path, runner: Runner,
-                 factory: PipelineFactory | None = None, parent: QWidget | None = None):
+                 factory: PipelineFactory | None = None, parent: QWidget | None = None,
+                 area: str = "casamento", fila=None):
         super().__init__(parent)
         self.s = s
         self.settings_path = Path(settings_path)
         self.runner = runner
+        self.area = area
+        self.fila = fila
         self._factory = factory or self._pipeline_padrao
         self._req: ProjectRequest | None = None
         self._custo = 0.0
@@ -77,7 +80,7 @@ class ProjetoTab(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(16)
-        self.form = FormularioEvento(s, runner)
+        self.form = area_por_id(area).formulario(s, runner, area=area)
         self.status = StatusPanel()
         lay.addWidget(self.form, 55)
         lay.addWidget(self.status, 45)
@@ -122,7 +125,7 @@ class ProjetoTab(QWidget):
                                             "como \"Ignorar\").")
             return
         self._req = req
-        recentes.registrar(self.s, req.source_dir, req.work_drive)
+        recentes.registrar(self.s, req.source_dir, req.work_drive, area=self.area)
         self.timer_retomar.stop()
         self.status.limpar_avisos()
         self.status.etapas.reset()
@@ -325,7 +328,7 @@ class ProjetoTab(QWidget):
         """Lista suspensa: projetos abertos por último primeiro, com a última alteração."""
         menu = QMenu(self)
         discos = [self.form.combo_disco.currentText().strip(), self.s.work_drive]
-        itens = recentes.listar(self.s, discos)
+        itens = recentes.listar(self.s, discos, area=self.area)
         if not itens:
             menu.addAction("Nenhum projeto recente").setEnabled(False)
         for r in itens:
@@ -371,6 +374,11 @@ class ProjetoTab(QWidget):
                     req = ProjectRequest.load(f)
                 except (OSError, ValueError, KeyError) as e:
                     self.status.banner_erro.mostrar(f"Não consegui ler {f}: {e}")
+                    return False
+                if req.area != self.area:
+                    nome = area_por_id(req.area).nome
+                    self.status.banner_erro.mostrar(
+                        f"Este projeto é de {nome}. Abra pela área {nome}.")
                     return False
                 self.form.load_request(req)
                 self.iniciar()
