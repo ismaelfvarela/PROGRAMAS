@@ -1,10 +1,22 @@
-"""Pipeline da Formatura: as etapas comuns, com a análise e o roteiro do clipe próprios."""
+"""Pipeline da Formatura: as etapas comuns, com a análise e o roteiro do clipe próprios; na
+colação, as últimas etapas viram a íntegra corrigida (defeitos, espaços mortos, partes, imagens
+frias, XML por parte e entregas no G)."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from roteiro_ia.areas.formatura.analise import TEXTOS_POR_TIPO
 from roteiro_ia.areas.formatura.cadastro import carregar
+from roteiro_ia.areas.formatura.colacao.defeitos import Defeito, classificar, medir
+from roteiro_ia.areas.formatura.colacao.entrega import write_job_integra
+from roteiro_ia.areas.formatura.colacao.frias import banco_frias
+from roteiro_ia.areas.formatura.colacao.partes import detectar_partes, transcricao_em_linhas
+from roteiro_ia.areas.formatura.colacao.plano import PlanoIntegra, montar_plano
+from roteiro_ia.areas.formatura.colacao.relatorio import render_relatorio
+from roteiro_ia.areas.formatura.colacao.silencio import silencios
+from roteiro_ia.areas.formatura.colacao.xml_integra import build_xml_integra
+from roteiro_ia.areas.formatura.funcoes import FuncaoFormatura
 from roteiro_ia.areas.formatura.projeto import (ProjetoFormatura, carregar_projeto, musicas_usadas,
                                                 salvar_projeto)
 from roteiro_ia.areas.formatura.roteiro import IndiceSem, contexto_clipe
@@ -12,13 +24,20 @@ from roteiro_ia.areas.formatura.tipos import INFO_TIPO
 from roteiro_ia.config import pasta_musicas_padrao
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.gemini.analysis import analyze_event
+from roteiro_ia.models import MediaInfo, Role
 from roteiro_ia.music_index import IndiceFiltrado
 from roteiro_ia.paths import build_event_paths
 from roteiro_ia.pipeline import Pipeline, PipelineError
-from roteiro_ia.safety import safe_mkdir
+from roteiro_ia.premiere.fcpxml import write_xml
+from roteiro_ia.report.pdf import html_to_pdf
+from roteiro_ia.safety import safe_mkdir, safe_write_text
 from roteiro_ia.script.generate import generate_roteiro
 
-MSG_COLACAO = "A colação chega na próxima etapa (2.3)."
+MSG_SEM_PGM = "Marque a pasta da mesa de corte (PGM, CORTE ou ATEM)."
+ARQ_INTEGRA = "integra.json"
+ARQ_MEDIDAS = "defeitos.json"
+SILENCIO_ABAIXO_DA_MEDIA_DB = 25.0
+SILENCIO_PADRAO_DB = -45.0
 
 
 class PipelineFormatura(Pipeline):
@@ -28,6 +47,9 @@ class PipelineFormatura(Pipeline):
         if pf is None:
             raise PipelineError("Projeto de Formatura sem dados do trabalho (formatura.json).")
         return pf
+
+    def _colacao(self) -> bool:
+        return INFO_TIPO[self.projeto().tipo].grupo == "colacao"
 
     def _gravar_projeto(self, pf: ProjetoFormatura) -> None:
         """Grava o formatura.json; a música que o roteiro já escolheu (gravada no arquivo) fica,
@@ -41,8 +63,9 @@ class PipelineFormatura(Pipeline):
 
     def _checar(self) -> ProjetoFormatura:
         pf = self.projeto()
-        if INFO_TIPO[pf.tipo].grupo == "colacao":
-            raise PipelineError(MSG_COLACAO)
+        if (INFO_TIPO[pf.tipo].grupo == "colacao"
+                and FuncaoFormatura.mesa_corte not in pf.funcoes.values()):
+            raise PipelineError(MSG_SEM_PGM)
         return pf
 
     def prepare(self):
@@ -55,14 +78,62 @@ class PipelineFormatura(Pipeline):
             self._gravar_projeto(pf)
         return super().run(aprovado_custo=aprovado_custo, refazer_falhas=refazer_falhas)
 
-    # ------------------------------------------------------------ etapas próprias
-    def _st_analise(self) -> None:
+    # ------------------------------------------------------------ etapas
+    def _st_estilo(self) -> str:
+        if self._colacao():
+            return "não usado na colação"
+        return super()._st_estilo()
+
+    def _rels_frias(self) -> set[str]:
+        pf = self.projeto()
+        pastas = {p for p, f in pf.funcoes.items() if f == FuncaoFormatura.extras}
+        return {m.rel_path for m in self.db.list_media() if m.folder in pastas}
+
+    def _st_analise(self) -> str | None:
         model, _ = self._models()
+        incluir = None
+        if self._colacao():
+            frias = self._rels_frias()
+            if not frias:
+                return "sem imagens frias"
+            incluir = (lambda m: m.rel_path in frias)  # noqa: E731
         analyze_event(self.db, self._client(), self.p, model, self._perfil(),
                       on_progress=self._progress("analise"),
                       max_video_s=self.s.gemini_pacote_max_s,
-                      textos=TEXTOS_POR_TIPO[self.projeto().tipo])
+                      textos=TEXTOS_POR_TIPO[self.projeto().tipo], incluir=incluir)
+        return None
 
+    def _st_roteiro(self) -> str | None:
+        if self._colacao():
+            plano = self._plano_integra()
+            return f"{len(plano.partes)} parte(s)"
+        pf = self.projeto()
+        _, model = self._models()
+        pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
+        usadas = musicas_usadas(self._base, pf.formatura_id, exceto=self.source)
+        idx = IndiceSem(IndiceFiltrado(self._index(), Path(pasta)), usadas)
+        ctx = contexto_clipe(pf, carregar(self._base, pf.formatura_id), self._ideia(pf))
+        r = generate_roteiro(self.db, self._client(), idx, self._perfil(), model, 1, set(),
+                             pedido_ajuste=self._pedido, contexto=ctx)
+        musica = next((ms.path for p in r.pecas for ms in p.trilhas
+                       if ms.origem == "biblioteca" and ms.path), None)
+        self._gravar_projeto(pf.model_copy(update={"musica": musica}))
+        return None
+
+    def _st_pdf(self) -> None:
+        if not self._colacao():
+            return super()._st_pdf()
+        html = render_relatorio(self._plano_salvo(), self.p.event_name)
+        html_to_pdf(html, self.p.pdf_path, self.s, html_path=Path(self.p.analysis_dir) / "integra.html")
+
+    def _st_premiere(self) -> None:
+        if not self._colacao():
+            return super()._st_premiere()
+        plano = self._plano_salvo()
+        xml_path = write_xml(build_xml_integra(plano, self.db, self.source), self.p, self.s)
+        write_job_integra(self.p, self.s, xml_path, self.db, plano)
+
+    # ------------------------------------------------------------ clipes
     def _ideia(self, pf: ProjetoFormatura) -> str | None:
         """Roteiro mais recente da oficina original (duplicada com 'seguir a ideia')."""
         if not (pf.duplicado_de and pf.seguir_ideia):
@@ -79,15 +150,83 @@ class PipelineFormatura(Pipeline):
         finally:
             db.close()
 
-    def _st_roteiro(self) -> None:
+    # ------------------------------------------------------------ íntegra da colação
+    def _pgms(self) -> list[tuple[MediaInfo, float]]:
+        """(mídia da mesa de corte, início na linha do tempo), em ordem."""
+        out = []
+        for m in self.db.list_media(Role.mesa):
+            sy = self.db.get_sync(m.id)
+            if m.kind == "video":
+                out.append((m, sy.timeline_start_s if sy else 0.0))
+        if not out:
+            raise PipelineError(MSG_SEM_PGM)
+        return sorted(out, key=lambda x: x[1])
+
+    def _medidas(self, pgms, alertas: list[str]) -> dict:
+        """Defeitos e espaços mortos por arquivo da mesa (calculados uma vez; o ajuste reaproveita)."""
+        arq = Path(self.p.analysis_dir) / ARQ_MEDIDAS
+        try:
+            cache = json.loads(arq.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+        mudou = False
+        for m, _t0 in pgms:
+            if m.rel_path in cache:
+                continue
+            item = {"defeitos": [], "mortos": []}
+            proxy = self.db.proxy_for(m.id)
+            if proxy and Path(proxy).is_file():
+                try:
+                    item["defeitos"] = [d.model_dump() for d in classificar(medir(Path(proxy)))]
+                except RuntimeError as e:
+                    alertas.append(f"Não consegui medir os defeitos de {m.rel_path}: {e}")
+            else:
+                alertas.append(f"{m.rel_path} sem proxy: defeitos de imagem não medidos.")
+            st = self.db.get_audio_stats(m.id)
+            limite = (st.mean_db - SILENCIO_ABAIXO_DA_MEDIA_DB) if st else SILENCIO_PADRAO_DB
+            try:
+                item["mortos"] = silencios(self.source / m.rel_path, limite)
+            except Exception as e:  # noqa: BLE001 - sem cortes de espaço morto, a íntegra segue
+                alertas.append(f"Não consegui achar os espaços mortos de {m.rel_path}: {e}")
+            cache[m.rel_path] = item
+            mudou = True
+        if mudou:
+            safe_write_text(arq, json.dumps(cache, ensure_ascii=False, indent=1), self.s)
+        return cache
+
+    def _plano_integra(self) -> PlanoIntegra:
         pf = self.projeto()
         _, model = self._models()
-        pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
-        usadas = musicas_usadas(self._base, pf.formatura_id, exceto=self.source)
-        idx = IndiceSem(IndiceFiltrado(self._index(), Path(pasta)), usadas)
-        ctx = contexto_clipe(pf, carregar(self._base, pf.formatura_id), self._ideia(pf))
-        r = generate_roteiro(self.db, self._client(), idx, self._perfil(), model, 1, set(),
-                             pedido_ajuste=self._pedido, contexto=ctx)
-        musica = next((ms.path for p in r.pecas for ms in p.trilhas
-                       if ms.origem == "biblioteca" and ms.path), None)
-        self._gravar_projeto(pf.model_copy(update={"musica": musica}))
+        pgms = self._pgms()
+        alertas: list[str] = []
+        med = self._medidas(pgms, alertas)
+        defeitos, mortos, palavras = [], [], []
+        for m, t0 in pgms:
+            item = med.get(m.rel_path, {})
+            defeitos += [Defeito(**{**d, "inicio_s": d["inicio_s"] + t0, "fim_s": d["fim_s"] + t0})
+                         for d in item.get("defeitos", [])]
+            mortos += [(a + t0, b + t0) for a, b in item.get("mortos", [])]
+            tr = self.db.get_transcript(m.id)
+            if tr is not None:
+                palavras += [(w.start_s + t0, w.text) for w in tr.words]
+        fim = max(t0 + m.duration_s for m, t0 in pgms)
+        partes, al_partes = detectar_partes(self._client(), model, transcricao_em_linhas(palavras),
+                                            [tuple(t) for t in pf.turmas_colacao], fim,
+                                            pedido=self._pedido)
+        isos = []
+        for m in self.db.list_media(Role.camera):
+            sy = self.db.get_sync(m.id)
+            if m.kind == "video" and sy is not None:
+                isos.append((m.rel_path, sy.timeline_start_s, sy.timeline_start_s + m.duration_s))
+        plano = montar_plano(partes, fim, defeitos, sorted(mortos), isos,
+                             banco_frias(self.db, self._rels_frias()))
+        plano.alertas = alertas + al_partes + plano.alertas
+        safe_write_text(Path(self.p.analysis_dir) / ARQ_INTEGRA, plano.model_dump_json(indent=1), self.s)
+        return plano
+
+    def _plano_salvo(self) -> PlanoIntegra:
+        try:
+            return PlanoIntegra.model_validate_json(
+                (Path(self.p.analysis_dir) / ARQ_INTEGRA).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise PipelineError("Ainda não há plano da íntegra; rode o processamento completo.") from e

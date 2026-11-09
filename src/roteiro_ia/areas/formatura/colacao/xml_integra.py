@@ -95,6 +95,7 @@ class _Montador:
         r = self.rate
         cursor = 0
         cortes = sorted(p.cortes)
+        fins: list[tuple[float, int]] = []  # (fim do trecho na mesa, posição na sequência)
         for x, y in p.trechos:
             base = cursor
 
@@ -117,11 +118,11 @@ class _Montador:
                 _place_audio(a_tracks, "AMBIENTE", self.ctx, self.src(m), _nome(m), fr(a), fr(b),
                              ins, b - a, r, level, enabled=False)
             cursor = base + _frames(y - x, r)
-            for c0, c1 in cortes:
-                if abs(c0 - y) < 0.01:
-                    marcadores.append((f"CORTE: {round(c1 - c0)} s sem fala",
-                                       f"Espaço morto cortado ({c0:.1f}–{c1:.1f} s da mesa).",
-                                       cursor, None))
+            fins.append((y, cursor))
+        for c0, c1 in cortes:  # no ponto da sequência onde o corte acontece (início, meio ou fim)
+            pos = max((c for y, c in fins if y <= c0 + 0.01), default=0)
+            marcadores.append((f"CORTE: {round(c1 - c0)} s sem fala",
+                               f"Espaço morto cortado ({c0:.1f}–{c1:.1f} s da mesa).", pos, None))
         dur_el.text = str(cursor)
         for t in v_tracks:
             _sub(t, "enabled", "TRUE")

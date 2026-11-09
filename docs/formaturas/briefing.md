@@ -288,5 +288,20 @@ momentos (nos clipes) e montagem.
 - A colação já pode ser preparada (local, cidade, turmas da noite, canais da mesa). O Iniciar dela
   fica desligado com o aviso "A colação chega na próxima etapa (2.3)."
 
-**Próximas:** 2.3 íntegra da colação, 2.4 abertura com o grande final e encerramento (com o
-campo "Logo da produtora"), 2.5 cartela (depois dos vídeos de referência).
+**Entregue também: íntegra da colação (2.3).** Spec em
+`docs/superpowers/specs/2026-11-09-formatura-integra-colacao-design.md`.
+
+- A colação inicia. Defeitos da mesa de corte (escuro, desfocado, chicote, tremido) são medidos
+  no computador; espaços mortos (silêncio de 4 s ou mais) são cortados.
+- As partes da cerimônia (uma por turma na colação) vêm da transcrição, por uma chamada de texto
+  ao Gemini. Se ela falhar, a íntegra sai numa sequência só, com aviso.
+- Cada trecho com defeito vai para a câmera ISO do mesmo momento; sem ISO, para uma imagem fria
+  do assunto; sem nenhuma, fica marcado "SEM COBERTURA".
+- O Premiere recebe uma sequência por parte, com os nomes de entrega e marcadores em cada troca e
+  corte. O PDF é o relatório da íntegra.
+- Painel do Premiere: botão "Exportar entregas para o G". Ele manda cada parte para o Media
+  Encoder com o nome de entrega (o preset .epr é pedido uma vez).
+
+**Próximas:** 2.4 abertura com o grande final e encerramento (com o campo "Logo da produtora"),
+2.5 cartela (depois dos vídeos de referência). **Falta testar com material real:** uma colação
+gravada pela mesa de corte, o botão de exportar no Premiere e os limites dos defeitos.

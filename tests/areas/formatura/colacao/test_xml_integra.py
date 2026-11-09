@@ -121,3 +121,12 @@ def test_painel_exporta_entregas():
     assert 'id="btnExportar"' in (PANEL / "index.html").read_text(encoding="utf-8")
     js = (PANEL / "main.js").read_text(encoding="utf-8")
     assert "exportarEntregas(" in js and "btnExportar" in js
+
+
+def test_corte_no_comeco_da_parte_tem_marcador(db, tmp_path):
+    plano = PlanoIntegra(partes=[ParteIntegra(
+        numero=1, codigo="hino", nome="Hino Nacional", inicio_s=90, fim_s=150,
+        trechos=[(96, 150)], cortes=[(90, 96)], trocas=[])])
+    seq = _seqs(build_xml_integra(plano, db, tmp_path))["01 - Hino Nacional"]
+    mk = [(m.findtext("name"), m.findtext("in")) for m in seq.findall("marker")]
+    assert mk == [("CORTE: 6 s sem fala", "0")]
