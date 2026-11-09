@@ -247,3 +247,22 @@ def test_status_limpa_ao_sair_da_espera_e_da_suspensao(qtbot, duas_na_janela):
     assert "prioridade" not in b.status.lbl_mensagem.text()
     assert b.controles.estado == "rodando"
     assert b.controles.lbl_estado.text() == ""
+
+
+def test_fechar_com_sim_nao_inicia_projeto_da_fila(qtbot, duas_na_janela, monkeypatch):
+    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtWidgets import QMessageBox
+    w, (a, lib_a, cham_a), (b, lib_b, cham_b) = duas_na_janela
+    a._factory = lambda req, s, e: _Pipe(lib_a, cham_a)  # sem cota: a roda até ser parado
+    a.btn_iniciar.click()
+    qtbot.waitUntil(lambda: cham_a == ["run"], timeout=3000)
+    b.btn_iniciar.click()
+    assert w.fila.na_fila() == [b]
+    monkeypatch.setattr(QMessageBox, "question", lambda *a_, **k: QMessageBox.Yes)
+    e = QCloseEvent()
+    w.closeEvent(e)
+    assert e.isAccepted()
+    qtbot.wait(800)  # o "parado" de a chega depois: ninguém da fila pode começar
+    w.runner.wait_all(5000)
+    assert cham_b == [] and b._worker is None
+    assert w.fila.ativo() is None and w.fila.na_fila() == []

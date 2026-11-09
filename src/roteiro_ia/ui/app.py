@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
             projeto.mudou.connect(self._atualizar_barra)
             b = QPushButton(area.nome)
             b.setObjectName("area")
+            b.setProperty("nome", area.nome)  # o texto ganha " •" quando a área está ocupada
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _=False, i=area.id: self.mostrar_area(i))
@@ -191,8 +192,9 @@ class MainWindow(QMainWindow):
         for id, pagina in self.areas.items():
             pj = pagina.projeto
             ocupada = pj.rodando or pj.em_pausa_cota() or any(c is pj for c in na_fila)
-            nome = area_por_id(id).nome
-            self.botoes_area[id].setText(f"{nome} •" if ocupada and id != self._area else nome)
+            b = self.botoes_area[id]
+            nome = b.property("nome")
+            b.setText(f"{nome} •" if ocupada and id != self._area else nome)
 
     # ------------------------------------------------------------ barra geral
     def _atualizar_barra(self) -> None:
@@ -250,6 +252,7 @@ class MainWindow(QMainWindow):
             # a tempo é encerrado na saída (o pipeline é retomável)
             for pj in self.projetos():
                 pj.timer_retomar.stop()
+            self.fila.esvaziar()  # o projeto que parar não passa a vez a quem esperava
             self.sair_com_tarefas = not self.runner.parar_e_esperar(WAIT_ON_EXIT_MS)
         super().closeEvent(e)
 

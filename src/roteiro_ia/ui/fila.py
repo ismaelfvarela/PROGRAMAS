@@ -64,6 +64,13 @@ class FilaProjetos(QObject):
             self._cota.append(c)
         self._despachar()
 
+    def esvaziar(self) -> None:
+        """Fechando o programa: tira todos da fila sem começar ninguém (cada projeto continua
+        depois pelo "Continuar", como hoje)."""
+        for lista in (self._ordem, self._cota, self._comecou, self._suspensos):
+            lista.clear()
+        self.mudou.emit()
+
     # ------------------------------------------------------------ consultas
     def ativo(self) -> ClienteFila | None:
         """O projeto da vez: o primeiro da ordem que não está esperando a cota."""
