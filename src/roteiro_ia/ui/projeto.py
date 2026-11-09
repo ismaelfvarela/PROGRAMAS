@@ -130,6 +130,12 @@ class ProjetoTab(QWidget):
         if not area.pode_iniciar:  # ex.: abrir_existente chama iniciar() direto
             self.status.banner_erro.mostrar(area.aviso_iniciar)
             return
+        # o formulário da área pode exigir mais que a pasta (ex.: Formatura: formatura e turma);
+        # vale também quando iniciar() vem direto do "Continuar projeto existente"
+        motivo = getattr(self.form, "motivo_bloqueio", lambda: "")()
+        if motivo:
+            self.status.banner_erro.mostrar(motivo)
+            return
         try:
             req = self.form.build_request()
         except ValueError as e:

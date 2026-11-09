@@ -19,7 +19,7 @@ def test_areas_registradas_em_ordem():
     assert [a.id for a in AREAS] == ["casamento", "formatura"]
     assert area_por_id("xyz").id == "casamento"
     assert area_por_id("formatura").nome == "Formatura"
-    assert not area_por_id("formatura").pode_iniciar
+    assert area_por_id("formatura").pode_iniciar
     assert area_por_id("casamento").pode_iniciar
 
 
@@ -63,12 +63,12 @@ def test_campo_musicas_avisa_pasta_inexistente(qtbot, tmp_path):
     assert c.aviso.isHidden()
 
 
-def test_formatura_nao_inicia(qtbot, settings_tmp, evento, tmp_path):
+def test_formatura_sem_trabalho_nao_inicia(qtbot, settings_tmp, evento, tmp_path):
     tab = ProjetoTab(settings_tmp, tmp_path / "cfg.json", Runner(), area="formatura")
     qtbot.addWidget(tab)
     assert tab.set_event_folder(evento)
     assert not tab.btn_iniciar.isEnabled()
-    assert tab.btn_iniciar.toolTip() == "A Formatura chega na próxima etapa."
+    assert tab.btn_iniciar.toolTip() == "Escolha a formatura."
     tab.form.set_rodando(False)
     assert not tab.btn_iniciar.isEnabled()
 
