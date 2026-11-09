@@ -122,16 +122,10 @@ def test_sequencias_por_peca(env):
     r = Roteiro(arco="a", pecas=[_piece(numero=2), _piece("teaser", None), _piece(numero=1)],
                 alertas=[])
     root = ET.fromstring(build_xml(r, db, idx, {}, SRC))
-    names = [e.findtext("name") for e in root.iter("sequence")]
-    assert sorted(names) == ["EP01", "EP02", "TEASER"]
-    bins = {b.findtext("name"): b for b in root.find("project/children").findall("bin")}
-    assert set(bins) == {"EPISÓDIOS", "DERIVADOS", "MATERIAL", "TRILHAS"}
-    assert [q.findtext("name") for q in bins["EPISÓDIOS"].iter("sequence")] == ["EP01", "EP02"]
-    assert [q.findtext("name") for q in bins["DERIVADOS"].iter("sequence")] == ["TEASER"]
-    sub = {b.findtext("name"): b for b in bins["MATERIAL"].find("children").findall("bin")}
-    assert set(sub) == {"A", "B", "C", "D", "MESA"}
-    assert len(sub["A"].find("children").findall("clip")) == 1
-    assert [c.findtext("name") for c in bins["TRILHAS"].iter("clip")] == ["Piano.wav"]
+    # nomes do padrão da Fokuss, soltas na raiz: o painel as põe na pasta EPS
+    filhos = root.find("project/children")
+    assert [q.findtext("name") for q in filhos.findall("sequence")] == ["EP 01", "EP 02", "TEASER"]
+    assert not filhos.findall("bin")
 
 
 def test_v1_em_ordem_e_frames(env):
@@ -388,21 +382,16 @@ def test_estereo_em_pares_ligados(env):
     assert at[AUDIO_TRACKS.index("MÚSICA R")].findtext("clipitem/sourcetrack/trackindex") == "2"
 
 
-def test_masterclipid_aponta_para_clip_do_bin(env):
+def test_sem_clips_mestres_e_um_masterclipid_por_arquivo(env):
+    # clips mestres (bins MATERIAL/TRILHAS) faziam o Premiere 2024 recusar o XML ("damaged");
+    # o <masterclipid> fica: agrupa os usos do mesmo arquivo num item só do projeto
     s, db, idx, ids = env
     root = ET.fromstring(build_xml(_roteiro(), db, idx, {}, SRC))
-    masters = {c.get("id"): c for c in root.iter("clip")}
-    assert all(c.findtext("ismasterclip") == "TRUE" for c in masters.values())
-    n = 0
-    for seq in root.iter("sequence"):
-        for ci in seq.iter("clipitem"):
-            mc = ci.findtext("masterclipid")
-            assert mc in masters
-            fid = ci.find("file").get("id")
-            assert masters[mc].find(".//file").get("id") == fid
-            n += 1
-    assert n > 0
-    assert masters[f"masterclip-file-{ids['A']}"].findtext("name") == "C0001.MP4"
+    assert not list(root.iter("clip")) and not list(root.iter("bin"))
+    por_mestre: dict[str, set[str]] = {}
+    for ci in root.iter("clipitem"):
+        por_mestre.setdefault(ci.findtext("masterclipid"), set()).add(ci.find("file").get("id"))
+    assert por_mestre and all(len(f) == 1 for f in por_mestre.values())
 
 
 def test_out_derivado_da_duracao_na_mesma_taxa(env):

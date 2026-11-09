@@ -511,4 +511,4 @@ class Pipeline:
         r = self._roteiro()
         xml = build_xml(r, self.db, self._index(), music_paths(r, self.p, self.s), self.source)
         xml_path = write_xml(xml, self.p, self.s)
-        write_job(self.p, self.s, xml_path, self.db)
+        write_job(self.p, self.s, xml_path, self.db, area=self.req.area)

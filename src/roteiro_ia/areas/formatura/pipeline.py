@@ -166,7 +166,7 @@ class PipelineFormatura(Pipeline):
     def _st_premiere(self) -> None:
         if not self._colacao():
             super()._st_premiere()
-            self._aplicar_cartela(["EP01"])  # o clipe é a única peça (EP01 no XML)
+            self._aplicar_cartela(["EP 01"])  # o clipe é a única peça ("EP 01" no XML)
             return
         plano = self._plano_salvo()
         r = self._clipes(plano)

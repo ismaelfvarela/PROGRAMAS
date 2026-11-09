@@ -120,7 +120,7 @@ def test_painel_exporta_entregas():
         assert termo in jsx
     assert 'id="btnExportar"' in (PANEL / "index.html").read_text(encoding="utf-8")
     js = (PANEL / "main.js").read_text(encoding="utf-8")
-    assert "exportarEntregas(" in js and "btnExportar" in js
+    assert "exportarEntregas" in js and "btnExportar" in js
 
 
 def test_corte_no_comeco_da_parte_tem_marcador(db, tmp_path):
@@ -158,7 +158,7 @@ def test_clipes_antes_e_depois_das_partes_com_logo(db, tmp_path):
     assert v1[-1][0] == "logo.png" and v1[-1][1] == v1[-2][2]
     assert int(enc.findtext("duration")) == v1[-1][2]
     assert "LOGO DA PRODUTORA" in [m.findtext("name") for m in enc.findall("marker")]
-    assert "logo.png" in xml.split("<bin>")[-1] or "GRAFISMOS" in xml
+    assert "<clip " not in xml and "<bin>" not in xml  # sem clips mestres (Premiere: "damaged")
 
 
 def test_encerramento_sem_logo_marca(db, tmp_path):

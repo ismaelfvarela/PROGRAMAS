@@ -132,7 +132,8 @@ def test_concluido_mostra_acoes_finais(janela, evento):
     pj.set_event_folder(evento)
     pj._on_terminou("concluido")
     assert pj.status.painel_final.isVisibleTo(pj)
-    assert "Janela → Extensões → Roteiro IA → Montar projeto" in pj.status.lbl_premiere.text()
+    assert "Janela → Extensões → Roteiro IA" in pj.status.lbl_premiere.text()
+    assert pj.status.painel_premiere is not None
 
 
 class _PipeFalso:
@@ -268,7 +269,9 @@ def test_continuar_lista_recentes_e_abre_sem_pedir_pasta(qtbot, settings_tmp, tm
     assert pedidos[1].source_dir == evento and isinstance(pedidos[1], ProjectRequest)
 
 
-def test_tela_final_abre_premiere_e_pastas(janela, evento, monkeypatch, tmp_path):
+def test_premiere_desde_o_comeco_pede_ao_painel(janela, evento, monkeypatch, tmp_path):
+    import json
+
     from roteiro_ia.paths import build_event_paths
     from roteiro_ia.ui import projeto as mod
     abertos, lancados = [], []
@@ -276,31 +279,48 @@ def test_tela_final_abre_premiere_e_pastas(janela, evento, monkeypatch, tmp_path
     monkeypatch.setattr(mod.subprocess, "Popen", lambda args, **k: lancados.append(args))
     exe = tmp_path / "Premiere.exe"
     monkeypatch.setattr(mod, "premiere_exe", lambda: exe)
+    rodando = {"sim": False}
+    monkeypatch.setattr(mod, "premiere_aberto", lambda: rodando["sim"])
     pj = janela.projeto
     pj.set_event_folder(evento)
     pj._req = pj.form.build_request()
     p = build_event_paths(evento, janela.s, pj._req.work_drive)
+    pedido = Path(janela.s.system_dir) / "pedido_premiere.json"
 
-    # projeto ainda não montado: abre o Premiere e explica o Montar projeto
+    # começo do trabalho: o Premiere abre e o painel cria o projeto no padrão
     pj.status.btn_premiere.click()
-    assert lancados == [[str(exe)]] and abertos == []
-    assert "Montar projeto" in pj.status.banner_ok.text()
-    # montado (e montado de novo: _v2): abre o mais recente
-    Path(p.premiere_dir).mkdir(parents=True)
-    a = Path(p.premiere_dir) / "x.prproj"
-    b = Path(p.premiere_dir) / "x_v2.prproj"
-    a.write_text("a")
-    b.write_text("b")
-    os.utime(a, (1, 1))
+    assert lancados == [[str(exe)]]
+    ped = json.loads(pedido.read_text(encoding="utf-8"))
+    assert ped["acao"] == "abrir" and ped["job"] == str(p.analysis_dir / "job.json")
+    job = json.loads((p.analysis_dir / "job.json").read_text(encoding="utf-8"))
+    assert job["prproj"] == str(p.prproj_path) and job["pastas"]["pecas"] == "EPS"
+    assert "Roteiro IA" in pj.status.banner_ok.text()
+
+    # roteiro ainda não gerado: puxar avisa e não pede nada
+    pedido.unlink()
+    pj.status.btn_puxar.click()
+    assert not pedido.exists() and "ainda não foi gerado" in pj.status.banner_erro.text()
+
+    # com o XML e o Premiere já aberto: só o pedido (não abre outro Premiere)
+    xml = p.analysis_dir / f"{p.event_name} - PREMIERE.xml"
+    xml.write_text("<xmeml/>", encoding="utf-8")
+    rodando["sim"] = True
+    pj.status.btn_puxar.click()
+    assert json.loads(pedido.read_text(encoding="utf-8"))["acao"] == "puxar"
+    assert len(lancados) == 1
+    assert json.loads((p.analysis_dir / "job.json").read_text(encoding="utf-8"))["xml"] == str(xml)
+
+    # projeto já criado: o Premiere abre direto nele
+    rodando["sim"] = False
+    Path(p.prproj_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(p.prproj_path).write_text("x")
     pj.status.btn_premiere.click()
-    assert abertos == [str(b)]
+    assert lancados[-1] == [str(exe), str(p.prproj_path)]
 
     # pastas: só abre se existe; senão avisa
-    abertos.clear()
     pj.status.btn_pasta_videos.click()
     assert abertos == [] and pj.status.banner_erro.isVisibleTo(pj)
     Path(p.export_dir).mkdir(parents=True)
-    Path(p.work_dir).mkdir(parents=True, exist_ok=True)
     pj.status.btn_pasta_videos.click()
     pj.status.btn_pasta_projeto.click()
     assert abertos == [str(p.export_dir), str(p.work_dir)]

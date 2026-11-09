@@ -13,6 +13,8 @@ from roteiro_ia.models import MediaInfo, TrackInfo
 from roteiro_ia.music_index import MusicIndex
 
 CORRECTION_ROUNDS = 2
+DURACAO_FOLGA = 0.25      # soma das cenas pode diferir até 25% da duração estimada da peça
+DURACAO_MIN_FOLGA_S = 15.0
 DURATION_TOLERANCE_S = 0.5
 DERIVADOS = {"trailer", "teaser", "stories"}
 MAX_PROMPT_TOKENS = 300_000  # acima disso o catálogo é compactado
@@ -282,6 +284,25 @@ def _episodes(r: Roteiro) -> list[Piece]:
     return [p for p in r.pecas if p.tipo == "episodio"]
 
 
+def _cenas(p: Piece) -> list[SceneRef]:
+    return [p.abertura, *p.desenvolvimento] + ([p.gancho] if p.gancho is not None else [])
+
+
+def duracao_problems(r: Roteiro) -> list[str]:
+    """Peças cujas cenas não somam a duração que o próprio roteiro estima (tolerância de 25%,
+    mínimo 15 s). Ex.: o roteiro do Nicole e Osny prometia 6 min por episódio com 1 min de cenas."""
+    probs = []
+    for p in r.pecas:
+        alvo = p.duracao_estimada_s
+        soma = sum(max(0.0, s.end_s - s.start_s) for s in _cenas(p))
+        if alvo > 0 and abs(soma - alvo) > max(DURACAO_MIN_FOLGA_S, DURACAO_FOLGA * alvo):
+            acao = ("acrescente cenas ou alongue as escolhidas" if soma < alvo
+                    else "tire cenas ou encurte as escolhidas")
+            probs.append(f"{_label(p)}: as cenas somam {soma:.0f} s, mas a duração estimada é "
+                         f"{alvo:.0f} s — {acao} para a soma ficar perto da duração")
+    return probs
+
+
 def validate_refs(r: Roteiro, db: ProjectDB, idx: MusicIndex) -> list[str]:
     """Lista de problemas (em português). Normaliza rel_path/path para a grafia real e
     força exige_licenca nas sugestões populares."""
@@ -315,7 +336,7 @@ def validate_refs(r: Roteiro, db: ProjectDB, idx: MusicIndex) -> list[str]:
     for p in eps[:-1]:
         if p.gancho is None:
             probs.append(f"{_label(p)}: falta o gancho (só o último episódio pode ficar sem)")
-    return probs
+    return probs + duracao_problems(r)
 
 
 def _prune(r: Roteiro, db: ProjectDB, idx: MusicIndex) -> list[str]:
@@ -463,6 +484,7 @@ def generate_roteiro(db: ProjectDB, c, idx: MusicIndex, style: StyleProfile | No
         probs = validate_refs(r, db, idx)
     if probs:
         r.alertas.extend(_prune(r, db, idx))
+        r.alertas.extend(f"Duração: {d}" for d in duracao_problems(r))
     r.alertas.extend(avisos)
     db.add_roteiro(r.model_dump_json())
     return r

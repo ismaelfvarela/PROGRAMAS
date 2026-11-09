@@ -39,6 +39,9 @@ _EXCLUDE = ("lite", "image", "tts", "live", "audio", "embedding", "thinking-exp"
 # candidatos do revezamento no grátis: gemini-<versão>-flash e -flash-lite (sem variantes)
 _FLASH = re.compile(r"gemini-(\d+(?:\.\d+)?)-flash(-lite)?(?:-\d{3})?")
 _ROTATION_EXCLUDE = ("image", "tts", "live", "audio", "embedding", "preview", "exp")
+# respostas que o modelo "lite" faz mal (o roteiro do Nicole e Osny saiu com episódios de 1 min
+# prometendo 6): sem um flash completo com cota, espera a cota voltar em vez de usar o lite
+_SEM_LITE = {"Roteiro"}
 COTA_FILE = "cota.json"
 DAILY_MIN_WAIT_S = 3600  # piso da espera diária informada pelo retryDelay
 
@@ -196,13 +199,13 @@ class GeminiClient:
                 return []
         return self._names
 
-    def candidatos(self, model: str) -> list[str]:
+    def candidatos(self, model: str, sem_lite: bool = False) -> list[str]:
         """O modelo configurado primeiro; depois os gemini-<versão>-flash/-flash-lite da chave,
-        por versão decrescente (flash antes de flash-lite)."""
+        por versão decrescente (flash antes de flash-lite). `sem_lite`: só os flash completos."""
         flash = []
         for n in self._model_names():
             m = _FLASH.fullmatch(n)
-            if m and not any(x in n for x in _ROTATION_EXCLUDE):
+            if m and not any(x in n for x in _ROTATION_EXCLUDE) and not (sem_lite and m.group(2)):
                 flash.append((-float(m.group(1)), bool(m.group(2)), n))
         out = [model]
         for *_k, n in sorted(flash):
@@ -343,14 +346,14 @@ class GeminiClient:
             lambda: self.backend.models.generate_content(model=model, contents=contents, config=config),
             rotate=rotate)
 
-    def _call(self, model: str, contents: list, config):
+    def _call(self, model: str, contents: list, config, sem_lite: bool = False):
         if not self._rotating():
             return self._gen(model, contents, config)
         self._load_cota()
         tentados: set[str] = set()
         while True:
             now = datetime.now(LA)
-            cands = self.candidatos(model)
+            cands = self.candidatos(model, sem_lite)
             livres = [n for n in cands if n not in tentados and self._livre(n, now)]
             if not livres:
                 raise self._sem_modelo(cands, now)
@@ -388,7 +391,7 @@ class GeminiClient:
         contents = [*parts, prompt]
         last = ""
         for _ in range(max_retries):
-            resp = self._call(model, contents, config)
+            resp = self._call(model, contents, config, sem_lite=schema.__name__ in _SEM_LITE)
             parsed = getattr(resp, "parsed", None)
             if isinstance(parsed, schema):
                 return parsed

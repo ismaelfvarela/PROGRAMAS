@@ -13,8 +13,8 @@ from roteiro_ia.areas.formatura.colacao.plano import ParteIntegra, PlanoIntegra,
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.models import MediaInfo, Role
 from roteiro_ia.areas.formatura.colacao.clipes import LOGO_S, nomes_clipes
-from roteiro_ia.premiere.fcpxml import (AUDIO_TRACKS, DEFAULT_RATE, _bin, _clipitem, _Ctx,
-                                        _fill_files, _frames, _gain_level, _marker, _master_clip,
+from roteiro_ia.premiere.fcpxml import (AUDIO_TRACKS, DEFAULT_RATE, _clipitem, _Ctx,
+                                        _fill_files, _frames, _gain_level, _marker,
                                         _media_src, _place_audio, _rate_el, _seq_rate, _Src, _sub,
                                         build_sequence)
 from roteiro_ia.script.generate import Piece
@@ -240,8 +240,10 @@ def build_xml_integra(plano: PlanoIntegra, db: ProjectDB, source_root: Path,
     root = ET.Element("xmeml", version="4")
     project = _sub(root, "project")
     _sub(project, "name", "ROTEIRO IA")
-    children = _sub(project, "children")
-    integra = _bin(children, "ÍNTEGRA")
+    # sequências soltas na raiz e SEM clips mestres (MATERIAL/TRILHAS/GRAFISMOS): com eles o
+    # Premiere 2024 recusa o XML ("damaged"); o painel põe as sequências na pasta PARTES DA
+    # COLAÇÃO e as mídias em VÍDEOS\<pasta>, TRILHA e COISAS (padrão de pastas da Fokuss)
+    integra = _sub(project, "children")
     nome_ab, nome_enc = nomes_clipes(len(plano.partes))
     idx = idx or _SemIndice()
     musicas = musicas or {}
@@ -254,19 +256,6 @@ def build_xml_integra(plano: PlanoIntegra, db: ProjectDB, source_root: Path,
         seq = build_sequence(encerramento, db, idx, musicas, mt.root, mt.ctx, nome_enc)
         logo_src = _logo_no_fim(seq, mt.ctx, logo)
         integra.append(seq)
-    mat = _bin(children, "MATERIAL")
-    pastas: dict[str, ET.Element] = {}
-    for m in sorted(mt.medias, key=lambda m: (m.folder, m.rel_path)):
-        if m.folder not in pastas:
-            pastas[m.folder] = _bin(mat, m.folder)
-        _master_clip(pastas[m.folder], mt.ctx, _nome(m), _media_src(m, mt.ctx, mt.root, DEFAULT_RATE))
-    if mt.ctx.music_used:
-        tri = _bin(children, "TRILHAS")
-        for fid, mpath, dur in mt.ctx.music_used:
-            _master_clip(tri, mt.ctx, PureWindowsPath(mpath).name,
-                         _Src(fid, Path(mpath), dur, mt.ctx.file_rates[fid], None, 2))
-    if logo_src is not None:
-        _master_clip(_bin(children, "GRAFISMOS"), mt.ctx, logo_src.path.name, logo_src)
     _fill_files(root, mt.ctx)
     ET.indent(root, space="  ")
     return ('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n'

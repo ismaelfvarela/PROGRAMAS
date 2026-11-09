@@ -20,10 +20,12 @@ def test_manifest_bem_formado():
     assert "--enable-nodejs" in params and "--mixed-context" in params
 
 
-def test_jsx_define_montar_projeto():
+def test_jsx_define_abrir_e_puxar():
     jsx = (PANEL / "host" / "montar.jsx").read_text(encoding="utf-8")
-    assert "function montarProjeto" in jsx
-    for termo in ("attachProxy", "importFiles", "newProject", "canProxy"):
+    assert "function abrirProjeto" in jsx and "function puxarRoteiro" in jsx
+    assert "function montarProjeto" not in jsx
+    for termo in ("attachProxy", "importFiles", "newProject", "openDocument", "canProxy",
+                  "createBin", "moveBin", "consolidateDuplicates"):
         assert termo in jsx
 
 
@@ -37,18 +39,20 @@ def test_jsx_ascii_e_es3():
         assert prefixo in jsx
 
 
-def test_main_js_chama_o_host():
+def test_main_js_chama_o_host_e_le_os_pedidos():
     js = (PANEL / "main.js").read_text(encoding="utf-8")
-    assert "__adobe_cep__.evalScript" in js and "montarProjeto(" in js
+    assert "__adobe_cep__.evalScript" in js
+    assert '"abrirProjeto"' in js and '"puxarRoteiro"' in js and '"exportarEntregas"' in js
+    assert "pedido_premiere.json" in js and "unlinkSync" in js and "setInterval" in js
+    html = (PANEL / "index.html").read_text(encoding="utf-8")
+    for b in ("btnAbrir", "btnPuxar", "btnExportar"):
+        assert f'id="{b}"' in html and f'getElementById("{b}")' in js
 
 
 def test_jsx_nunca_sobrescreve_prproj():
+    # projeto que já existe é ABERTO (openDocument), nunca criado de novo por cima
     jsx = (PANEL / "host" / "montar.jsx").read_text(encoding="utf-8")
-    corpo = jsx[jsx.index("function montarProjeto"):]
-    i_new = corpo.index("app.newProject(")
-    # o caminho do projeto passa por uma checagem .exists antes do newProject
-    assert "_ri_prprojLivre(" in corpo[:i_new]
-    livre = jsx[jsx.index("function _ri_prprojLivre"):]
-    livre = livre[:livre.index("\n}\n")]
-    assert ".exists" in livre and "_v" in livre
-    assert "app.newProject(job.prproj)" not in jsx
+    corpo = jsx[jsx.index("function _ri_abrir"):]
+    corpo = corpo[:corpo.index("\n}\n")]
+    i_exists = corpo.index("new File(job.prproj).exists")
+    assert i_exists < corpo.index("app.openDocument(") < corpo.index("app.newProject(")

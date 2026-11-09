@@ -470,3 +470,21 @@ def test_tempo_esgotado_e_tentado_de_novo(monkeypatch):
         return "ok"
     c = gc.GeminiClient(Settings(), backend=object())
     assert c._retrying(fn) == "ok" and len(sleeps) == 1
+
+
+def test_roteiro_nao_usa_o_lite_e_espera_a_cota():
+    # o roteiro do Nicole e Osny saiu do 3.5-flash-lite com episódios de 1 min prometendo 6
+    from roteiro_ia.script.generate import Roteiro
+    c, be = mk([err429v(DIA, delay="7300s"), err429v(DIA, model="gemini-3.5-flash", delay="9000s")],
+               names=NOMES)
+    assert "gemini-3.6-flash-lite" not in c.candidatos("gemini-3.6-flash", sem_lite=True)
+    with pytest.raises(QuotaPaused) as e:
+        c.generate_json("gemini-3.6-flash", [], Roteiro, "p")
+    assert e.value.daily is True
+    assert modelos(be) == ["gemini-3.6-flash", "gemini-3.5-flash"]  # o lite nem é chamado
+
+
+def test_outras_respostas_continuam_usando_o_lite():
+    c, be = mk([err429v(DIA), '{"ok": true}'], names=NOMES)
+    assert c.generate_json("gemini-3.6-flash", [], Out, "p").ok
+    assert modelos(be) == ["gemini-3.6-flash", "gemini-3.6-flash-lite"]
