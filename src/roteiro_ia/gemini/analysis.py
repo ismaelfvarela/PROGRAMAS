@@ -441,10 +441,12 @@ def _analyze_pack(db: ProjectDB, c, pack: list[tuple[MediaInfo, list[Segment]]],
 def analyze_event(db: ProjectDB, c, p: EventPaths, model: str, style: StyleProfile | None = None,
                   on_progress: Callable[[int, int, str], None] | None = None,
                   max_video_s: float = PACOTE_MAX_VIDEO_S,
-                  textos: TextosAnalise = TEXTOS_CASAMENTO) -> None:
-    """Mídias curtas vão em pacotes (até `max_video_s` de vídeo e PACOTE_MAX_SEGMENTOS
+                  textos: TextosAnalise = TEXTOS_CASAMENTO,
+                  incluir: Callable[[MediaInfo], bool] | None = None) -> None:
+    """`incluir` filtra as mídias analisadas (None = todas). Mídias curtas vão em pacotes (até `max_video_s` de vídeo e PACOTE_MAX_SEGMENTOS
     segmentos por chamada, na ordem do banco); mídia longa vai sozinha, em lotes por intervalo."""
-    medias = [m for m in db.list_media() if m.role not in (Role.ignorar, Role.outro_dia)]
+    medias = [m for m in db.list_media() if m.role not in (Role.ignorar, Role.outro_dia)
+              and (incluir is None or incluir(m))]
     total = len(medias)
     sem_fala = db.segmentos_sem_fala()
     pack: list[tuple[MediaInfo, list[Segment]]] = []
