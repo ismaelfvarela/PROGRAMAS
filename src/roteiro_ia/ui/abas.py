@@ -289,7 +289,7 @@ class EstiloTab(QWidget):
                 estado = "ignorado"
             else:
                 total += 1
-                if video_em_cache(self.s, url):
+                if video_em_cache(self.s, url, **self._kw_area()):
                     estado = "feito"
                 else:
                     estado = self._estado.get(canon, "aguardando")

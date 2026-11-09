@@ -119,7 +119,8 @@ class ProjetoTab(QWidget):
         return self.form.set_event_folder(path)
 
     def _pipeline_padrao(self, req: ProjectRequest, s: Settings, eventos) -> Pipeline:
-        return Pipeline(req, s, None, None, eventos, settings_path=self.settings_path)
+        fab = area_por_id(self.area).pipeline or Pipeline
+        return fab(req, s, None, None, eventos, settings_path=self.settings_path)
 
     # ------------------------------------------------------------ execução
     def iniciar(self) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -11,3 +12,6 @@ class Area:
     formulario: type
     pode_iniciar: bool = True
     aviso_iniciar: str = ""
+    # fábrica do pipeline da área: (req, s, gemini, transcriber, eventos, *, settings_path);
+    # None = o Pipeline comum (Casamento)
+    pipeline: Callable | None = None

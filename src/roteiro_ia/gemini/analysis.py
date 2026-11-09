@@ -1,6 +1,7 @@
 """Análise de cena com Gemini: um catálogo estruturado por segmento de cada mídia."""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -27,6 +28,20 @@ MAX_MINUTE_PAUSES = 3  # pausas por minuto seguidas na mesma requisição antes 
 _MSG_MINUTO = ("O Gemini pausou 3 vezes seguidas por cota por minuto neste trecho; "
                "a mídia ficou sem análise (será tentada de novo ao clicar em Continuar).")
 _BETTER = (Role.mesa, Role.lapela_noivo, Role.lapela_noiva, Role.audio_ambiente)
+
+
+@dataclass(frozen=True)
+class TextosAnalise:
+    """O que muda no prompt por tipo de trabalho (o resto das regras é comum)."""
+    papel: str
+    evento: str
+    momentos: list[str] = field(default_factory=list)
+    problemas: str = "falhas técnicas (tremido, foco, áudio ruim, escuro)"
+
+
+TEXTOS_CASAMENTO = TextosAnalise(
+    papel="Você é um assistente de edição de vídeos de casamento da produtora Fokuss.",
+    evento="do mesmo casamento", momentos=MOMENTOS)
 
 
 class FileAnalysis(BaseModel):
@@ -100,14 +115,15 @@ def _seg_lines(segments: list[Segment], transcripts: dict[int, str]) -> list[str
     return linhas
 
 
-def _regras(com_video: bool, style: StyleProfile | None) -> list[str]:
+def _regras(com_video: bool, style: StyleProfile | None,
+            textos: TextosAnalise = TEXTOS_CASAMENTO) -> list[str]:
     partes = [
         "Regras:",
-        f"- momento: use um destes valores: {', '.join(MOMENTOS)}. Se nenhum servir, use 'extra' "
+        f"- momento: use um destes valores: {', '.join(textos.momentos)}. Se nenhum servir, use 'extra' "
         "e preencha o campo 'extra' com o nome do momento.",
         "- descricao: o que acontece, em português; pessoas: quem aparece ou fala.",
         "- emocao_intensidade e qualidade: inteiros de 0 a 10; emocao_tipo: ex. riso, choro, ternura.",
-        "- problemas: falhas técnicas (tremido, foco, áudio ruim, escuro); lista vazia se não houver.",
+        f"- problemas: {textos.problemas}; lista vazia se não houver.",
         "- melhores_trechos (pontos bons de entrada e saída) e falas_chave (citações marcantes): "
         "tempos em segundos RELATIVOS AO ARQUIVO (não ao segmento), dentro do intervalo do segmento.",
         "- potencial_gancho: true se serve para abrir um teaser/episódio, com motivo_gancho; "
@@ -126,28 +142,30 @@ def _regras(com_video: bool, style: StyleProfile | None) -> list[str]:
 
 def build_prompt(media: MediaInfo, segments: list[Segment], transcripts: dict[int, str],
                  style: StyleProfile | None = None,
-                 clip: tuple[float, float] | None = None) -> str:
+                 clip: tuple[float, float] | None = None,
+                 textos: TextosAnalise = TEXTOS_CASAMENTO) -> str:
     fonte = ("Você recebe apenas o áudio transcrito (sem imagem)." if media.kind == "audio"
              else "Você está assistindo ao vídeo (proxy 480p) e recebe a fala transcrita de cada trecho.")
     partes = [
-        "Você é um assistente de edição de vídeos de casamento da produtora Fokuss.",
+        textos.papel,
         f"{fonte} Arquivo: {media.rel_path} (duração {media.duration_s:.1f}s).",
         *([f"O vídeo enviado é só o trecho de {clip[0]:.2f}s a {clip[1]:.2f}s do arquivo; "
            "mesmo assim, responda com tempos relativos ao arquivo inteiro."] if clip else []),
         "Analise cada segmento abaixo e devolva EXATAMENTE um item por segmento, usando o mesmo segment_id.",
         "Segmentos:", *_seg_lines(segments, transcripts),
-        *_regras(media.kind != "audio", style),
+        *_regras(media.kind != "audio", style, textos),
     ]
     return "\n".join(partes)
 
 
 def build_pack_prompt(items: list[tuple[MediaInfo, list[Segment], dict[int, str],
                                         tuple[float, float] | None]],
-                      style: StyleProfile | None = None) -> str:
+                      style: StyleProfile | None = None,
+                      textos: TextosAnalise = TEXTOS_CASAMENTO) -> str:
     """Prompt de um pacote: segmentos agrupados por ARQUIVO n (na ordem das parts enviadas)."""
     partes = [
-        "Você é um assistente de edição de vídeos de casamento da produtora Fokuss.",
-        f"Você recebe {len(items)} arquivo(s) do mesmo casamento. Cada arquivo vem anunciado por um "
+        textos.papel,
+        f"Você recebe {len(items)} arquivo(s) {textos.evento}. Cada arquivo vem anunciado por um "
         "texto 'ARQUIVO n: <caminho>'; logo depois vem o vídeo (proxy 480p) quando for vídeo. "
         "Arquivos só de áudio não têm imagem: use a fala transcrita.",
         "Analise cada segmento abaixo e devolva EXATAMENTE um item por segmento de TODOS os "
@@ -160,7 +178,7 @@ def build_pack_prompt(items: list[tuple[MediaInfo, list[Segment], dict[int, str]
             partes.append(f"  O vídeo enviado é só o trecho de {clip[0]:.2f}s a {clip[1]:.2f}s deste "
                           "arquivo; responda com tempos relativos ao arquivo inteiro.")
         partes += _seg_lines(segs, speech)
-    partes += _regras(any(m.kind != "audio" for m, *_ in items), style)
+    partes += _regras(any(m.kind != "audio" for m, *_ in items), style, textos)
     return "\n".join(partes)
 
 
@@ -215,13 +233,13 @@ def _clip_part(f, start_s: float, end_s: float):
 
 
 def _analyze_media(db: ProjectDB, c, m: MediaInfo, todo: list[Segment], uploaded, model: str,
-                   style: StyleProfile | None) -> None:
+                   style: StyleProfile | None, textos: TextosAnalise = TEXTOS_CASAMENTO) -> None:
     speech = {s.id: segment_speech(db, m, s) for s in todo}
 
     def request(segs: list[Segment]) -> tuple[list, str]:
         clip = (segs[0].start_s, segs[-1].end_s) if uploaded is not None else None
         parts = [_clip_part(uploaded, *clip)] if clip else []
-        return parts, build_prompt(m, segs, speech, style, clip=clip)
+        return parts, build_prompt(m, segs, speech, style, clip=clip, textos=textos)
 
     for k in range(0, len(todo), BATCH):
         controle.atual().checkpoint()  # Pausar/Parar entre lotes da mídia longa
@@ -301,14 +319,14 @@ def _sozinha(m: MediaInfo, todo: list[Segment], max_video_s: float = PACOTE_MAX_
 
 
 def _analyze_solo(db: ProjectDB, c, m: MediaInfo, todo: list[Segment], model: str,
-                  style: StyleProfile | None) -> None:
+                  style: StyleProfile | None, textos: TextosAnalise = TEXTOS_CASAMENTO) -> None:
     """Mídia longa: sozinha, em lotes por intervalo (como antes dos pacotes)."""
     f = _upload(db, c, m)
     if f is None:
         return
     uploaded = None if f is _SEM_UPLOAD else f
     try:
-        _analyze_media(db, c, m, todo, uploaded, model, style)
+        _analyze_media(db, c, m, todo, uploaded, model, style, textos)
     finally:
         _delete(c, uploaded)
 
@@ -318,7 +336,7 @@ _Item = tuple[MediaInfo, list[Segment], dict[int, str], object]
 
 
 def _pack_request(items: list[_Item], style: StyleProfile | None,
-                  segs: list[Segment]) -> tuple[list, str]:
+                  segs: list[Segment], textos: TextosAnalise = TEXTOS_CASAMENTO) -> tuple[list, str]:
     """Parts e prompt só com `segs` (os arquivos sem segmento pedido ficam de fora; o recorte
     de cada vídeo vai do primeiro ao último segmento pedido dele)."""
     want = {s.id for s in segs}
@@ -335,7 +353,7 @@ def _pack_request(items: list[_Item], style: StyleProfile | None,
         if clip:
             parts.append(_clip_part(f, *clip))
         prompt_items.append((m, mine, sp, clip))
-    return parts, build_pack_prompt(prompt_items, style)
+    return parts, build_pack_prompt(prompt_items, style, textos)
 
 
 def _split(items: list[_Item]) -> tuple[list[_Item], list[_Item]] | None:
@@ -350,7 +368,8 @@ def _split(items: list[_Item]) -> tuple[list[_Item], list[_Item]] | None:
     return [(m, todo[:h], sp, f)], [(m, todo[h:], sp, f)]
 
 
-def _pack_call(db: ProjectDB, c, items: list[_Item], model: str, style: StyleProfile | None) -> None:
+def _pack_call(db: ProjectDB, c, items: list[_Item], model: str, style: StyleProfile | None,
+               textos: TextosAnalise = TEXTOS_CASAMENTO) -> None:
     # só o que ainda falta (ex.: salvo antes de uma pausa)
     sem_fala = db.segmentos_sem_fala()
     items = [(m, [s for s in todo if _pendente(db, m, s, sem_fala, sp[s.id])], sp, f)
@@ -373,13 +392,13 @@ def _pack_call(db: ProjectDB, c, items: list[_Item], model: str, style: StylePro
             falha(_MSG_MINUTO)
             return
         for h in halves:
-            _pack_call(db, c, h, model, style)
+            _pack_call(db, c, h, model, style, textos)
 
     if db.quota_strikes(key) >= MAX_MINUTE_PAUSES:
         dividir()  # já desistido numa execução anterior: segue direto com as metades
         return
     try:
-        missing, msg = _ask(db, c, model, segs, lambda want: _pack_request(items, style, want),
+        missing, msg = _ask(db, c, model, segs, lambda want: _pack_request(items, style, want, textos),
                             {s.id for _m, todo, sp, _f in items for s in todo if not sp[s.id]})
     except QuotaPaused as e:
         if e.daily or db.bump_quota_strike(key) < MAX_MINUTE_PAUSES:
@@ -399,7 +418,7 @@ def _pack_call(db: ProjectDB, c, items: list[_Item], model: str, style: StylePro
 
 
 def _analyze_pack(db: ProjectDB, c, pack: list[tuple[MediaInfo, list[Segment]]], model: str,
-                  style: StyleProfile | None) -> None:
+                  style: StyleProfile | None, textos: TextosAnalise = TEXTOS_CASAMENTO) -> None:
     """Uma chamada para o pacote todo (ou para metades, se a cota por minuto não comportar);
     o que faltar após as tentativas vira falha de cada mídia afetada. Uploads apagados no fim."""
     uploads = []
@@ -413,7 +432,7 @@ def _analyze_pack(db: ProjectDB, c, pack: list[tuple[MediaInfo, list[Segment]]],
                 uploads.append(f)
             items.append((m, todo, {s.id: segment_speech(db, m, s) for s in todo}, f))
         if items:
-            _pack_call(db, c, items, model, style)
+            _pack_call(db, c, items, model, style, textos)
     finally:
         for f in uploads:
             _delete(c, f)
@@ -421,7 +440,8 @@ def _analyze_pack(db: ProjectDB, c, pack: list[tuple[MediaInfo, list[Segment]]],
 
 def analyze_event(db: ProjectDB, c, p: EventPaths, model: str, style: StyleProfile | None = None,
                   on_progress: Callable[[int, int, str], None] | None = None,
-                  max_video_s: float = PACOTE_MAX_VIDEO_S) -> None:
+                  max_video_s: float = PACOTE_MAX_VIDEO_S,
+                  textos: TextosAnalise = TEXTOS_CASAMENTO) -> None:
     """Mídias curtas vão em pacotes (até `max_video_s` de vídeo e PACOTE_MAX_SEGMENTOS
     segmentos por chamada, na ordem do banco); mídia longa vai sozinha, em lotes por intervalo."""
     medias = [m for m in db.list_media() if m.role not in (Role.ignorar, Role.outro_dia)]
@@ -436,7 +456,7 @@ def analyze_event(db: ProjectDB, c, p: EventPaths, model: str, style: StyleProfi
         if pack:
             controle.atual().checkpoint()  # Pausar/Parar antes de cada pacote
             cur, pack, video_s, n_segs = pack, [], 0.0, 0
-            _analyze_pack(db, c, cur, model, style)
+            _analyze_pack(db, c, cur, model, style, textos)
 
     for i, m in enumerate(medias, 1):
         controle.atual().checkpoint()  # Pausar/Parar entre mídias
@@ -449,7 +469,7 @@ def analyze_event(db: ProjectDB, c, p: EventPaths, model: str, style: StyleProfi
             db.add_falha("analise", m.rel_path, "Não foi possível analisar: sem proxy para este vídeo.")
             continue
         if _sozinha(m, todo, max_video_s):
-            _analyze_solo(db, c, m, todo, model, style)
+            _analyze_solo(db, c, m, todo, model, style, textos)
             continue
         v = _video_s(m, todo)
         if pack and (video_s + v > max_video_s or n_segs + len(todo) > PACOTE_MAX_SEGMENTOS):
