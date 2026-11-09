@@ -222,7 +222,65 @@ def test_colacao_nao_precisa_de_musica(tmp_path):
     s.music_root = str(tmp_path / "SEM_HD_M")  # M: desconectado e índice vazio
     pipe.s.music_root = s.music_root
     try:
-        assert pipe._st_trilhas() == "não usado na colação"
+        assert pipe._st_trilhas().startswith("sem trilhas (os clipes saem sem música)")
         assert pipe._st_estilo() == "não usado na colação"
     finally:
         pipe.close()
+
+
+def _colacao_com_pgm(tmp_path):
+    from roteiro_ia.models import MediaInfo, SyncResult
+    pipe, s, pf = _pipe(tmp_path, tipo="colacao", nome="2026-12-10 COLACAO ESCOLA X",
+                        funcoes={"PGM": "mesa_corte", "FRIAS": "extras"})
+    for rel, role in ((r"PGM\p.mp4", Role.mesa), (r"FRIAS\f.mp4", Role.drone), (r"CAM A\a.mp4", Role.camera)):
+        mid = pipe.db.add_media(MediaInfo(rel_path=rel, folder=rel.split("\\")[0], role=role,
+                                          day_label="principal", kind="video", duration_s=60,
+                                          fps_num=30, fps_den=1, width=320, height=180, rotation=0,
+                                          audio_channels=2))
+        pipe.db.set_sync(SyncResult(media_id=mid, day_label="principal", timeline_start_s=0,
+                                    confidence=9, method="audio"))
+    return pipe
+
+
+def test_analise_da_colacao_inclui_mesa_e_frias(tmp_path, monkeypatch):
+    pipe = _colacao_com_pgm(tmp_path)
+    visto = {}
+    monkeypatch.setattr(pf_pipeline, "analyze_event", lambda *a, **k: visto.update(k))
+    pipe._st_analise()
+    medias = pipe.db.list_media()
+    pipe.close()
+    assert sorted(m.rel_path for m in medias if visto["incluir"](m)) == [r"FRIAS\f.mp4", r"PGM\p.mp4"]
+
+
+def test_falha_nos_clipes_mantem_a_integra(tmp_path, monkeypatch):
+    from roteiro_ia.areas.formatura.colacao.plano import ParteIntegra, PlanoIntegra
+    pipe = _colacao_com_pgm(tmp_path)
+    monkeypatch.setattr(pf_pipeline, "generate_roteiro",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Gemini fora do ar")))
+    plano = PlanoIntegra(partes=[ParteIntegra(numero=1, codigo="abertura", nome="Abertura",
+                                              inicio_s=0, fim_s=60, trechos=[(0, 60)], trocas=[],
+                                              cortes=[])])
+    Path(pipe.p.analysis_dir).mkdir(parents=True, exist_ok=True)
+    pipe._roteiro_clipes(plano)
+    salvo = pipe._plano_salvo()
+    assert pipe._clipes(salvo) is None
+    pipe.close()
+    assert not salvo.clipes and salvo.alertas == [
+        "Clipes de abertura e encerramento não gerados: Gemini fora do ar"]
+
+
+def test_clipes_usam_contexto_proprio(tmp_path, monkeypatch):
+    from roteiro_ia.areas.formatura.colacao.plano import PlanoIntegra
+    pipe = _colacao_com_pgm(tmp_path)
+    visto = {}
+
+    def gen(db, c, idx, style, model, n, der, pedido_ajuste=None, contexto=None):
+        visto.update(n=n, der=der, txt=contexto(db, idx, None, n, der))
+        db.add_roteiro(Roteiro(arco="a", pecas=[], alertas=[]).model_dump_json())
+    monkeypatch.setattr(pf_pipeline, "generate_roteiro", gen)
+    plano = PlanoIntegra(partes=[])
+    Path(pipe.p.analysis_dir).mkdir(parents=True, exist_ok=True)
+    pipe._roteiro_clipes(plano)
+    pipe.close()
+    assert visto["n"] is None and visto["der"] == {"trailer", "teaser"}
+    assert "10/12/2026" in visto["txt"] and plano.clipes
