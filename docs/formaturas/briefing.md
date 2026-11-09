@@ -302,6 +302,17 @@ momentos (nos clipes) e montagem.
 - Painel do Premiere: botão "Exportar entregas para o G". Ele manda cada parte para o Media
   Encoder com o nome de entrega (o preset .epr é pedido uma vez).
 
-**Próximas:** 2.4 abertura com o grande final e encerramento (com o campo "Logo da produtora"),
-2.5 cartela (depois dos vídeos de referência). **Falta testar com material real:** uma colação
+**Entregue também: abertura e encerramento (2.4).** Spec em
+`docs/superpowers/specs/2026-11-09-formatura-abertura-encerramento-design.md`.
+
+- Na colação, a mesa de corte também é analisada pelo Gemini (as ISOs não), para achar os
+  melhores momentos e as falas.
+- "00 - Abertura" (até cerca de 180 s): cartela (5 s reservados), decoração, bastidores e o grande
+  final com falas de alunos e paraninfos.
+- "NN - Encerramento" (60–90 s, animado) termina com o logo da produtora. O arquivo do logo é
+  escolhido no topo da janela "Formaturas…".
+- Os dois entram nas entregas no G (Abertura antes das partes, Encerramento depois). Se o roteiro
+  deles falhar, a íntegra sai assim mesmo, com aviso.
+
+**Próxima:** 2.5 cartela (depois dos vídeos de referência). **Falta testar com material real:** uma colação
 gravada pela mesa de corte, o botão de exportar no Premiere e os limites dos defeitos.
