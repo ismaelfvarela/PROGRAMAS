@@ -16,6 +16,7 @@ from roteiro_ia.config import Settings
 from roteiro_ia.models import Role
 from roteiro_ia.paths import build_event_paths
 from roteiro_ia.pipeline import PROJECT_FILE, Pipeline, ProjectRequest
+from roteiro_ia.ui.fila import FilaProjetos
 from roteiro_ia.ui.status import StatusPanel
 from roteiro_ia.ui.worker import PipelineWorker, Runner
 
@@ -25,6 +26,9 @@ MARGEM_RETOMADA_MS = 5_000
 TEXTO_PAUSA_COTA = "Pausado pela cota do Gemini — continua sozinho"
 TEXTO_PARADO = ("Parado. O que já foi feito está guardado: clique em Continuar para seguir de "
                 "onde parou.")
+TEXTO_PRIORIDADE = ("Pausado: o projeto {nome} tem a prioridade. Este continua sozinho quando "
+                    "ele terminar.")
+TEXTO_FORA_DA_FILA = "Tirado da fila. Clique em Iniciar quando quiser processar."
 
 
 def fmt_usd(v: float) -> str:
@@ -67,7 +71,8 @@ class ProjetoTab(QWidget):
         self.settings_path = Path(settings_path)
         self.runner = runner
         self.area = area
-        self.fila = fila
+        # sem fila compartilhada, a própria: começa na hora (um projeto só)
+        self.fila = fila if fila is not None else FilaProjetos(self)
         self._factory = factory or self._pipeline_padrao
         self._req: ProjectRequest | None = None
         self._custo = 0.0
@@ -75,6 +80,8 @@ class ProjetoTab(QWidget):
         self._ultima: tuple[str, bool, str | None] = ("run", False, None)
         self._continuar_com: tuple[str, bool, str | None] | None = None  # depois de um Parar
         self._worker: PipelineWorker | None = None
+        self._pendente: tuple[str, bool, str | None, bool] | None = None  # esperando a vez
+        self._suspenso_fila = False  # worker pausado porque outro projeto tem a prioridade
         self.rodando = False
 
         lay = QHBoxLayout(self)
@@ -99,6 +106,7 @@ class ProjetoTab(QWidget):
         self.controles.continuar.connect(self.continuar)
         self.status.btn_cota_continuar.clicked.connect(self.continuar_agora)
         self.status.btn_cota_parar.clicked.connect(self.cancelar_retomada)
+        self.status.btn_tirar_fila.clicked.connect(self.tirar_da_fila)
 
     # atalhos usados pela janela e pelos testes
     @property
@@ -114,6 +122,10 @@ class ProjetoTab(QWidget):
     # ------------------------------------------------------------ execução
     def iniciar(self) -> None:
         if self.rodando:
+            return
+        area = area_por_id(self.area)
+        if not area.pode_iniciar:  # ex.: abrir_existente chama iniciar() direto
+            self.status.banner_erro.mostrar(area.aviso_iniciar)
             return
         try:
             req = self.form.build_request()
@@ -134,10 +146,25 @@ class ProjetoTab(QWidget):
 
     def _start(self, acao: str, aprovado: bool = False, pedido: str | None = None,
                refazer_falhas: bool = True) -> None:
-        req, s, factory = self._req, self.s, self._factory
+        """Pede a vez na fila; `comecar()` roda quando for a vez deste projeto."""
         if acao != "prepare":
             self._ultima = (acao, aprovado, pedido)
         self._continuar_com = (acao, aprovado, pedido)
+        self._pendente = (acao, aprovado, pedido, refazer_falhas)
+        self._set_rodando(True)
+        self.fila.pedir(self)
+
+    # ------------------------------------------------------------ cliente da fila
+    def nome_fila(self) -> str:
+        return self._req.source_dir.name if self._req is not None else ""
+
+    def comecar(self) -> None:
+        if self._pendente is None:
+            return
+        acao, aprovado, pedido, refazer_falhas = self._pendente
+        self._pendente = None
+        self.status.btn_tirar_fila.hide()
+        req, s, factory = self._req, self.s, self._factory
         w = PipelineWorker(lambda eventos: factory(req, s, eventos), acao=acao,
                            aprovado_custo=aprovado, pedido=pedido, refazer_falhas=refazer_falhas)
         w.progresso.connect(self.status.on_progresso)
@@ -157,6 +184,43 @@ class ProjetoTab(QWidget):
         self.runner.start(w)
         self.mudou.emit()
 
+    def suspender(self) -> None:
+        if self._worker is None:
+            return
+        self._suspenso_fila = True
+        self._worker.controle.pausar()
+        dono = self.fila.ativo()
+        nome = dono.nome_fila() if dono is not None else "outro projeto"
+        texto = TEXTO_PRIORIDADE.format(nome=nome)
+        self.status.lbl_mensagem.setText(texto)
+        self.status.log_line(texto)
+
+    def retomar_suspenso(self) -> None:
+        self._suspenso_fila = False
+        if self._worker is not None:
+            self.status.log_line("Retomando: chegou a vez deste projeto.")
+            self._worker.controle.continuar()
+
+    def mostrar_espera(self, texto: str | None) -> None:
+        if texto is None:
+            self.status.btn_tirar_fila.hide()
+            return
+        self.status.lbl_mensagem.setText(texto)
+        self.status.btn_tirar_fila.show()
+
+    def tirar_da_fila(self) -> None:
+        """Desiste de esperar a vez: sai da fila e destrava o formulário."""
+        if self._pendente is None or self._worker is not None:
+            return
+        self._pendente = None
+        self.fila.sair(self)
+        self.status.btn_tirar_fila.hide()
+        self._set_rodando(False)
+        self.controles.set_estado("ocioso")
+        self.status.lbl_mensagem.setText(TEXTO_FORA_DA_FILA)
+        self.status.log_line("Tirado da fila pelo editor.")
+        self.mudou.emit()
+
     def _set_rodando(self, on: bool) -> None:
         self.rodando = on
         self.form.set_rodando(on)
@@ -169,7 +233,9 @@ class ProjetoTab(QWidget):
     def _on_estado(self, estado: str) -> None:
         if self.sender() is not self._worker:
             return  # aviso atrasado de uma execução anterior
-        if estado in ("rodando", "pausando", "pausado", "parando"):
+        if estado == "pausado" and self._suspenso_fila:
+            self.controles.set_estado(estado, "Pausado: outro projeto tem a prioridade")
+        elif estado in ("rodando", "pausando", "pausado", "parando"):
             self.controles.set_estado(estado)
 
     def pausar(self) -> None:
@@ -181,11 +247,16 @@ class ProjetoTab(QWidget):
             self._worker.controle.parar()
         elif self.em_pausa_cota():
             self.cancelar_retomada()
+        elif self._pendente is not None:
+            self.tirar_da_fila()
 
     def continuar(self) -> None:
         """▶ Continuar: solta a pausa; na pausa da cota tenta já; depois de um Parar roda de
         novo a mesma ação (o pipeline retoma pelo banco, sem refazer o que foi gravado)."""
         if self._worker is not None:
+            if self._suspenso_fila:  # a prioridade é de outro projeto: a fila solta sozinha
+                self.status.log_line("Este projeto continua sozinho quando chegar a vez dele.")
+                return
             self._worker.controle.continuar()
         elif self.em_pausa_cota():
             self.continuar_agora()
@@ -212,6 +283,7 @@ class ProjetoTab(QWidget):
         self.controles.set_estado("parado")
         self.status.lbl_mensagem.setText(TEXTO_PARADO)
         self.status.log_line("Retomada automática cancelada pelo editor.")
+        self.fila.sair(self)
         self.mudou.emit()
 
     def _on_custo(self, custo: float) -> None:
@@ -234,26 +306,30 @@ class ProjetoTab(QWidget):
         if self.sender() is not None and self.sender() is not self._worker:
             return
         self._worker = None
+        self._suspenso_fila = False
         if status == "parado":
             self._set_rodando(False)
             self.controles.set_estado("parado")
             self.status.lbl_mensagem.setText(TEXTO_PARADO)
             self.status.log_line("Parado pelo editor.")
+            self.fila.sair(self)
             self.mudou.emit()
             return
         self.controles.set_estado("ocioso")
         if status == "preparado":
             self._set_rodando(False)
             if self.confirmar_custo(self._custo):
-                self._start("run", aprovado=True)
+                self._start("run", aprovado=True)  # mantém o lugar na fila
             else:
                 self.status.lbl_mensagem.setText("Cancelado. Nada foi enviado ao Gemini.")
                 self.status.log_line("Cancelado pelo editor antes do envio ao Gemini.")
+                self.fila.sair(self)
             return
         if status == "pausado":
             self._agendar_retomada()
             return
         self._set_rodando(False)
+        self.fila.sair(self)  # concluído, ajustado ou erro: o próximo da fila começa
         if status in ("concluido", "ajustado"):
             msg = ("Roteiro ajustado: PDF e XML do Premiere atualizados." if status == "ajustado"
                    else "Pronto! O PDF do roteiro e o XML do Premiere foram gerados.")
@@ -268,6 +344,7 @@ class ProjetoTab(QWidget):
         quando = self._resume_at
         if quando is None:
             self._set_rodando(False)
+            self.fila.sair(self)
             return
         local = quando.astimezone()
         hora = f"{local:%H:%M}"
@@ -284,6 +361,7 @@ class ProjetoTab(QWidget):
         # o formulário segue travado: a retomada usa o mesmo pedido
         self.form.set_rodando(True)
         self.status.btn_ajuste.setEnabled(False)
+        self.fila.esperando_cota(self)  # o próximo da fila adianta enquanto isso
         self.mudou.emit()
 
     def _retomar(self) -> None:
