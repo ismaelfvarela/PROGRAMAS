@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFileDialog
                                QListWidgetItem, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
+from roteiro_ia.areas.formatura.ajustes import AjustesFormatura, carregar_ajustes, salvar_ajustes
 from roteiro_ia.areas.formatura.cadastro import (Curso, Formatura, avisos, duplicar, listar,
                                                  nome_exibicao, salvar)
 from roteiro_ia.config import Settings
@@ -131,6 +132,17 @@ class DialogoCadastro(QDialog):
         self.setWindowTitle("Formaturas")
         self.setMinimumSize(520, 380)
         lay = QVBoxLayout(self)
+        # logo da produtora: vale para todas as formaturas (fim do clipe de encerramento)
+        linha_logo = QHBoxLayout()
+        linha_logo.addWidget(QLabel("Logo da produtora"))
+        self.edit_logo = QLineEdit(carregar_ajustes(s).logo_produtora or "")
+        self.edit_logo.setReadOnly(True)
+        self.edit_logo.setPlaceholderText("(entra no fim do clipe de encerramento da colação)")
+        b_logo = QPushButton("Escolher…")
+        b_logo.clicked.connect(self._escolher_logo)
+        linha_logo.addWidget(self.edit_logo, 1)
+        linha_logo.addWidget(b_logo)
+        lay.addLayout(linha_logo)
         self.lista = QListWidget()
         lay.addWidget(self.lista, 1)
         self.lbl_avisos = QLabel()
@@ -150,6 +162,16 @@ class DialogoCadastro(QDialog):
         self.lista.currentItemChanged.connect(lambda *_: self._avisos())
         self.lista.itemDoubleClicked.connect(lambda *_: self.editar())
         self.recarregar()
+
+    def _escolher_logo(self) -> None:
+        v, _ = QFileDialog.getOpenFileName(self, "Logo da produtora", self.edit_logo.text(),
+                                           "Imagens (*.png *.jpg *.jpeg *.tif *.tiff *.psd);;Todos (*)")
+        if v:
+            self.definir_logo(v)
+
+    def definir_logo(self, caminho: str | None) -> None:
+        salvar_ajustes(self.s, AjustesFormatura(logo_produtora=caminho or None))
+        self.edit_logo.setText(caminho or "")
 
     def recarregar(self, selecionar: str | None = None) -> None:
         self.lista.clear()
