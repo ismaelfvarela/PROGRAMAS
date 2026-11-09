@@ -35,6 +35,7 @@ class ParteIntegra(BaseModel):
 class PlanoIntegra(BaseModel):
     partes: list[ParteIntegra]
     alertas: list[str] = []
+    clipes: bool = False  # abertura e encerramento gerados (roteiro mais recente do banco)
 
 
 def assunto(codigo: str) -> str:

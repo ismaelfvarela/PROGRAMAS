@@ -12,9 +12,12 @@ from pathlib import Path, PureWindowsPath
 from roteiro_ia.areas.formatura.colacao.plano import ParteIntegra, PlanoIntegra, Troca
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.models import MediaInfo, Role
+from roteiro_ia.areas.formatura.colacao.clipes import LOGO_S, nomes_clipes
 from roteiro_ia.premiere.fcpxml import (AUDIO_TRACKS, DEFAULT_RATE, _bin, _clipitem, _Ctx,
                                         _fill_files, _frames, _gain_level, _marker, _master_clip,
-                                        _media_src, _place_audio, _rate_el, _seq_rate, _sub)
+                                        _media_src, _place_audio, _rate_el, _seq_rate, _Src, _sub,
+                                        build_sequence)
+from roteiro_ia.script.generate import Piece
 
 MAX_ALTERNATIVAS = 2
 _EPS = 1e-6
@@ -190,21 +193,80 @@ class _Montador:
                 f"Imagem da mesa com {t.motivo}; não há ISO nem imagem fria. Confira.", s0, s1)
 
 
-def build_xml_integra(plano: PlanoIntegra, db: ProjectDB, source_root: Path) -> str:
+def _rate_da_sequencia(seq: ET.Element) -> tuple[int, int]:
+    tb = int(seq.findtext("rate/timebase") or 30)
+    return (tb * 1000, 1001) if seq.findtext("rate/ntsc") == "TRUE" else (tb, 1)
+
+
+def _pos_logo(track: ET.Element) -> int:
+    """Índice para inserir um clipitem antes de <enabled>/<locked> da faixa."""
+    for i, el in enumerate(list(track)):
+        if el.tag != "clipitem":
+            return i
+    return len(track)
+
+
+def _logo_no_fim(seq: ET.Element, ctx: _Ctx, logo: str | None) -> _Src | None:
+    """Imagem do logo (LOGO_S segundos) no fim da V1; sem o arquivo, só um marcador."""
+    fim = int(seq.findtext("duration") or 0)
+    if not logo or not Path(logo).is_file():
+        _marker(seq, "LOGO DA PRODUTORA: escolha o arquivo em Formaturas…",
+                "O encerramento termina com o logo da produtora: escolha o arquivo em "
+                "Formaturas… e reprocesse, ou coloque o logo à mão.", fim)
+        return None
+    rate = _rate_da_sequencia(seq)
+    src = _Src("file-logo", Path(logo), LOGO_S, rate, (1920, 1080), 0)
+    track = seq.find("media/video/track")
+    ci = _clipitem(track, ctx, src, Path(logo).name, fim, fim + _frames(LOGO_S, rate), 0.0,
+                   LOGO_S, rate)
+    track.remove(ci)
+    track.insert(_pos_logo(track), ci)
+    seq.find("duration").text = str(fim + _frames(LOGO_S, rate))
+    _marker(seq, "LOGO DA PRODUTORA", "Logo da produtora (fim do encerramento).", fim)
+    return src
+
+
+class _SemIndice:
+    def get(self, path):
+        return None
+
+
+def build_xml_integra(plano: PlanoIntegra, db: ProjectDB, source_root: Path,
+                      abertura: Piece | None = None, encerramento: Piece | None = None,
+                      idx=None, musicas: dict[str, str] | None = None,
+                      logo: str | None = None) -> str:
+    """Partes da íntegra; com `abertura`/`encerramento`, os clipes vêm antes e depois delas."""
     mt = _Montador(db, source_root)
     root = ET.Element("xmeml", version="4")
     project = _sub(root, "project")
     _sub(project, "name", "ROTEIRO IA")
     children = _sub(project, "children")
     integra = _bin(children, "ÍNTEGRA")
+    nome_ab, nome_enc = nomes_clipes(len(plano.partes))
+    idx = idx or _SemIndice()
+    musicas = musicas or {}
+    if abertura is not None:
+        integra.append(build_sequence(abertura, db, idx, musicas, mt.root, mt.ctx, nome_ab))
     for p in plano.partes:
         integra.append(mt.parte(p))
+    logo_src = None
+    if encerramento is not None:
+        seq = build_sequence(encerramento, db, idx, musicas, mt.root, mt.ctx, nome_enc)
+        logo_src = _logo_no_fim(seq, mt.ctx, logo)
+        integra.append(seq)
     mat = _bin(children, "MATERIAL")
     pastas: dict[str, ET.Element] = {}
     for m in sorted(mt.medias, key=lambda m: (m.folder, m.rel_path)):
         if m.folder not in pastas:
             pastas[m.folder] = _bin(mat, m.folder)
         _master_clip(pastas[m.folder], mt.ctx, _nome(m), _media_src(m, mt.ctx, mt.root, DEFAULT_RATE))
+    if mt.ctx.music_used:
+        tri = _bin(children, "TRILHAS")
+        for fid, mpath, dur in mt.ctx.music_used:
+            _master_clip(tri, mt.ctx, PureWindowsPath(mpath).name,
+                         _Src(fid, Path(mpath), dur, mt.ctx.file_rates[fid], None, 2))
+    if logo_src is not None:
+        _master_clip(_bin(children, "GRAFISMOS"), mt.ctx, logo_src.path.name, logo_src)
     _fill_files(root, mt.ctx)
     ET.indent(root, space="  ")
     return ('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n'

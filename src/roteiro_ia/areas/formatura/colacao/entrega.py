@@ -20,13 +20,15 @@ def nome_arquivo(nome: str) -> str:
 
 
 def write_job_integra(p: EventPaths, s: Settings, xml_path: Path, db: ProjectDB,
-                      plano: PlanoIntegra) -> Path:
+                      plano: PlanoIntegra,
+                      clipes: tuple[str | None, str | None] = (None, None)) -> Path:
+    """`clipes`: nomes das sequências de abertura e encerramento (None = não gerada)."""
     out = write_job(p, s, xml_path, db)
     job = json.loads(Path(out).read_text(encoding="utf-8"))
-    job["entregas"] = [
-        {"sequencia": nome_sequencia(pt),
-         "arquivo": str(Path(p.export_dir) / f"{nome_arquivo(nome_sequencia(pt))}.mp4")}
-        for pt in plano.partes]
+    nomes = ([clipes[0]] if clipes[0] else []) + [nome_sequencia(pt) for pt in plano.partes] \
+        + ([clipes[1]] if clipes[1] else [])
+    job["entregas"] = [{"sequencia": n, "arquivo": str(Path(p.export_dir) / f"{nome_arquivo(n)}.mp4")}
+                       for n in nomes]
     texto = json.dumps(job, ensure_ascii=False, indent=2)
     safe_write_text(out, texto, s)
     safe_write_text(Path(s.system_dir) / "ultimo_job.json", texto, s)

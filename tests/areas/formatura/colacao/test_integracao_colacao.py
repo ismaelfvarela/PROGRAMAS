@@ -17,9 +17,13 @@ from roteiro_ia.media.tools import ffmpeg_bin
 from roteiro_ia.models import FolderAssignment, Role, SceneAnalysis, Word
 from roteiro_ia.pipeline import STAGES
 from roteiro_ia.report.pdf import find_edge
+from roteiro_ia.script.generate import Piece, Roteiro, SceneRef
+from roteiro_ia.areas.formatura.ajustes import AjustesFormatura, salvar_ajustes
 
 pytestmark = pytest.mark.integracao
 EVENTO = "2026-12-10 COLACAO ESCOLA X"
+PGM = "PGM" + chr(92) + "p.mp4"
+FRIAS = "FRIAS" + chr(92) + "f.mp4"
 
 
 def _ff(*args):
@@ -63,6 +67,16 @@ class FakeGemini:
         if schema is RespostaPartes:
             return RespostaPartes(partes=[ParteDetectada(codigo="abertura", inicio_s=0),
                                           ParteDetectada(codigo="hino", inicio_s=6)])
+        if schema is Roteiro:
+            def ref(rel, a, b):
+                return SceneRef(rel_path=rel, start_s=a, end_s=b, descricao="cena", fala=None, motivo=None)
+
+            def peca(tipo):
+                return Piece(tipo=tipo, numero=None, titulo=tipo, tema="t", abertura=ref(FRIAS, 0, 2),
+                             desenvolvimento=[ref(PGM, 1, 3)], gancho=None, gancho_resolve_em=None,
+                             curva_emocao=[6, 9], duracao_estimada_s=4, misturas=[], trilhas=[],
+                             termos_musicbed=[])
+            return Roteiro(arco="festa", pecas=[peca("trailer"), peca("teaser")], alertas=[])
         raise AssertionError(schema)
 
 
@@ -101,6 +115,9 @@ def test_colacao_completa(tmp_path, monkeypatch):
                      FolderAssignment(folder="CAM A", role=Role.camera),
                      FolderAssignment(folder="FRIAS", role=Role.drone)],
         n_episodios=1, derivados=set(), gemini_mode="gratis", area="formatura", formatura=pf)
+    logo = tmp_path / "logo.png"
+    _ff("-f", "lavfi", "-i", "color=white:size=64x64:d=1", "-frames:v", "1", str(logo))
+    salvar_ajustes(s, AjustesFormatura(logo_produtora=str(logo)))
     g = FakeGemini()
     with PipelineFormatura(req, s, g, FakeWhisper(), None,
                            settings_path=tmp_path / "SIS" / "config.json") as pipe:
@@ -117,10 +134,14 @@ def test_colacao_completa(tmp_path, monkeypatch):
     xml = (p.analysis_dir / f"{EVENTO} - PREMIERE.xml").read_text(encoding="utf-8")
     root = ET.fromstring(xml.split("\n", 2)[2])
     seqs = {sq.findtext("name"): sq for sq in root.iter("sequence")}
-    assert list(seqs) == ["01 - Abertura do Mestre de Cerimônias e Entrada dos Professores",
-                          "02 - Hino Nacional"]
+    assert list(seqs) == ["00 - Abertura",
+                          "01 - Abertura do Mestre de Cerimônias e Entrada dos Professores",
+                          "02 - Hino Nacional", "03 - Encerramento"]
+    v1 = [c.findtext("name") for c in seqs["03 - Encerramento"].find("media/video/track").findall("clipitem")]
+    assert v1[-1] == "logo.png" and g.schemas.count("Roteiro") == 1
     nomes = [m.findtext("name") for m in seqs["02 - Hino Nacional"].findall("marker")]
     assert "TROCA: escuro → CAM A" in nomes and any(n.startswith("CORTE:") for n in nomes)
     job = json.loads((p.analysis_dir / "job.json").read_text(encoding="utf-8"))
-    assert job["entregas"][1]["arquivo"].endswith("02 - Hino Nacional.mp4")
+    assert [e["sequencia"][:2] for e in job["entregas"]] == ["00", "01", "02", "03"]
+    assert job["entregas"][2]["arquivo"].endswith("02 - Hino Nacional.mp4")
     assert p.pdf_path.read_bytes().startswith(b"%PDF")

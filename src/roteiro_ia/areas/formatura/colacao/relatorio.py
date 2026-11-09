@@ -13,7 +13,20 @@ def _hms(t: float) -> str:
     return f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}"
 
 
-def render_relatorio(plano: PlanoIntegra, evento: str) -> str:
+def _clipes_html(r) -> str:
+    if r is None:
+        return "<p>Não gerados (veja os avisos).</p>"
+    nomes = {"trailer": "Abertura", "teaser": "Encerramento"}
+    out = []
+    for pc in r.pecas:
+        cenas = [pc.abertura, *pc.desenvolvimento]
+        falas = "".join(f"<li>“{escape(c.fala)}”</li>" for c in cenas if c.fala)
+        out.append(f"<h3>{escape(nomes.get(pc.tipo, pc.titulo))} — cerca de {_hms(pc.duracao_estimada_s)}</h3>"
+                   f"<p>{escape(pc.tema)}</p>" + (f"<ul>{falas}</ul>" if falas else ""))
+    return "".join(out) or "<p>Nenhum.</p>"
+
+
+def render_relatorio(plano: PlanoIntegra, evento: str, clipes=None) -> str:
     linhas = []
     for p in plano.partes:
         dur = sum(b - a for a, b in p.trechos)
@@ -41,5 +54,6 @@ marcador. Confira os marcadores e use "Pedir ajuste" se uma parte começou no lu
 <th>Espaço morto cortado</th><th>Trocas de imagem</th></tr>
 {''.join(linhas)}
 </table>
+<h2>Clipes de abertura e encerramento</h2>{_clipes_html(clipes)}
 <h2>Avisos</h2><ul>{alertas}</ul>
 </body></html>"""

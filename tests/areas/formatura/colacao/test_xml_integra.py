@@ -130,3 +130,56 @@ def test_corte_no_comeco_da_parte_tem_marcador(db, tmp_path):
     seq = _seqs(build_xml_integra(plano, db, tmp_path))["01 - Hino Nacional"]
     mk = [(m.findtext("name"), m.findtext("in")) for m in seq.findall("marker")]
     assert mk == [("CORTE: 6 s sem fala", "0")]
+
+
+def _peca(tipo, rel="PGM\p1.mp4"):
+    from roteiro_ia.script.generate import Piece, SceneRef
+    ref = SceneRef(rel_path=rel, start_s=1, end_s=4, descricao="d", fala=None, motivo=None)
+    return Piece(tipo=tipo, numero=None, titulo=tipo, tema="t", abertura=ref, desenvolvimento=[],
+                 gancho=None, gancho_resolve_em=None, curva_emocao=[5], duracao_estimada_s=3,
+                 misturas=[], trilhas=[], termos_musicbed=[])
+
+
+class _Idx:
+    def get(self, path):
+        return None
+
+
+def test_clipes_antes_e_depois_das_partes_com_logo(db, tmp_path):
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(b"png")
+    xml = build_xml_integra(PLANO, db, tmp_path, abertura=_peca("trailer"),
+                            encerramento=_peca("teaser"), idx=_Idx(), musicas={}, logo=str(logo))
+    seqs = _seqs(xml)
+    assert list(seqs) == ["00 - Abertura", "01 - Abertura do Mestre", "02 - Hino Nacional",
+                          "03 - Encerramento"]
+    enc = seqs["03 - Encerramento"]
+    v1 = _v1(enc)
+    assert v1[-1][0] == "logo.png" and v1[-1][1] == v1[-2][2]
+    assert int(enc.findtext("duration")) == v1[-1][2]
+    assert "LOGO DA PRODUTORA" in [m.findtext("name") for m in enc.findall("marker")]
+    assert "logo.png" in xml.split("<bin>")[-1] or "GRAFISMOS" in xml
+
+
+def test_encerramento_sem_logo_marca(db, tmp_path):
+    xml = build_xml_integra(PLANO, db, tmp_path, encerramento=_peca("teaser"), idx=_Idx(),
+                            musicas={}, logo=str(tmp_path / "sumiu.png"))
+    enc = _seqs(xml)["03 - Encerramento"]
+    assert [n for n, *_ in _v1(enc)] == ["p1.mp4"]
+    assert "LOGO DA PRODUTORA: escolha o arquivo em Formaturas…" in [
+        m.findtext("name") for m in enc.findall("marker")]
+
+
+def test_entregas_com_clipes(tmp_path, db):
+    s = Settings(protected_roots=[str(tmp_path / "R")], work_drive=str(tmp_path / "Y"),
+                 e_root=str(tmp_path / "E"), g_root=str(tmp_path / "G"), system_dir=str(tmp_path / "S"))
+    src = tmp_path / "R" / "2026-12-10 COLACAO ESCOLA X"
+    src.mkdir(parents=True)
+    p = build_event_paths(src, s, s.work_drive)
+    Path(p.analysis_dir).mkdir(parents=True)
+    xml = Path(p.analysis_dir) / "x.xml"
+    xml.write_text("<x/>", encoding="utf-8")
+    out = write_job_integra(p, s, xml, db, PLANO, clipes=("00 - Abertura", "03 - Encerramento"))
+    job = json.loads(out.read_text(encoding="utf-8"))
+    assert [e["sequencia"] for e in job["entregas"]] == [
+        "00 - Abertura", "01 - Abertura do Mestre", "02 - Hino Nacional", "03 - Encerramento"]

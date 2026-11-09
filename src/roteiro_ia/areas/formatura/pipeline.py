@@ -8,10 +8,13 @@ from pathlib import Path
 
 from roteiro_ia.areas.formatura.analise import TEXTOS_POR_TIPO
 from roteiro_ia.areas.formatura.cadastro import carregar
+from roteiro_ia.areas.formatura.ajustes import carregar_ajustes
+from roteiro_ia.areas.formatura.colacao.clipes import contexto_abertura_encerramento, nomes_clipes
 from roteiro_ia.areas.formatura.colacao.defeitos import Defeito, classificar, medir
 from roteiro_ia.areas.formatura.colacao.entrega import write_job_integra
 from roteiro_ia.areas.formatura.colacao.frias import banco_frias
-from roteiro_ia.areas.formatura.colacao.partes import detectar_partes, transcricao_em_linhas
+from roteiro_ia.areas.formatura.colacao.partes import (ParteNomeada, detectar_partes,
+                                                       transcricao_em_linhas)
 from roteiro_ia.areas.formatura.colacao.plano import PlanoIntegra, montar_plano
 from roteiro_ia.areas.formatura.colacao.relatorio import render_relatorio
 from roteiro_ia.areas.formatura.colacao.silencio import silencios
@@ -26,12 +29,13 @@ from roteiro_ia.db import ProjectDB
 from roteiro_ia.gemini.analysis import analyze_event
 from roteiro_ia.models import MediaInfo, Role
 from roteiro_ia.music_index import IndiceFiltrado
-from roteiro_ia.paths import build_event_paths
-from roteiro_ia.pipeline import Pipeline, PipelineError
+from roteiro_ia.paths import EventNameError, build_event_paths, parse_event_name
+from roteiro_ia.gemini.client import QuotaPaused
+from roteiro_ia.pipeline import Pipeline, PipelineError, music_paths
 from roteiro_ia.premiere.fcpxml import write_xml
 from roteiro_ia.report.pdf import html_to_pdf
 from roteiro_ia.safety import safe_mkdir, safe_write_text
-from roteiro_ia.script.generate import generate_roteiro
+from roteiro_ia.script.generate import Roteiro, generate_roteiro
 
 MSG_SEM_PGM = "Marque a pasta da mesa de corte (PGM, CORTE ou ATEM)."
 ARQ_INTEGRA = "integra.json"
@@ -85,9 +89,12 @@ class PipelineFormatura(Pipeline):
         return super()._st_estilo()
 
     def _st_trilhas(self) -> str:
-        if self._colacao():  # a íntegra não leva música: não depende do HD de músicas
-            return "não usado na colação"
-        return super()._st_trilhas()
+        if not self._colacao():
+            return super()._st_trilhas()
+        try:  # só os clipes de abertura/encerramento usam música: sem o HD, a colação segue
+            return super()._st_trilhas()
+        except PipelineError as e:
+            return f"sem trilhas (os clipes saem sem música): {e}"
 
     def _rels_frias(self) -> set[str]:
         pf = self.projeto()
@@ -98,10 +105,10 @@ class PipelineFormatura(Pipeline):
         model, _ = self._models()
         incluir = None
         if self._colacao():
-            frias = self._rels_frias()
-            if not frias:
-                return "sem imagens frias"
-            incluir = (lambda m: m.rel_path in frias)  # noqa: E731
+            # imagens frias (banco de cobertura) e a mesa de corte (melhores momentos e falas dos
+            # clipes de abertura e encerramento); as ISOs não, pelo custo
+            alvo = self._rels_frias() | {m.rel_path for m, _t in self._pgms()}
+            incluir = (lambda m: m.rel_path in alvo)  # noqa: E731
         analyze_event(self.db, self._client(), self.p, model, self._perfil(),
                       on_progress=self._progress("analise"),
                       max_video_s=self.s.gemini_pacote_max_s,
@@ -111,7 +118,8 @@ class PipelineFormatura(Pipeline):
     def _st_roteiro(self) -> str | None:
         if self._colacao():
             plano = self._plano_integra()
-            return f"{len(plano.partes)} parte(s)"
+            self._roteiro_clipes(plano)
+            return f"{len(plano.partes)} parte(s)" + (" + abertura e encerramento" if plano.clipes else "")
         pf = self.projeto()
         _, model = self._models()
         pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
@@ -128,15 +136,24 @@ class PipelineFormatura(Pipeline):
     def _st_pdf(self) -> None:
         if not self._colacao():
             return super()._st_pdf()
-        html = render_relatorio(self._plano_salvo(), self.p.event_name)
+        plano = self._plano_salvo()
+        html = render_relatorio(plano, self.p.event_name, self._clipes(plano))
         html_to_pdf(html, self.p.pdf_path, self.s, html_path=Path(self.p.analysis_dir) / "integra.html")
 
     def _st_premiere(self) -> None:
         if not self._colacao():
             return super()._st_premiere()
         plano = self._plano_salvo()
-        xml_path = write_xml(build_xml_integra(plano, self.db, self.source), self.p, self.s)
-        write_job_integra(self.p, self.s, xml_path, self.db, plano)
+        r = self._clipes(plano)
+        ab = next((pc for pc in r.pecas if pc.tipo == "trailer"), None) if r else None
+        enc = next((pc for pc in r.pecas if pc.tipo == "teaser"), None) if r else None
+        nome_ab, nome_enc = nomes_clipes(len(plano.partes))
+        xml = build_xml_integra(plano, self.db, self.source, abertura=ab, encerramento=enc,
+                                idx=self._index(), musicas=music_paths(r, self.p, self.s) if r else {},
+                                logo=carregar_ajustes(self._base).logo_produtora)
+        xml_path = write_xml(xml, self.p, self.s)
+        write_job_integra(self.p, self.s, xml_path, self.db, plano,
+                          clipes=(nome_ab if ab else None, nome_enc if enc else None))
 
     # ------------------------------------------------------------ clipes
     def _ideia(self, pf: ProjetoFormatura) -> str | None:
@@ -228,6 +245,35 @@ class PipelineFormatura(Pipeline):
         plano.alertas = alertas + al_partes + plano.alertas
         safe_write_text(Path(self.p.analysis_dir) / ARQ_INTEGRA, plano.model_dump_json(indent=1), self.s)
         return plano
+
+    def _roteiro_clipes(self, plano: PlanoIntegra) -> None:
+        """Roteiro da abertura e do encerramento; uma falha comum não derruba a íntegra."""
+        pf = self.projeto()
+        _, model = self._models()
+        partes = [ParteNomeada(codigo=p.codigo, nome=p.nome, inicio_s=p.inicio_s) for p in plano.partes]
+        try:
+            data = parse_event_name(self.source.name).isoformat()
+        except EventNameError:
+            data = None
+        pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
+        ctx = contexto_abertura_encerramento(pf, carregar(self._base, pf.formatura_id), partes, data)
+        try:
+            generate_roteiro(self.db, self._client(), IndiceFiltrado(self._index(), Path(pasta)),
+                             self._perfil(), model, None, {"trailer", "teaser"},
+                             pedido_ajuste=self._pedido, contexto=ctx)
+            plano.clipes = True
+        except QuotaPaused:
+            raise
+        except Exception as e:  # noqa: BLE001 - a íntegra sai mesmo sem os clipes
+            plano.clipes = False
+            plano.alertas.append(f"Clipes de abertura e encerramento não gerados: {e}")
+        safe_write_text(Path(self.p.analysis_dir) / ARQ_INTEGRA, plano.model_dump_json(indent=1), self.s)
+
+    def _clipes(self, plano: PlanoIntegra) -> Roteiro | None:
+        if not plano.clipes:
+            return None
+        txt = self.db.latest_roteiro()
+        return Roteiro.model_validate_json(txt) if txt else None
 
     def _plano_salvo(self) -> PlanoIntegra:
         try:

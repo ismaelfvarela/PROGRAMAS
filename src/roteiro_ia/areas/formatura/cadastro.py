@@ -93,6 +93,8 @@ def listar(s: Settings) -> list[Formatura]:
     except OSError:
         return []
     for p in arquivos:
+        if p.stem.startswith("_"):  # _ajustes.json e afins não são fichas
+            continue
         f = carregar(s, p.stem)
         if f is not None:
             out.append(f)
