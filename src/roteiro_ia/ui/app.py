@@ -240,10 +240,12 @@ class MainWindow(QMainWindow):
         # runner.ativo(): também tarefas auxiliares (índice de trilhas, estilo, estimativa)
         ocupado = any(pj.rodando or pj.timer_retomar.isActive() for pj in self.projetos())
         if ocupado or self.fila.na_fila() or self.runner.ativo():
+            texto = ("Há um processamento em andamento. Fechar mesmo assim?\n\nDa próxima vez, use "
+                     "\"Continuar projeto existente…\" para seguir de onde parou.")
+            if na_fila := self.fila.na_fila():
+                texto += "\n\nNa fila: " + ", ".join(c.nome_fila() for c in na_fila) + "."
             r = QMessageBox.question(
-                self, "Fechar o Roteiro IA",
-                "Há um processamento em andamento. Fechar mesmo assim?\n\nDa próxima vez, use "
-                "\"Continuar projeto existente…\" para seguir de onde parou.",
+                self, "Fechar o Roteiro IA", texto,
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r != QMessageBox.Yes:
                 e.ignore()

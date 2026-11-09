@@ -558,3 +558,18 @@ def test_indice_filtrado_inclui_subpastas_e_ignora_resto(tmp_path):
     f = IndiceFiltrado(idx, m / "com")  # caixa diferente de propósito
     assert sorted(Path(t.path).name for t in f.all()) == ["a.wav", "b.wav"]
     assert f.get(os.path.abspath(m / "OUTRA" / "c.wav")) is not None  # delegação
+
+
+def test_update_index_com_root_de_grafia_diferente_nao_remove_nem_reanalisa(tmp_path):
+    from pathlib import Path
+    s = _settings(tmp_path)
+    m = tmp_path / "musicas"
+    (m / "A").mkdir(parents=True)
+    _click(m / "A" / "x.wav")
+    idx = MusicIndex(tmp_path / "t.db", s)
+    assert update_index(s, idx, tracker=LibrosaTracker(), root=m / "A") == 1
+    antes = [t.path for t in idx.all()]
+    # mesma pasta com a caixa trocada (no Windows o os.walk devolve a grafia do root)
+    assert update_index(s, idx, tracker=LibrosaTracker(), root=m / "a") == 0
+    assert [t.path for t in idx.all()] == antes
+    assert Path(antes[0]).name == "x.wav"

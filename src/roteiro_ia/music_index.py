@@ -801,6 +801,11 @@ def _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_ver
             if Path(n).suffix.lower() in AUDIO_EXTS:
                 f = Path(dirpath) / n
                 files.append((f, os.path.abspath(f)))
+    if filtrar:
+        # grafia guardada no banco (maiúsculas, UNC x letra) pode diferir da do os.walk: a
+        # decisão de existir/remover usa a forma normalizada e mantém a chave guardada
+        guardado = {_norm_caminho(t.path): t.path for t in idx.all()}
+        files = [(f, guardado.get(_norm_caminho(key), key)) for f, key in files]
     existing = {key for _, key in files}
     done = 0
     tentou_modelos = False
@@ -827,7 +832,10 @@ def _update_index(s, idx, on_progress, tracker, separator, tagger, atualizar_ver
                     continue  # parcial e os modelos continuam indisponíveis
                 if tracker is None:
                     tracker = _default_tracker()
-                idx.upsert(analyze_track(f, tracker, separator, tagger, carregar_modelos=False))
+                nova = analyze_track(f, tracker, separator, tagger, carregar_modelos=False)
+                if nova.path != key:
+                    nova = nova.model_copy(update={"path": key})
+                idx.upsert(nova)
                 done += 1
             except TrilhaLongaDemais as e:
                 log.warning("Trilha longa demais, ignorada: '%s' (%s).", f.name, e)

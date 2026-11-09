@@ -104,3 +104,23 @@ def test_achado_no_disco_usa_area_do_projeto_json(tmp_path):
     _projeto_area(tmp_path, "2024-01-20 FORMATURA C", "formatura")
     assert recentes.listar(s, [y], area="casamento") == []
     assert recentes.listar(s, [y], area="formatura")[0].area == "formatura"
+
+
+def test_recente_legado_sem_area_e_casamento(tmp_path):
+    s = _s(tmp_path)
+    y = str(tmp_path / "Y")
+    a = _projeto(tmp_path, "2023-09-09 CASAMENTO A")
+    Path(s.system_dir).mkdir(parents=True, exist_ok=True)
+    (Path(s.system_dir) / recentes.ARQUIVO).write_text(
+        json.dumps([{"pasta": str(a), "disco": y, "aberto_em": "2023-09-10T10:00:00"}]),
+        encoding="utf-8")  # formato antigo: sem "area"
+    assert [r.pasta for r in recentes.listar(s, [y], area="casamento")] == [a]
+    assert recentes.listar(s, [y], area="formatura") == []
+
+
+def test_projeto_json_sem_area_achado_no_disco_e_casamento(tmp_path):
+    s = _s(tmp_path)
+    y = str(tmp_path / "Y")
+    a = _projeto(tmp_path, "2023-09-09 CASAMENTO A")  # projeto.json sem "area"
+    assert [r.pasta for r in recentes.listar(s, [y], area="casamento")] == [a]
+    assert recentes.listar(s, [y], area="formatura") == []

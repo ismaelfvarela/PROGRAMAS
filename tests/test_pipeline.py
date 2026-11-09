@@ -658,3 +658,45 @@ def test_estilo_do_pipeline_usa_a_area_do_projeto(tmp_path, monkeypatch):
     assert pipe._st_estilo() == "perfil criado"
     assert vistas == ["formatura", ("b", "formatura")]
     pipe.close()
+
+
+def _caminhos_vistos_pelo_roteiro(pipe, monkeypatch):
+    seen = {}
+
+    def fake_generate(db, c, idx, style, model, n_episodios, derivados, pedido_ajuste=None):
+        seen["paths"] = sorted(t.path for t in idx.all())
+        return roteiro_com([])
+    monkeypatch.setattr(pipeline, "generate_roteiro", fake_generate)
+    pipe._st_roteiro()
+    return seen["paths"]
+
+
+def test_roteiro_sem_pasta_propria_ignora_trilhas_fora_da_pasta_padrao(tmp_path, sleeps,
+                                                                       monkeypatch):
+    import os
+    pipe, _calls, _ = mk_pipe(tmp_path)
+    assert pipe.run() == "concluido"
+    dentro = os.path.abspath(tmp_path / "M" / "a.wav")
+    privada = os.path.abspath(tmp_path / "R" / "OUTRO CASAMENTO" / "MUSICAS" / "b.wav")
+    pipe._index().upsert(tr(dentro))
+    pipe._index().upsert(tr(privada))
+    assert _caminhos_vistos_pelo_roteiro(pipe, monkeypatch) == [dentro]
+    pipe.close()
+
+
+def test_roteiro_com_pasta_propria_usa_so_ela(tmp_path, sleeps, monkeypatch):
+    import os
+    s = mk_settings(tmp_path)
+    req = mk_req(tmp_path)
+    req.pasta_musicas = str(tmp_path / "R" / "PRIVADA")
+    pipe = Pipeline(req, s, FakeGemini(), None, lambda *a: None,
+                    settings_path=tmp_path / "SIS" / "config.json")
+    for n in STAGES:
+        pipe.impl[n] = (lambda: None)
+    assert pipe.run() == "concluido"
+    dentro = os.path.abspath(tmp_path / "M" / "a.wav")
+    propria = os.path.abspath(tmp_path / "R" / "PRIVADA" / "b.wav")
+    pipe._index().upsert(tr(dentro))
+    pipe._index().upsert(tr(propria))
+    assert _caminhos_vistos_pelo_roteiro(pipe, monkeypatch) == [propria]
+    pipe.close()

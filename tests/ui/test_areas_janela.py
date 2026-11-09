@@ -266,3 +266,15 @@ def test_fechar_com_sim_nao_inicia_projeto_da_fila(qtbot, duas_na_janela, monkey
     w.runner.wait_all(5000)
     assert cham_b == [] and b._worker is None
     assert w.fila.ativo() is None and w.fila.na_fila() == []
+
+
+def test_fechar_cita_os_projetos_na_fila(janela, monkeypatch):
+    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtWidgets import QMessageBox
+    perguntas = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: perguntas.append(a) or QMessageBox.No)
+    janela.fila.pedir(_Cliente("2023-09-09 A"))
+    janela.fila.pedir(_Cliente("2026-12-01 B"))
+    janela.closeEvent(QCloseEvent())
+    assert "Na fila: 2026-12-01 B." in perguntas[0][2]

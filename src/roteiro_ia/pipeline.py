@@ -12,7 +12,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Literal
 
 from roteiro_ia import controle
-from roteiro_ia.config import Settings, save_settings, urls_estilo
+from roteiro_ia.config import Settings, pasta_musicas_padrao, save_settings, urls_estilo
 from roteiro_ia.controle import Interrompido
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.gemini.analysis import analises_desatualizadas, analyze_event
@@ -469,7 +469,9 @@ class Pipeline:
                 raise PipelineError(
                     f"{e} Não há trilhas no índice: conecte a pasta de músicas e use "
                     "'roteiro-ia trilhas' para criar o índice.") from None
-            self._emit("trilhas", f"{e} Usando o índice existente ({len(idx.all())} trilhas).", 1.0)
+            vistas = IndiceFiltrado(idx, Path(self.req.pasta_musicas))                 if self.req.pasta_musicas else idx
+            self._emit("trilhas", f"{e} Usando o índice existente ({len(vistas.all())} trilhas).",
+                       1.0)
             self._avisar_trilhas_antigas(idx)
             return "índice existente (pasta de músicas inacessível)"
         self._avisar_trilhas_antigas(idx)
@@ -483,9 +485,10 @@ class Pipeline:
 
     def _st_roteiro(self) -> None:
         _, model = self._models()
-        idx = self._index()
-        if self.req.pasta_musicas:
-            idx = IndiceFiltrado(idx, Path(self.req.pasta_musicas))
+        # sempre filtrado: sem pasta própria vale a pasta padrão da área (Casamento sem config
+        # = music_root); trilhas que outro projeto indexou de pasta privada ficam de fora
+        pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
+        idx = IndiceFiltrado(self._index(), Path(pasta))
         generate_roteiro(self.db, self._client(), idx, self._perfil(), model,
                          self.req.n_episodios, set(self.req.derivados), pedido_ajuste=self._pedido)
 

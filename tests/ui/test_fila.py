@@ -231,3 +231,48 @@ def test_formatura_iniciar_direto_recusa(qtbot, settings_tmp, tmp_path, evento):
     assert not tab.rodando and tab._worker is None and chamadas == []
     assert tab.status.banner_erro.text() == "A Formatura chega na próxima etapa."
     runner.wait_all(5000)  # a leitura da pasta roda numa thread
+
+
+class _PipeErro:
+    """Espera ser liberado e então falha."""
+
+    def __init__(self, liberar, chamadas):
+        self.liberar, self.chamadas = liberar, chamadas
+
+    def run(self, aprovado_custo=False, refazer_falhas=True):
+        self.chamadas.append("run")
+        self.liberar.wait(5)
+        raise RuntimeError("falhou de propósito")
+
+    def close(self):
+        pass
+
+
+def test_fila_avanca_quando_o_primeiro_termina_parado(qtbot, duas_abas):
+    fila, ((a, lib_a, cham_a), (b, lib_b, cham_b)) = duas_abas
+    a._factory = lambda req, s, e: _Pipe(lib_a, cham_a)
+    a.btn_iniciar.click()
+    qtbot.waitUntil(lambda: cham_a == ["run"], timeout=3000)
+    b.btn_iniciar.click()
+    assert fila.na_fila() == [b] and cham_b == []
+    a.parar()
+    qtbot.waitUntil(lambda: cham_b == ["run"], timeout=5000)
+    assert fila.ativo() is b and not a.rodando
+    lib_b.set()
+    qtbot.waitUntil(lambda: b.status.painel_final.isVisibleTo(b), timeout=5000)
+    assert fila.ativo() is None
+
+
+def test_fila_avanca_quando_o_primeiro_termina_com_erro(qtbot, duas_abas):
+    fila, ((a, lib_a, cham_a), (b, lib_b, cham_b)) = duas_abas
+    a._factory = lambda req, s, e: _PipeErro(lib_a, cham_a)
+    a.btn_iniciar.click()
+    qtbot.waitUntil(lambda: cham_a == ["run"], timeout=3000)
+    b.btn_iniciar.click()
+    assert fila.na_fila() == [b] and cham_b == []
+    lib_a.set()                                 # a falha -> b começa
+    qtbot.waitUntil(lambda: cham_b == ["run"], timeout=5000)
+    assert fila.ativo() is b and not a.rodando
+    lib_b.set()
+    qtbot.waitUntil(lambda: b.status.painel_final.isVisibleTo(b), timeout=5000)
+    assert fila.ativo() is None
