@@ -27,6 +27,7 @@ class Recente:
     disco: str             # disco de trabalho
     aberto_em: datetime | None
     alterado_em: datetime | None
+    area: str = "casamento"
 
     @property
     def nome(self) -> str:
@@ -49,11 +50,13 @@ def _ler(s: Settings) -> list[dict]:
     return [d for d in data if isinstance(d, dict) and d.get("pasta")] if isinstance(data, list) else []
 
 
-def registrar(s: Settings, pasta: Path, disco: str, agora: datetime | None = None) -> None:
+def registrar(s: Settings, pasta: Path, disco: str, agora: datetime | None = None,
+              area: str = "casamento") -> None:
     """Põe o projeto no topo da lista (chamado ao Iniciar/Continuar)."""
     itens = [d for d in _ler(s) if _chave(d["pasta"]) != _chave(pasta)]
     itens.insert(0, {"pasta": str(pasta), "disco": disco,
-                     "aberto_em": (agora or datetime.now()).isoformat(timespec="seconds")})
+                     "aberto_em": (agora or datetime.now()).isoformat(timespec="seconds"),
+                     "area": area})
     try:
         safe_write_text(_arquivo(s), json.dumps(itens[:MAX_RECENTES], ensure_ascii=False, indent=2), s)
     except Exception as e:  # noqa: BLE001 - a lista é só conveniência
@@ -77,7 +80,7 @@ def _alterado_em(analise: Path) -> datetime | None:
     return datetime.fromtimestamp(max(ts)) if ts else None
 
 
-def _achados(discos: list[str]) -> list[tuple[Path, str]]:
+def _achados(discos: list[str]) -> list[tuple[Path, str, str]]:
     """Projetos no disco de trabalho: <disco>\\EDIÇÃO <ano>\\<evento>\\ANALISE\\projeto.json."""
     out = []
     for disco in discos:
@@ -90,15 +93,16 @@ def _achados(discos: list[str]) -> list[tuple[Path, str]]:
             for f in ano.glob(f"*/ANALISE/{PROJECT_FILE}"):
                 try:
                     d = json.loads(f.read_text(encoding="utf-8"))
-                    out.append((Path(d["source_dir"]), str(d.get("work_drive") or disco)))
+                    out.append((Path(d["source_dir"]), str(d.get("work_drive") or disco),
+                                str(d.get("area") or "casamento")))
                 except (OSError, ValueError, KeyError, TypeError):
                     continue
     return out
 
 
-def listar(s: Settings, discos: list[str]) -> list[Recente]:
+def listar(s: Settings, discos: list[str], area: str | None = None) -> list[Recente]:
     """Abertos por último primeiro; depois os achados nos discos, do alterado mais recente.
-    Só entram projetos cujo projeto.json ainda existe."""
+    Só entram projetos cujo projeto.json ainda existe. Com `area`, só os dela (None = todos)."""
     vistos: set[str] = set()
     abertos: list[Recente] = []
     for d in _ler(s):
@@ -111,14 +115,17 @@ def listar(s: Settings, discos: list[str]) -> list[Recente]:
             quando = datetime.fromisoformat(str(d.get("aberto_em")))
         except ValueError:
             quando = None
-        abertos.append(Recente(pasta, disco, quando, _alterado_em(analise)))
+        a = str(d.get("area") or "casamento")
+        if area is None or a == area:
+            abertos.append(Recente(pasta, disco, quando, _alterado_em(analise), a))
     achados: list[Recente] = []
-    for pasta, disco in _achados([d for d in dict.fromkeys(discos) if d]):
+    for pasta, disco, a in _achados([d for d in dict.fromkeys(discos) if d]):
         analise = _analise(pasta, disco, s)
         if _chave(pasta) in vistos or analise is None:
             continue
         vistos.add(_chave(pasta))
-        achados.append(Recente(pasta, disco, None, _alterado_em(analise)))
+        if area is None or a == area:
+            achados.append(Recente(pasta, disco, None, _alterado_em(analise), a))
     achados.sort(key=lambda r: r.alterado_em or datetime.min, reverse=True)
     return abertos + achados
 

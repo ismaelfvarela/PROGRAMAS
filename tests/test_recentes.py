@@ -74,3 +74,33 @@ def test_quando_texto():
     assert recentes.quando_texto(datetime(2026, 11, 7, 9, 5), agora) == "ontem 09:05"
     assert recentes.quando_texto(datetime(2026, 10, 1, 9, 5), agora) == "01/10/2026 09:05"
     assert recentes.quando_texto(None, agora) == "sem data"
+
+
+def _projeto_area(tmp_path, nome, area):
+    """Como _projeto, mas o projeto.json grava a área."""
+    src = _projeto(tmp_path, nome)
+    f = tmp_path / "Y" / f"EDIÇÃO {nome[:4]}" / nome / "ANALISE" / "projeto.json"
+    d = json.loads(f.read_text(encoding="utf-8"))
+    d["area"] = area
+    f.write_text(json.dumps(d), encoding="utf-8")
+    return src
+
+
+def test_listar_filtra_por_area(tmp_path):
+    s = _s(tmp_path)
+    y = str(tmp_path / "Y")
+    a = _projeto(tmp_path, "2023-09-09 CASAMENTO A")
+    b = _projeto(tmp_path, "2024-01-20 FORMATURA B")
+    recentes.registrar(s, a, y)
+    recentes.registrar(s, b, y, area="formatura")
+    assert [r.pasta for r in recentes.listar(s, [y], area="casamento")] == [a]
+    assert [r.pasta for r in recentes.listar(s, [y], area="formatura")] == [b]
+    assert len(recentes.listar(s, [y])) == 2
+
+
+def test_achado_no_disco_usa_area_do_projeto_json(tmp_path):
+    s = _s(tmp_path)
+    y = str(tmp_path / "Y")
+    _projeto_area(tmp_path, "2024-01-20 FORMATURA C", "formatura")
+    assert recentes.listar(s, [y], area="casamento") == []
+    assert recentes.listar(s, [y], area="formatura")[0].area == "formatura"

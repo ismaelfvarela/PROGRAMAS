@@ -79,6 +79,8 @@ class ProjectRequest:
     n_episodios: int | None
     derivados: set[str]
     gemini_mode: Literal["gratis", "pago"]
+    area: str = "casamento"
+    pasta_musicas: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +90,8 @@ class ProjectRequest:
             "n_episodios": self.n_episodios,
             "derivados": sorted(self.derivados),
             "gemini_mode": self.gemini_mode,
+            "area": self.area,
+            "pasta_musicas": self.pasta_musicas,
         }
 
     @classmethod
@@ -95,7 +99,8 @@ class ProjectRequest:
         return cls(source_dir=Path(d["source_dir"]), work_drive=d["work_drive"],
                    assignments=[FolderAssignment.model_validate(a) for a in d["assignments"]],
                    n_episodios=d.get("n_episodios"), derivados=set(d.get("derivados", [])),
-                   gemini_mode=d.get("gemini_mode", "gratis"))
+                   gemini_mode=d.get("gemini_mode", "gratis"),
+                   area=d.get("area", "casamento"), pasta_musicas=d.get("pasta_musicas"))
 
     def save(self, path: Path, s: Settings) -> None:
         safe_write_text(Path(path), json.dumps(self.to_dict(), ensure_ascii=False, indent=2), s)
