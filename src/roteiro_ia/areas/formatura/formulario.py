@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout,
+from PySide6.QtWidgets import (QButtonGroup, QFrame, QScrollArea, QVBoxLayout, QCheckBox, QComboBox, QDoubleSpinBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton,
                                QTableWidget, QTableWidgetItem, QWidget)
@@ -36,6 +36,22 @@ def _chave(p) -> str:
     return os.path.normcase(os.path.abspath(str(p)))
 
 
+class _RolagemVertical(QScrollArea):
+    """Rola só na vertical e pede a largura mínima do conteúdo (nada cortado à direita)."""
+
+    def __init__(self):
+        super().__init__()
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def minimumSizeHint(self):
+        base = super().minimumSizeHint()
+        w = self.widget()
+        if w is None:
+            return base
+        largura = w.minimumSizeHint().width() + self.verticalScrollBar().sizeHint().width() + 2
+        return base.expandedTo(base.__class__(largura, base.height()))
+
+
 class FormularioFormatura(FormularioEvento):
     def __init__(self, s: Settings, runner: Runner, parent: QWidget | None = None,
                  area: str = "formatura"):
@@ -55,15 +71,52 @@ class FormularioFormatura(FormularioEvento):
         self.tabela_f.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tabela_f.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
         self.tabela_f.setColumnWidth(1, 240)
-        self.tabela_f.setMinimumHeight(150)
+        self.tabela_f.setMinimumHeight(180)
         self.tabela_f.setShowGrid(False)
         self.tabela_f.setEditTriggers(QTableWidget.NoEditTriggers)
         self.cards[2].body.addWidget(self.tabela_f, 1)
+        for lbl in self.cards[2].findChildren(QLabel):
+            if lbl.text().startswith("Confira a sugestão."):  # a dica do Casamento fala de "Dia"
+                lbl.setText("Confira a sugestão. Pastas de dias (ex.: 2026-03-10 › CAM A) já vêm "
+                            "separadas por dia.")
         self.lbl_aviso = QLabel()
         self.lbl_aviso.setProperty("muted", True)
         self.layout().addWidget(self.lbl_aviso)
+        self._rolagem()
         self._recarregar_formaturas()
         self._mudou_grupo()
+
+    def _rolagem(self) -> None:
+        """Os cards vão para uma área com rolagem (a Formatura tem um card a mais que o
+        Casamento); o Iniciar e o aviso ficam sempre à vista, embaixo."""
+        lay = self.layout()
+        fixos = (self.btn_iniciar, self.lbl_aviso)
+        conteudo = QWidget()
+        conteudo.setObjectName("conteudoFormatura")
+        cl = QVBoxLayout(conteudo)
+        cl.setContentsMargins(0, 0, 6, 0)
+        cl.setSpacing(lay.spacing())
+        itens = [lay.takeAt(0) for _ in range(lay.count())]
+        def reparentar(item) -> None:  # addItem não muda o pai dos widgets: muda à mão
+            if item.widget() is not None:
+                item.widget().setParent(conteudo)
+            elif item.layout() is not None:
+                for k in range(item.layout().count()):
+                    reparentar(item.layout().itemAt(k))
+        for it in itens:
+            if it.widget() not in fixos:
+                reparentar(it)
+                cl.addItem(it)
+        self.rolagem = _RolagemVertical()
+        self.rolagem.setWidgetResizable(True)
+        self.rolagem.setFrameShape(QFrame.NoFrame)
+        self.rolagem.setStyleSheet("QScrollArea, QWidget#conteudoFormatura {background: transparent;}")
+        self.rolagem.viewport().setAutoFillBackground(False)
+        self.rolagem.setWidget(conteudo)
+        # só rolagem vertical: a largura continua a do conteúdo, como no Casamento
+        lay.addWidget(self.rolagem, 1)
+        for w in fixos:
+            lay.addWidget(w)
 
     # ------------------------------------------------------------ card Trabalho
     def _montar_trabalho(self) -> None:
@@ -80,22 +133,20 @@ class FormularioFormatura(FormularioEvento):
             self._grupo_seg.addButton(b)
             seg.addWidget(b)
         self.seg_clipes.setChecked(True)
-        seg.addStretch(1)
-        self.btn_duplicar = QPushButton("Duplicar de uma oficina…")
-        seg.addWidget(self.btn_duplicar)
-        card.body.addLayout(seg)
-
-        g = QGridLayout()
-        g.setHorizontalSpacing(10)
-        g.setVerticalSpacing(8)
         self.combo_formatura = QComboBox()
         self.btn_formaturas = QPushButton("Formaturas…")
         self.btn_nova = QPushButton("+ Nova")
-        g.addWidget(QLabel("Formatura"), 0, 0)
-        g.addWidget(self.combo_formatura, 0, 1, 1, 3)
-        g.addWidget(self.btn_formaturas, 0, 4)
-        g.addWidget(self.btn_nova, 0, 5)
-        # clipes
+        self.btn_duplicar = QPushButton("Duplicar de uma oficina…")
+        seg.addSpacing(16)
+        seg.addWidget(QLabel("Formatura"))
+        seg.addSpacing(8)
+        seg.addWidget(self.combo_formatura, 1)
+        for b in (self.btn_formaturas, self.btn_nova, self.btn_duplicar):
+            seg.addSpacing(6)
+            seg.addWidget(b)
+        card.body.addLayout(seg)
+
+        # clipes: uma linha só (tipo, curso, turma, duração)
         self.combo_tipo = QComboBox()
         for t in TIPOS_CLIPE:
             self.combo_tipo.addItem(INFO_TIPO[t].nome, t.value)
@@ -108,41 +159,51 @@ class FormularioFormatura(FormularioEvento):
         self.spin_duracao.setValue(INFO_TIPO[TipoTrabalho.oficina].duracao_min)
         self.lbl_tipo, self.lbl_curso = QLabel("Tipo"), QLabel("Curso")
         self.lbl_turma, self.lbl_duracao = QLabel("Turma"), QLabel("Duração")
-        g.addWidget(self.lbl_tipo, 1, 0)
-        g.addWidget(self.combo_tipo, 1, 1)
-        g.addWidget(self.lbl_duracao, 1, 2)
-        g.addWidget(self.spin_duracao, 1, 3)
-        g.addWidget(self.lbl_curso, 2, 0)
-        g.addWidget(self.combo_curso, 2, 1)
-        g.addWidget(self.lbl_turma, 2, 2)
-        g.addWidget(self.combo_turma, 2, 3)
-        self.chk_seguir = QCheckBox("Seguir a ideia da original: mesmos assuntos e ordem, com "
-                                    "música nova, e ritmo e cenas pela trilha nova")
-        self.chk_seguir.setChecked(True)
-        self.lbl_duplicado = QLabel()
-        self.lbl_duplicado.setProperty("muted", True)
-        g.addWidget(self.lbl_duplicado, 3, 0, 1, 6)
-        g.addWidget(self.chk_seguir, 4, 0, 1, 6)
-        # colação
+        linha = QHBoxLayout()
+        linha.setSpacing(8)
+        for lbl, w, est in ((self.lbl_tipo, self.combo_tipo, 2), (self.lbl_curso, self.combo_curso, 3),
+                            (self.lbl_turma, self.combo_turma, 2),
+                            (self.lbl_duracao, self.spin_duracao, 1)):
+            linha.addWidget(lbl)
+            linha.addWidget(w, est)
+            linha.addSpacing(8)
+        # colação: local, cidade e canais numa linha; turmas da noite logo abaixo
         self.edit_local, self.edit_cidade = QLineEdit(), QLineEdit()
-        self.lista_turmas = QListWidget()
-        self.lista_turmas.setMaximumHeight(110)
         self.combo_canais = QComboBox()
         self.combo_canais.addItem("Áudio da mesa já misturado", "misturado")
         self.combo_canais.addItem("L = mesa de som / R = ambiente", "L_mesa_R_ambiente")
         self.lbl_local, self.lbl_cidade = QLabel("Local"), QLabel("Cidade")
         self.lbl_turmas, self.lbl_canais = QLabel("Turmas da noite"), QLabel("Canais da mesa")
-        g.addWidget(self.lbl_local, 5, 0)
-        g.addWidget(self.edit_local, 5, 1)
-        g.addWidget(self.lbl_cidade, 5, 2)
-        g.addWidget(self.edit_cidade, 5, 3)
-        g.addWidget(self.lbl_turmas, 6, 0, Qt.AlignTop)
-        g.addWidget(self.lista_turmas, 6, 1, 1, 3)
-        g.addWidget(self.lbl_canais, 7, 0)
-        g.addWidget(self.combo_canais, 7, 1, 1, 3)
-        g.setColumnStretch(1, 1)
-        g.setColumnStretch(3, 1)
-        card.body.addLayout(g)
+        for lbl, w, est in ((self.lbl_local, self.edit_local, 3), (self.lbl_cidade, self.edit_cidade, 2),
+                            (self.lbl_canais, self.combo_canais, 2)):
+            linha.addWidget(lbl)
+            linha.addWidget(w, est)
+            linha.addSpacing(8)
+        card.body.addLayout(linha)
+        self.lista_turmas = QListWidget()
+        self.lista_turmas.setFlow(QListWidget.LeftToRight)
+        self.lista_turmas.setWrapping(True)
+        self.lista_turmas.setSpacing(4)
+        self.lista_turmas.setMinimumHeight(36)
+        self.lista_turmas.setMaximumHeight(64)
+        turmas = QHBoxLayout()
+        turmas.addWidget(self.lbl_turmas, 0, Qt.AlignTop)
+        turmas.addWidget(self.lista_turmas, 1)
+        card.body.addLayout(turmas)
+        # duplicada de outra oficina
+        self.chk_seguir = QCheckBox("Seguir a ideia da original: mesmos assuntos e ordem, com "
+                                    "música nova, e ritmo e cenas pela trilha nova")
+        self.chk_seguir.setChecked(True)
+        self.lbl_duplicado = QLabel()
+        self.lbl_duplicado.setProperty("muted", True)
+        dup = QHBoxLayout()
+        dup.addWidget(self.lbl_duplicado)
+        dup.addSpacing(12)
+        dup.addWidget(self.chk_seguir, 1)
+        card.body.addLayout(dup)
+        for w in (self.combo_formatura, self.combo_tipo, self.combo_curso, self.combo_turma,
+                  self.spin_duracao, self.edit_local, self.edit_cidade, self.combo_canais):
+            w.setMinimumHeight(30)
         self.layout().insertWidget(1, card)
         self.cards.append(card)
         self._clipe_ws = [self.lbl_tipo, self.combo_tipo, self.lbl_duracao, self.spin_duracao,

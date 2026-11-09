@@ -270,3 +270,23 @@ momentos (nos clipes) e montagem.
    `05 - Colação - <Curso> - <Turma>` (uma por turma)…, `NN - Hino e Encerramento`,
    `NN+1 - Encerramento`. Texto original da pergunta, mantido como registro:
    **Nomes dos arquivos e pastas de entrega** das partes (padrão de nomes para o Drive).
+
+## Estado (2026-11-09)
+
+**Entregue: clipes da Formatura funcionando (etapas 2.1 + 2.2).** Spec em
+`docs/superpowers/specs/2026-11-09-formatura-cadastro-design.md` e plano em
+`docs/superpowers/plans/2026-11-09-formatura-clipes.md`.
+
+- Cadastro das formaturas (botões "Formaturas…" e "+ Nova"), card Trabalho (Clipes | Colação),
+  funções de pasta da Formatura (CAM, PGM/ATEM, H1/H4, MIC LAPELA, FRIAS…) e oficina com dias em
+  subpastas.
+- Oficina, Feira, Prova de toga e Escolha do paraninfo processam até o PDF e o XML. A análise e o
+  roteiro usam textos de formatura: uma peça, duração alvo, cartela, regra de qualidade e música
+  comercial que não se repete entre as oficinas da mesma formatura.
+- "Duplicar de uma oficina…" com a opção "Seguir a ideia da original".
+- Estudo de estilo da Formatura com prompts e cache próprios.
+- A colação já pode ser preparada (local, cidade, turmas da noite, canais da mesa). O Iniciar dela
+  fica desligado com o aviso "A colação chega na próxima etapa (2.3)."
+
+**Próximas:** 2.3 íntegra da colação, 2.4 abertura com o grande final e encerramento (com o
+campo "Logo da produtora"), 2.5 cartela (depois dos vídeos de referência).
