@@ -165,6 +165,31 @@ momentos (nos clipes) e montagem.
     **mais longos e documentais**: mostram os projetos expostos, com mais falas de alunos
     explicando o trabalho. A seleção é guiada pela fala, como num depoimento, e não pela
     música.
+  - **Nome da pasta de uma oficina de vários dias (pergunta 14, opção A):** leva a data do
+    **primeiro dia de gravação**, por exemplo `2026-03-10 OFICINA ESCOLA X T106`. Os dias
+    ficam em subpastas dentro dela.
+  - **Design 2.1, seção 1 (cadastro e sub-abas): aprovada**, com este acréscimo do usuário:
+    **duplicar oficina**. Algumas oficinas só trocam o nome da turma e do curso, e a ideia é
+    a mesma.
+    - **Como duplicar:** pede só a pasta nova e a turma e curso novos, e copia o resto. A
+      opção "**Seguir a ideia da original**" vem marcada. Ela mantém os **assuntos e a ordem
+      dos blocos**, mas **troca a música**: uma diferente da original e das outras oficinas
+      da mesma formatura. O **ritmo e a escolha das cenas** seguem a trilha nova e o
+      sentimento dela (BPM e clima do índice).
+- **Design 2.1, seção 2 (funções das pastas e áudio):** acréscimo do usuário: às vezes há
+  **gravadores** e o **microfone do mestre de cerimônias**. Nomes reais das pastas:
+  `CAM A`, `CAM B`, `CAM C`, `CAM D`; `PGM`, `CORTE` ou `ATEM` (mesa de corte); `H1` ou
+  `H4` (gravador de áudio); `MIC LAPELA`. Por isso entra a função **"Gravador / lapela"**
+  (só áudio, sincronizado como as lapelas do casamento), nos clipes e na colação.
+- **Design 2.1, seção 3 (momentos por tipo): aprovada sem mudanças.** Listas de momentos
+  próprias de Oficina, Feira, Prova de toga, Escolha do paraninfo e Colação. A análise
+  também marca a qualidade técnica de cada trecho.
+- **Regra de qualidade de imagem para todos os clipes:** nada de **chicote**, imagem
+  **desfocada** ou cena **mal enquadrada** fotograficamente. Mas o **assunto vale mais que a
+  técnica**: se um momento importante só existe numa imagem imperfeita, ele entra, e a
+  imagem imperfeita é usada o mínimo possível. Chicote e desfoque podem ser medidos no
+  próprio computador. O enquadramento fica com o Gemini, que já aponta "problemas" por
+  trecho.
 
 ## Perguntas em aberto (fazer uma por vez)
 
