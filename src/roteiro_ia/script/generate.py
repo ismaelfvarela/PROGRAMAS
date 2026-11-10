@@ -11,10 +11,12 @@ from roteiro_ia.db import ProjectDB
 from roteiro_ia.gemini.style import StyleProfile
 from roteiro_ia.models import MediaInfo, TrackInfo
 from roteiro_ia.music_index import MusicIndex
+from roteiro_ia.observacoes import Observacoes, texto_prompt
 
 CORRECTION_ROUNDS = 2
 DURACAO_FOLGA = 0.25      # soma das cenas pode diferir até 25% da duração estimada da peça
 DURACAO_MIN_FOLGA_S = 15.0
+MAX_PREFERIDAS = 60  # trilhas ★ (do casal / pedidas) listadas além das n da lista normal
 DURATION_TOLERANCE_S = 0.5
 DERIVADOS = {"trailer", "teaser", "stories"}
 MAX_PROMPT_TOKENS = 300_000  # acima disso o catálogo é compactado
@@ -188,9 +190,18 @@ def _track_line(t) -> str:
 
 def music_shortlist(idx: MusicIndex, n: int = 80) -> str:
     """Até n trilhas espalhadas por perfil, faixa de BPM e clima principal (determinístico:
-    round-robin entre os grupos, cada grupo ordenado por caminho)."""
+    round-robin entre os grupos, cada grupo ordenado por caminho). As preferidas do índice
+    (`idx.preferidas`: pasta do casal ou nomes pedidos nas observações) vêm antes, com ★, até
+    MAX_PREFERIDAS, e não contam no `n`."""
+    pref = getattr(idx, "preferidas", set()) or set()
+    todas = idx.all()
+    linhas = [_track_line(t) + " | ★ do casal/pedida"
+              for t in sorted((t for t in todas if t.path in pref), key=lambda t: t.path)
+              ][:MAX_PREFERIDAS]
     buckets: dict[tuple[int, int, str], list] = {}
-    for t in idx.all():
+    for t in todas:
+        if t.path in pref:
+            continue
         p = _PERFIS.index(t.perfil) if t.perfil in _PERFIS else len(_PERFIS)
         buckets.setdefault((p, _band(t.bpm), t.climas[0] if t.climas else ""), []).append(t)
     # Ordem dos grupos intercalada por clima: o 1º grupo de cada clima, depois o 2º de cada…
@@ -209,7 +220,7 @@ def music_shortlist(idx: MusicIndex, n: int = 80) -> str:
         if q:
             picked.append(q.pop(0))
         i += 1
-    return "\n".join(_track_line(t) for t in picked)
+    return "\n".join([*linhas, *(_track_line(t) for t in picked)])
 
 
 # ---------------------------------------------------------------- validação
@@ -440,12 +451,17 @@ def _context(db: ProjectDB, idx: MusicIndex, style: StyleProfile | None,
 def generate_roteiro(db: ProjectDB, c, idx: MusicIndex, style: StyleProfile | None, model: str,
                      n_episodios: int | None, derivados: set[str],
                      pedido_ajuste: str | None = None,
-                     contexto: Callable[..., str] | None = None) -> Roteiro:
+                     contexto: Callable[..., str] | None = None,
+                     observacoes: Observacoes | None = None) -> Roteiro:
     """Gera (ou ajusta) o pré-roteiro, valida as referências com até 2 rodadas de correção,
     remove o que sobrar inválido (listado em alertas) e grava no banco. `contexto` troca o texto
     base (mesma assinatura de `_context`); None = o do Casamento."""
+    obs_txt = texto_prompt(observacoes, len(getattr(idx, "preferidas", ()) or ()))
+
     def montar(compact: bool) -> tuple[str, str]:
         base = (contexto or _context)(db, idx, style, n_episodios, derivados, compact=compact)
+        if obs_txt:  # logo depois do contexto, valendo também nas correções e nos ajustes
+            base = f"{base}\n\n{obs_txt}"
         if not pedido_ajuste:
             return base, base
         anterior = db.latest_roteiro()

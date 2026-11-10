@@ -124,6 +124,7 @@ class ProjetoTab(QWidget):
 
         self.form.iniciar.connect(self.iniciar)
         self.form.continuar.connect(self.continuar_existente)
+        self.form.observacoes_mudaram.connect(self.salvar_observacoes)
         self.status.btn_pdf.clicked.connect(self.abrir_pdf)
         self.status.btn_premiere.clicked.connect(self.abrir_premiere)
         self.status.btn_puxar.clicked.connect(self.puxar_roteiro)
@@ -495,6 +496,22 @@ class ProjetoTab(QWidget):
             self.status.banner_erro.mostrar(msg_falta.format(pasta))
             return
         os.startfile(str(pasta))  # noqa: S606 - abre no Explorador
+
+    def salvar_observacoes(self) -> None:
+        """Observações mudadas no formulário: valem no próximo roteiro deste projeto (o pipeline
+        relê o projeto.json na etapa do roteiro, até numa retomada depois da cota)."""
+        if self._req is None:
+            return  # projeto ainda não iniciado: vão junto no Iniciar
+        self._req.observacoes = self.form.observacoes
+        try:
+            f = Path(self._paths().analysis_dir) / PROJECT_FILE
+            if f.parent.is_dir():
+                self._req.save(f, self.s)
+        except (OSError, ValueError) as e:
+            self.status.banner_erro.mostrar(f"Não consegui salvar as observações: {e}")
+            return
+        self.status.banner_ok.mostrar("Observações salvas: valem no próximo roteiro (use Pedir "
+                                      "ajuste no roteiro para aplicar num roteiro já pronto).")
 
     def pedir_ajuste(self) -> None:
         if self._req is None or self.rodando:

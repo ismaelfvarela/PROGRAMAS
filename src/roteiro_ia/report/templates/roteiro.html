@@ -52,6 +52,13 @@
   <div class="arco">{{ arco }}</div>
 </section>
 
+{% if observacoes %}
+<section class="alerts">
+  <div class="piece-head"><div class="tipo">Do editor</div><h2>Observações usadas no roteiro</h2></div>
+  <ul style="margin-top:14px">{% for rot, txt in observacoes %}<li><strong>{{ rot }}:</strong> <span class="arco">{{ txt }}</span></li>{% endfor %}</ul>
+</section>
+{% endif %}
+
 {% for it in itens %}{% set pc = it.peca %}
 <section class="piece">
   <div class="piece-head">

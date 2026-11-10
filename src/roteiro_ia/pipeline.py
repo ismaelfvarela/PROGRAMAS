@@ -23,6 +23,7 @@ from roteiro_ia.media.audio import analyze_audio
 from roteiro_ia.media.proxies import make_proxies
 from roteiro_ia.models import FolderAssignment, Role
 from roteiro_ia.music_index import IndiceFiltrado, MusicIndex, trilhas_antigas, update_index
+from roteiro_ia.observacoes import IndiceComPreferidas, Observacoes
 from roteiro_ia.paths import (EventPaths, build_event_paths, check_free_space, create_event_folders,
                               estimate_proxy_gb)
 from roteiro_ia.premiere.fcpxml import build_xml, write_xml
@@ -81,6 +82,7 @@ class ProjectRequest:
     gemini_mode: Literal["gratis", "pago"]
     area: str = "casamento"
     pasta_musicas: str | None = None
+    observacoes: Observacoes = field(default_factory=Observacoes)
 
     def to_dict(self) -> dict:
         return {
@@ -92,6 +94,7 @@ class ProjectRequest:
             "gemini_mode": self.gemini_mode,
             "area": self.area,
             "pasta_musicas": self.pasta_musicas,
+            "observacoes": self.observacoes.model_dump(),
         }
 
     @classmethod
@@ -100,7 +103,8 @@ class ProjectRequest:
                    assignments=[FolderAssignment.model_validate(a) for a in d["assignments"]],
                    n_episodios=d.get("n_episodios"), derivados=set(d.get("derivados", [])),
                    gemini_mode=d.get("gemini_mode", "gratis"),
-                   area=d.get("area", "casamento"), pasta_musicas=d.get("pasta_musicas"))
+                   area=d.get("area", "casamento"), pasta_musicas=d.get("pasta_musicas"),
+                   observacoes=Observacoes.model_validate(d.get("observacoes") or {}))
 
     def save(self, path: Path, s: Settings) -> None:
         safe_write_text(Path(path), json.dumps(self.to_dict(), ensure_ascii=False, indent=2), s)
@@ -474,8 +478,39 @@ class Pipeline:
                        1.0)
             self._avisar_trilhas_antigas(idx)
             return "índice existente (pasta de músicas inacessível)"
+        n += self._indexar_pasta_do_casal(idx)
         self._avisar_trilhas_antigas(idx)
         return f"{n} trilhas analisadas"
+
+    def _observacoes(self) -> Observacoes:
+        """As do projeto.json (o editor pode mudá-las a qualquer momento, até com o projeto
+        rodando ou esperando a cota); sem o arquivo, as do pedido."""
+        try:
+            return ProjectRequest.load(self._project_file()).observacoes
+        except (OSError, ValueError, KeyError):
+            return self.req.observacoes
+
+    def _indexar_pasta_do_casal(self, idx: MusicIndex) -> int:
+        pasta = self._observacoes().musicas_pasta.strip()
+        if not pasta:
+            return 0
+        if not os.path.isdir(pasta):
+            self._emit("trilhas", f"Pasta de músicas do casal não encontrada: {pasta}", 1.0)
+            return 0
+        return update_index(self.s, idx, on_progress=self._progress("trilhas"),
+                            tracker=self._tracker, atualizar_versao=False, root=Path(pasta))
+
+    def _indice_do_roteiro(self, obs: Observacoes):
+        """Trilhas da pasta da área + as da pasta do casal, com as preferidas marcadas (★)."""
+        pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
+        base = IndiceFiltrado(self._index(), Path(pasta))
+        extra = obs.musicas_pasta.strip()
+        if extra and os.path.isdir(extra):
+            vistos = {t.path for t in base.all()}
+            casal = [t for t in IndiceFiltrado(self._index(), Path(extra)).all() if t.path not in vistos]
+        else:
+            casal = []
+        return IndiceComPreferidas(base, casal, obs)
 
     def _avisar_trilhas_antigas(self, idx: MusicIndex) -> None:
         n = trilhas_antigas(idx)
@@ -486,11 +521,12 @@ class Pipeline:
     def _st_roteiro(self) -> None:
         _, model = self._models()
         # sempre filtrado: sem pasta própria vale a pasta padrão da área (Casamento sem config
-        # = music_root); trilhas que outro projeto indexou de pasta privada ficam de fora
-        pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
-        idx = IndiceFiltrado(self._index(), Path(pasta))
-        generate_roteiro(self.db, self._client(), idx, self._perfil(), model,
-                         self.req.n_episodios, set(self.req.derivados), pedido_ajuste=self._pedido)
+        # = music_root); trilhas que outro projeto indexou de pasta privada ficam de fora — a
+        # não ser as da pasta de músicas do casal (observações do editor)
+        obs = self._observacoes()
+        generate_roteiro(self.db, self._client(), self._indice_do_roteiro(obs), self._perfil(),
+                         model, self.req.n_episodios, set(self.req.derivados),
+                         pedido_ajuste=self._pedido, observacoes=obs)
 
     def _roteiro(self) -> Roteiro:
         txt = self.db.latest_roteiro()
@@ -500,7 +536,7 @@ class Pipeline:
 
     def _st_pdf(self) -> None:
         html = render_html(self._roteiro(), self.p, collect_technical_alerts(self.db),
-                           idx=self._index())
+                           idx=self._index(), observacoes=self._observacoes())
         out = html_to_pdf(html, self.p.pdf_path, self.s,
                           html_path=Path(self.p.analysis_dir) / "roteiro.html")
         if out is not None and Path(out) != Path(self.p.pdf_path):

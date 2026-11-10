@@ -324,3 +324,39 @@ def test_premiere_desde_o_comeco_pede_ao_painel(janela, evento, monkeypatch, tmp
     pj.status.btn_pasta_videos.click()
     pj.status.btn_pasta_projeto.click()
     assert abertos == [str(p.export_dir), str(p.work_dir)]
+
+
+def test_observacoes_do_editor_salvas_no_projeto(janela, evento, monkeypatch):
+    import json
+
+    from roteiro_ia.observacoes import Observacoes
+    from roteiro_ia.paths import build_event_paths
+    from roteiro_ia.ui import observacoes as dlg_mod
+    pj = janela.projeto
+    pj.set_event_folder(evento)
+    assert pj.form.card_observacoes is not None and pj.form.card_observacoes.isEnabled()
+    nova = Observacoes(perfil="casal discreto", musicas="Trem-Bala")
+
+    class Falso:
+        def __init__(self, o, parent=None):
+            pass
+
+        def exec(self):
+            return dlg_mod.QDialog.Accepted
+
+        def observacoes(self):
+            return nova
+    monkeypatch.setattr(dlg_mod, "ObservacoesDialog", Falso)
+    pj.form.btn_observacoes.click()  # antes de iniciar: vão junto no Iniciar
+    assert pj.form.build_request().observacoes == nova
+    assert "2 campo(s)" in pj.form.lbl_observacoes.text()
+
+    # projeto já iniciado: salvas na hora no projeto.json
+    pj._req = pj.form.build_request()
+    an = build_event_paths(evento, janela.s, pj._req.work_drive).analysis_dir
+    an.mkdir(parents=True)
+    nova = Observacoes(evitar="drone na igreja")
+    pj.form.btn_observacoes.click()
+    salvo = json.loads((an / "projeto.json").read_text(encoding="utf-8"))
+    assert salvo["observacoes"]["evitar"] == "drone na igreja"
+    assert "Observações salvas" in pj.status.banner_ok.text()

@@ -110,7 +110,7 @@ def clima_voz(ms: MusicSuggestion, info: TrackInfo | None) -> str:
 
 
 def render_html(r: Roteiro, p: EventPaths, alertas_tecnicos: list[str],
-                idx: MusicIndex | None = None) -> str:
+                idx: MusicIndex | None = None, observacoes=None) -> str:
     pecas = sorted(r.pecas, key=lambda x: (_ORDEM_TIPO.get(x.tipo, 9), x.numero or 0))
     d = p.event_date
     tracks = {t.path.replace("/", "\\").lower(): t for t in idx.all()} if idx is not None else {}
@@ -131,7 +131,8 @@ def render_html(r: Roteiro, p: EventPaths, alertas_tecnicos: list[str],
     tpl = _env.get_template("roteiro.html")
     return tpl.render(
         evento=p.event_name, data=f"{d.day} de {_MESES[d.month - 1]} de {d.year}", arco=r.arco,
-        itens=view, alertas=list(alertas_tecnicos) + list(r.alertas), ref=fmt_ref)
+        itens=view, alertas=list(alertas_tecnicos) + list(r.alertas), ref=fmt_ref,
+        observacoes=observacoes.itens_pdf() if observacoes is not None else [])
 
 
 def find_edge() -> Path:
