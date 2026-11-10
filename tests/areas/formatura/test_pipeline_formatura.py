@@ -326,3 +326,42 @@ def test_cartela_com_mogrt_do_ano(tmp_path):
     assert job["cartela"]["campos"]["Turma"] == "T106" and job["cartela"]["campos"]["Data"] == "10/03/2026"
     assert not (ad / "cartela.png").exists()
     assert "CARTELA (MOGRT)" in (ad / f"{pipe.p.event_name} - PREMIERE.xml").read_text(encoding="utf-8")
+
+
+def test_gemini_ocupado_no_estilo_nao_trava_o_projeto(tmp_path, monkeypatch):
+    """Erro 503 (Gemini sobrecarregado) ao estudar os vídeos modelo: o projeto segue sem o
+    estilo e a etapa fica marcada para ser refeita no próximo Continuar."""
+    from roteiro_ia.areas.formatura.ajustes import AjustesFormatura, ModeloAno, salvar_ajustes
+    from roteiro_ia.pipeline import FALHAS_PREFIX
+    pipe, s, _ = _pipe(tmp_path)
+    salvar_ajustes(s, AjustesFormatura(modelos={"2026": ModeloAno(pasta=str(tmp_path))}))
+
+    def ocupado(*a, **k):
+        raise RuntimeError("503 UNAVAILABLE. This model is currently experiencing high demand.")
+    monkeypatch.setattr(pf_pipeline, "estudar_modelos", ocupado)
+    calls = _sem_etapas(pipe)
+    pipe.impl["estilo"] = pipe._st_estilo
+    try:
+        assert pipe.run() == "concluido"
+        assert pipe.db.stage_status("estilo") == "feito"
+        assert pipe.db.stage_detail("estilo").startswith(FALHAS_PREFIX)
+    finally:
+        pipe.close()
+    assert "roteiro" in calls  # as etapas seguintes rodaram
+
+
+def test_cota_no_estilo_continua_pausando(tmp_path, monkeypatch):
+    from datetime import datetime
+    from roteiro_ia.areas.formatura.ajustes import AjustesFormatura, ModeloAno, salvar_ajustes
+    from roteiro_ia.gemini.client import QuotaPaused
+    pipe, s, _ = _pipe(tmp_path)
+    salvar_ajustes(s, AjustesFormatura(modelos={"2026": ModeloAno(pasta=str(tmp_path))}))
+
+    def cota(*a, **k):
+        raise QuotaPaused(datetime.now(), daily=True)
+    monkeypatch.setattr(pf_pipeline, "estudar_modelos", cota)
+    try:
+        with pytest.raises(QuotaPaused):
+            pipe._st_estilo()
+    finally:
+        pipe.close()
