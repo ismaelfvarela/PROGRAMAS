@@ -746,3 +746,23 @@ def test_pdf_mostra_as_observacoes():
     assert "Observações usadas no roteiro" in html and "a avó na entrada" in html
     assert "https://x/playlist" in html
     assert "Observações usadas" not in render_html(roteiro_com([]), p, [], observacoes=Observacoes())
+
+
+def test_roteiro_indexa_as_musicas_baixadas_antes(tmp_path, sleeps, monkeypatch):
+    # aba Músicas a baixar: as baixadas entram no índice antes do roteiro (também num ajuste,
+    # que não passa pela etapa de trilhas)
+    from roteiro_ia.observacoes import Observacoes
+    pipe, _calls, _ = mk_pipe(tmp_path)
+    assert pipe.run() == "concluido"
+    mes = tmp_path / "M" / "2026" / "11- NOVEMBRO"
+    mes.mkdir(parents=True)
+    req = ProjectRequest.load(pipe._project_file())
+    req.observacoes = Observacoes(baixadas=[str(mes / "01 - Song.mp3"), str(mes / "02 - Outra.mp3")])
+    req.save(pipe._project_file(), pipe.s)
+    raizes = []
+    monkeypatch.setattr(pipeline, "update_index",
+                        lambda s, idx, **kw: raizes.append(kw.get("root")) or 0)
+    monkeypatch.setattr(pipeline, "generate_roteiro", lambda *a, **k: roteiro_com([]))
+    pipe._st_roteiro()
+    assert raizes == [mes]
+    pipe.close()

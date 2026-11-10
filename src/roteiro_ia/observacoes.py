@@ -19,17 +19,25 @@ class Observacoes(BaseModel):
     musicas: str = ""        # estilo de música e nomes de trilhas do casal / do evento
     musicas_pasta: str = ""  # pasta com as músicas do casal (entra no índice de trilhas)
     musicas_link: str = ""   # playlist (Spotify, YouTube…): a IA não abre links; vai no PDF
+    baixadas: list[str] = []  # músicas baixadas para o evento (já no M:): preferidas ★
+
+    def _textos(self) -> list[str]:
+        return [self.perfil, self.obrigatorio, self.evitar, self.musicas, self.musicas_pasta,
+                self.musicas_link]
 
     def vazia(self) -> bool:
-        return not any(v.strip() for v in self.model_dump().values())
+        return not any(v.strip() for v in self._textos()) and not self.baixadas
 
     def preenchidas(self) -> int:
-        return sum(1 for v in self.model_dump().values() if v.strip())
+        """Campos de texto preenchidos (as músicas baixadas aparecem à parte)."""
+        return sum(1 for v in self._textos() if v.strip())
 
     def itens_pdf(self) -> list[tuple[str, str]]:
         rot = [("Perfil do casal / estilo do vídeo", self.perfil), ("Não pode faltar", self.obrigatorio),
                ("Evitar", self.evitar), ("Músicas", self.musicas),
-               ("Pasta de músicas do casal", self.musicas_pasta), ("Playlist", self.musicas_link)]
+               ("Pasta de músicas do casal", self.musicas_pasta), ("Playlist", self.musicas_link),
+               ("Músicas baixadas para o evento",
+                "; ".join(PureWindowsPath(b).name for b in self.baixadas))]
         return [(r, v.strip()) for r, v in rot if v.strip()]
 
 
@@ -62,9 +70,16 @@ def _simples(t: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", t).strip()
 
 
+_LINK_ARTLIST = re.compile(
+    r"(?:https?://)?(?:www\.)?artlist\.io/royalty-free-music/song/([^/\s?#]+)\S*", re.I)
+
+
 def nomes_pedidos(texto: str) -> list[str]:
-    """Nomes de músicas escritos pelo editor (um por linha, ou separados por ; ou ,)."""
-    partes = re.split(r"[\n;,]+", texto or "")
+    """Nomes de músicas escritos pelo editor (um por linha, ou separados por ; ou ,). Link de
+    música do Artlist (…/royalty-free-music/song/<nome>/<id>) vira o nome da música."""
+    texto = _LINK_ARTLIST.sub(lambda m: "\n" + m.group(1).replace("-", " ") + "\n", texto or "")
+    texto = re.sub(r"https?://\S+", "", texto)  # outros links não são nomes de música
+    partes = re.split(r"[\n;,]+|\s//+\s", texto)
     return [s for s in (_simples(p) for p in partes) if len(s) >= MIN_NOME]
 
 
@@ -80,9 +95,10 @@ def trilhas_preferidas(caminhos: list[str], o: Observacoes | None) -> set[str]:
         return set()
     nomes = nomes_pedidos(o.musicas)
     pasta = o.musicas_pasta.strip()
+    baixadas = {str(PureWindowsPath(b)).lower() for b in o.baixadas}
     out = set()
     for c in caminhos:
-        if pasta and _dentro(c, pasta):
+        if (pasta and _dentro(c, pasta)) or str(PureWindowsPath(c)).lower() in baixadas:
             out.add(c)
             continue
         base = _simples(Path(PureWindowsPath(c).name).stem)
