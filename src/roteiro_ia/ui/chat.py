@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabe
                                QPlainTextEdit, QPushButton, QVBoxLayout, QWidget)
 
 from roteiro_ia.script.manual import (CHAT_PADRAO, CHATS, CHATS_PEDIDO_INTEIRO, LIMITE_COLAR,
-                                      RespostaInvalida)
+                                      RespostaInvalida, SemJson, mensagem_do_anexo,
+                                      mensagem_so_json)
 from roteiro_ia.ui.widgets import Banner
 
 ARQ_PEDIDO = "PEDIDO DO ROTEIRO.txt"
@@ -88,10 +89,15 @@ class RoteiroChatDialog(QDialog):
         lay.addWidget(self.banner_erro)
 
         fim = QHBoxLayout()
+        self.btn_so_json = QPushButton("Pedir só o JSON")
+        self.btn_so_json.setToolTip("Copia uma mensagem para o MESMO chat converter em JSON o "
+                                    "roteiro que ele escreveu em texto")
+        self.btn_so_json.hide()
         self.btn_correcao = QPushButton("Gerar o pedido de correção")
         self.btn_usar = QPushButton("Usar este roteiro")
         self.btn_usar.setObjectName("primario")
         self.btn_fechar = QPushButton("Fechar")
+        fim.addWidget(self.btn_so_json)
         fim.addWidget(self.btn_correcao)
         fim.addStretch(1)
         fim.addWidget(self.btn_fechar)
@@ -104,6 +110,7 @@ class RoteiroChatDialog(QDialog):
         self.btn_pedido.clicked.connect(self.gerar_pedido)
         self.btn_conferir.clicked.connect(self.conferir)
         self.btn_correcao.clicked.connect(self.gerar_correcao)
+        self.btn_so_json.clicked.connect(self.pedir_so_json)
         self.btn_usar.clicked.connect(self.usar)
         self.btn_fechar.clicked.connect(self.reject)
 
@@ -115,17 +122,21 @@ class RoteiroChatDialog(QDialog):
         """Grava o arquivo, copia o texto e abre o chat e a pasta com o arquivo selecionado."""
         self.pasta.mkdir(parents=True, exist_ok=True)
         arq.write_text(texto, encoding="utf-8")
-        QGuiApplication.clipboard().setText(texto)
+        grande = len(texto) > LIMITE_COLAR
+        # grande: anexa o arquivo e cola a mensagem curta que exige o JSON (sem ela, o chat
+        # do Gemini respondeu o roteiro em texto corrido)
+        QGuiApplication.clipboard().setText(mensagem_do_anexo(arq.name) if grande else texto)
         _nome, url = CHATS[self.chat()]
         if url:
             _abrir_url(url)
         _mostrar_no_explorador(arq)
-        grande = len(texto) > LIMITE_COLAR
         self.lbl_pedido.setText(
             f"{o_que} em {arq} ({len(texto) // 1000} mil caracteres). "
-            + ("É grande para colar: ANEXE esse arquivo no chat (clipe de anexar) e envie com a "
-               "frase \"Siga as instruções do arquivo.\"" if grande else
-               "O texto também foi copiado: cole no chat (Ctrl+V) e envie, ou anexe o arquivo."))
+            + ("É grande para colar: no chat, ANEXE esse arquivo (clipe de anexar) e COLE a "
+               "mensagem que já está copiada (Ctrl+V) — ela pede a resposta só em JSON. Envie."
+               if grande else
+               "O texto foi copiado: cole no chat (Ctrl+V) e envie."))
+        self.btn_so_json.hide()
 
     def gerar_pedido(self) -> None:
         self.banner_erro.limpar()
@@ -151,7 +162,9 @@ class RoteiroChatDialog(QDialog):
         except RespostaInvalida as e:
             self.banner_erro.mostrar(str(e))
             self.btn_usar.setEnabled(False)
+            self.btn_so_json.setVisible(isinstance(e, SemJson))
             return
+        self.btn_so_json.hide()
         n = len(self.sessao.ultimo.pecas)
         if not probs:
             self.banner_ok.mostrar(f"Roteiro conferido: {n} peça(s), tudo certo. Clique em Usar "
@@ -167,6 +180,13 @@ class RoteiroChatDialog(QDialog):
             self.btn_usar.setText("Usar mesmo assim (o errado sai)")
         self.btn_correcao.setEnabled(self.sessao.pode_corrigir())
         self.btn_usar.setEnabled(True)
+
+    def pedir_so_json(self) -> None:
+        QGuiApplication.clipboard().setText(mensagem_so_json())
+        self.resposta.clear()
+        self.banner_erro.limpar()
+        self.banner_ok.mostrar("Mensagem copiada: cole no MESMO chat (Ctrl+V), envie e cole aqui a "
+                               "nova resposta.")
 
     def gerar_correcao(self) -> None:
         if self.sessao is None or not self.sessao.pode_corrigir():

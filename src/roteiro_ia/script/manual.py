@@ -33,6 +33,10 @@ class RespostaInvalida(ValueError):
     pass
 
 
+class SemJson(RespostaInvalida):
+    """O chat respondeu em texto corrido (sem nenhum JSON)."""
+
+
 def instrucao_json() -> str:
     schema = json.dumps(Roteiro.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
     return ("FORMATO DA RESPOSTA (obrigatório): responda SOMENTE com um único JSON válido — sem "
@@ -40,8 +44,32 @@ def instrucao_json() -> str:
             + schema)
 
 
+AVISO_INICIO = ("ATENÇÃO — FORMATO DA RESPOSTA: este pedido é lido por um programa. Responda "
+                "APENAS com um JSON (começando com { e terminando com }), no formato do JSON "
+                "Schema que está no FIM deste texto. Nada de texto corrido, títulos, listas ou "
+                "markdown fora do JSON.")
+
+
 def texto_para_o_chat(pedido: str) -> str:
-    return f"{pedido}\n\n{instrucao_json()}\n"
+    """O formato vai no começo e no fim: no chat, anexos grandes têm o fim mal lido."""
+    return f"{AVISO_INICIO}\n\n{pedido}\n\n{instrucao_json()}\n"
+
+
+def mensagem_do_anexo(nome_arquivo: str) -> str:
+    """O que mandar escrito junto do arquivo anexado (o arquivo grande não cabe para colar)."""
+    return (f"Anexei o arquivo {nome_arquivo}. Siga TODAS as instruções dele e responda APENAS "
+            "com o JSON completo, no formato do JSON Schema que está no fim do arquivo — sem "
+            "texto antes ou depois, sem markdown, sem explicações. Comece a resposta com { e "
+            "termine com }. Se a resposta for longa, escreva o JSON inteiro mesmo assim.")
+
+
+def mensagem_so_json() -> str:
+    """Para o MESMO chat, quando ele respondeu em texto corrido em vez do JSON."""
+    return ("Sua resposta veio em texto corrido, mas ela é lida por um programa. Converta o "
+            "roteiro que você acabou de escrever para JSON — mesmas peças, cenas (rel_path, "
+            "start_s, end_s exatamente como no catálogo), falas e trilhas — e responda APENAS "
+            "com o JSON, começando com { e terminando com }, sem nenhum texto em volta.\n\n"
+            + instrucao_json())
 
 
 def ler_resposta(texto: str) -> Roteiro:
@@ -55,7 +83,8 @@ def ler_resposta(texto: str) -> Roteiro:
     else:
         i, j = t.find("{"), t.rfind("}")
         if i < 0:
-            raise RespostaInvalida("A resposta não tem um JSON (deve começar com { e terminar com }).")
+            raise SemJson("O chat respondeu em texto corrido, sem o JSON. Clique em \"Pedir só "
+                          "o JSON\", cole no MESMO chat e envie: ele converte o que escreveu.")
         if j <= i:
             raise RespostaInvalida("A resposta está incompleta (o JSON não termina): o chat cortou. "
                                    "Peça no chat \"continue de onde parou\" e cole tudo junto.")
