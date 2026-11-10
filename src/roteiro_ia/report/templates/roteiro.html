@@ -59,6 +59,19 @@
 </section>
 {% endif %}
 
+{% if indice %}
+<section class="alerts">
+  <div class="piece-head"><div class="tipo">Para baixar antes de abrir o Premiere</div><h2>Índice das músicas</h2></div>
+  {% for ix in indice %}
+  <div class="label" style="margin-top:12px">{{ ix.rotulo }} — {{ ix.titulo }}</div>
+  <ul style="margin:4px 0 0">
+    {% for m in ix.musicas %}<li><strong>{{ m.nome }}</strong> · {{ m.onde }}{% if m.clima %} · {{ m.clima }}{% endif %}{% for nome, url in m.links %} · <a href="{{ url }}">{{ nome }}</a>{% endfor %}</li>{% endfor %}
+    {% if ix.termos %}<li>Buscar: {% for b in ix.termos %}{{ b.t }} ({% for nome, url in b.links %}<a href="{{ url }}">{{ nome }}</a>{% if not loop.last %} · {% endif %}{% endfor %}){% if not loop.last %}; {% endif %}{% endfor %}</li>{% endif %}
+  </ul>
+  {% endfor %}
+</section>
+{% endif %}
+
 {% for it in itens %}{% set pc = it.peca %}
 <section class="piece">
   <div class="piece-head">

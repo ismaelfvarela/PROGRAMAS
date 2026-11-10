@@ -508,3 +508,18 @@ def test_catalogo_enxuto_do_chat(env):
     assert "40.0–50.0" in cheio and "40.0–50.0" not in chat  # pouca emoção e nada que o salve
     assert "40.0–50.0" in build_catalog(db, compact=True)    # o corte da API não tira
     assert len(chat) < len(cheio) and "eu aceito" in chat     # o que tem fala fica
+
+
+def test_catalogo_leva_pontos_bons_e_problemas(env):
+    # sem isso a IA pegava o segmento inteiro, com chicote (movimento brusco) no meio
+    from roteiro_ia.models import Highlight
+    db, idx = env
+    seg = db.list_segments()[0]
+    a = db.get_analysis(seg.id)
+    db.set_analysis(a.model_copy(update={
+        "melhores_trechos": [Highlight(start_s=2.0, end_s=9.5, reason="m")],
+        "problemas": ["chicote no fim", "tremido"]}))
+    linha = next(l for l in build_catalog(db).splitlines() if "eu aceito" in l)
+    assert "bons: 2.0–9.5" in linha and "problemas: chicote no fim, tremido" in linha
+    assert "13. Nada de chicote" in REGRAS_FOKUSS
+    assert REGRAS_FOKUSS.index("12. Trilha") < REGRAS_FOKUSS.index("13. Nada de chicote")

@@ -509,3 +509,42 @@ def test_musica_out_nunca_ultrapassa_duracao(env):
         p.trilhas[1].trecho_inicio_s = inicio
         m = _musica_clip(build_sequence(p, db, idx, {}, SRC))
         assert int(m.findtext("out")) <= round(200.0 * NTSC)
+
+
+def test_timeline_no_formato_da_maioria_dos_videos(env):
+    # Nicole e Osny: 880 de 893 vídeos em 4K 59,94 e as timelines saíam em 1920x1080
+    from roteiro_ia.premiere.fcpxml import Formato, formato_do_projeto
+    s, db, idx, ids = env
+    for i in range(5):
+        db.add_media(MediaInfo(rel_path=f"K\\K{i}.MP4", folder="K", role=Role.camera,
+                               day_label="principal", kind="video", duration_s=10,
+                               fps_num=60000, fps_den=1001, width=3840, height=2160, rotation=0,
+                               audio_channels=2))
+    sondados = []
+
+    def sondar(p):
+        sondados.append(p)
+        return 48000 if len(sondados) % 3 else 44100
+    f = formato_do_projeto(db, SRC, sondar=sondar)
+    assert (f.width, f.height, f.rate, f.samplerate) == (3840, 2160, (60000, 1001), 48000)
+    assert sondados  # a taxa do áudio vem dos arquivos, não fixa
+    root = ET.fromstring(build_xml(rot_ep_e_stories(), db, idx, {}, SRC, formato=f))
+    seqs = {q.findtext("name"): q for q in root.iter("sequence")}
+    ep = seqs["EP 01"].find("media/video/format/samplecharacteristics")
+    assert (ep.findtext("width"), ep.findtext("height"), ep.findtext("rate/timebase")) == (
+        "3840", "2160", "60")
+    st = seqs["STORIES"].find("media/video/format/samplecharacteristics")
+    assert (st.findtext("width"), st.findtext("height")) == ("2160", "3840")  # em pé
+    assert seqs["EP 01"].findtext("media/audio/format/samplecharacteristics/samplerate") == "48000"
+    assert Formato(3840, 2160).vertical() == Formato(2160, 3840)
+
+
+def test_formato_sem_videos_e_o_padrao(tmp_path):
+    from roteiro_ia.premiere.fcpxml import Formato, formato_do_projeto
+    s = Settings(system_dir=str(tmp_path / "sys"), protected_roots=[])
+    with ProjectDB(tmp_path / "v.db", s) as db:
+        assert formato_do_projeto(db, SRC, sondar=lambda p: None) == Formato()
+
+
+def rot_ep_e_stories():
+    return Roteiro(arco="a", pecas=[_piece(numero=1), _piece("stories", None)], alertas=[])
