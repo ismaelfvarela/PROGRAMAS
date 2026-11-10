@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +19,7 @@ from roteiro_ia.config import Settings
 from roteiro_ia.models import Role
 from roteiro_ia.paths import build_event_paths
 from roteiro_ia.pipeline import PROJECT_FILE, Pipeline, ProjectRequest
-from roteiro_ia.premiere.job import pedir_ao_premiere, write_job
+from roteiro_ia.premiere.job import ler_resultado, pedido_pendente, pedir_ao_premiere, write_job
 from roteiro_ia.ui.fila import FilaProjetos
 from roteiro_ia.ui.status import StatusPanel
 from roteiro_ia.ui.widgets import RolagemVertical
@@ -63,6 +65,11 @@ class AjusteDialog(QDialog):
 
     def pedido(self) -> str:
         return self.texto.toPlainText().strip()
+
+
+PREMIERE_CONFERIR_MS = 3000
+PREMIERE_AVISO_S = 90       # sem ninguém pegar o pedido nesse tempo: avisa o editor
+PREMIERE_DESISTIR_S = 40 * 60
 
 
 def premiere_aberto() -> bool:
@@ -120,6 +127,11 @@ class ProjetoTab(QWidget):
         lay.addWidget(self.form if area != "casamento" else RolagemVertical(self.form), 55)
         lay.addWidget(RolagemVertical(self.status), 45)
 
+        # acompanha o pedido ao Premiere até o painel/serviço gravar o resultado
+        self.timer_premiere = QTimer(self)
+        self.timer_premiere.setInterval(PREMIERE_CONFERIR_MS)
+        self.timer_premiere.timeout.connect(self._conferir_premiere)
+        self._pedido_premiere: tuple[str, str, float, bool] | None = None
         self.timer_retomar = QTimer(self)
         self.timer_retomar.setSingleShot(True)
         self.timer_retomar.timeout.connect(self._retomar)
@@ -457,12 +469,15 @@ class ProjetoTab(QWidget):
             self.status.banner_erro.mostrar("O roteiro ainda não foi gerado: o XML do Premiere sai "
                                             "no fim do processamento (etapa Premiere).")
             return
+        agora = datetime.now().replace(microsecond=0)
         try:
             job = write_job(p, self.s, xml if xml.is_file() else None, area=self.area)
-            pedir_ao_premiere(self.s, acao, job)
+            pedir_ao_premiere(self.s, acao, job, agora)
         except Exception as e:  # noqa: BLE001 - disco cheio, sem permissão…
             self.status.banner_erro.mostrar(f"Não consegui preparar o pedido ao Premiere: {e}")
             return
+        self._pedido_premiere = (acao, agora.isoformat(timespec="seconds"), time.monotonic(), False)
+        self.timer_premiere.start()
         oque = ("abrir o projeto" if acao == "abrir"
                 else "puxar o roteiro (timelines e mídias) para o projeto")
         if premiere_aberto():
@@ -481,6 +496,38 @@ class ProjetoTab(QWidget):
         self.status.banner_ok.mostrar(
             f"Abrindo o Premiere para {oque}. Quando ele abrir, o painel Roteiro IA faz sozinho; "
             "na primeira vez, abra o painel em Janela → Extensões → Roteiro IA.")
+
+    def _conferir_premiere(self) -> None:
+        """Mostra o resultado do pedido; avisa se ninguém no Premiere pegou o pedido."""
+        if self._pedido_premiere is None:
+            self.timer_premiere.stop()
+            return
+        acao, quando, inicio, avisou = self._pedido_premiere
+        r = ler_resultado(self.s, quando)
+        if r is not None:
+            self.timer_premiere.stop()
+            self._pedido_premiere = None
+            linhas = [re.sub(r"^(ok|aviso|erro):", "", m) for m in r.get("mensagens") or [] if m]
+            for ln in linhas:
+                self.status.log_line(f"Premiere: {ln}")
+            titulo = {"abrir": "Projeto do Premiere pronto", "puxar": "Roteiro no projeto do Premiere"}
+            if r.get("estado") == "erro":
+                self.status.banner_erro.mostrar("O Premiere não conseguiu: " + " ".join(linhas[-3:]))
+            else:
+                extra = " (com avisos, veja o registro)" if r.get("estado") == "aviso" else ""
+                self.status.banner_ok.mostrar(f"{titulo.get(acao, 'Premiere')}{extra}.")
+            return
+        passado = time.monotonic() - inicio
+        if passado > PREMIERE_DESISTIR_S:
+            self.timer_premiere.stop()
+            self._pedido_premiere = None
+            return
+        if not avisou and passado > PREMIERE_AVISO_S and pedido_pendente(self.s):
+            self._pedido_premiere = (acao, quando, inicio, True)
+            self.status.banner_erro.mostrar(
+                "O Premiere ainda não pegou o pedido. Se ele já estava aberto antes desta versão, "
+                "feche e abra o Premiere (o serviço do Roteiro IA abre junto); ou abra o painel em "
+                "Janela → Extensões → Roteiro IA. O pedido continua valendo por 30 min.")
 
     def abrir_pasta_videos(self) -> None:
         self._abrir_pasta(lambda p: p.export_dir,

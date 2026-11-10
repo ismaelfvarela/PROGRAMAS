@@ -360,3 +360,49 @@ def test_observacoes_do_editor_salvas_no_projeto(janela, evento, monkeypatch):
     salvo = json.loads((an / "projeto.json").read_text(encoding="utf-8"))
     assert salvo["observacoes"]["evitar"] == "drone na igreja"
     assert "Observações salvas" in pj.status.banner_ok.text()
+
+
+def test_app_acompanha_o_pedido_ao_premiere(janela, evento, monkeypatch, tmp_path):
+    import json
+
+    from roteiro_ia.ui import projeto as mod
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "premiere_exe", lambda: tmp_path / "Premiere.exe")
+    monkeypatch.setattr(mod, "premiere_aberto", lambda: True)
+    pj = janela.projeto
+    pj.set_event_folder(evento)
+    pj._req = pj.form.build_request()
+    sis = Path(janela.s.system_dir)
+    pj.status.btn_premiere.click()
+    assert pj.timer_premiere.isActive()
+    pedido = json.loads((sis / "pedido_premiere.json").read_text(encoding="utf-8"))
+
+    # ninguém pegou o pedido em 90 s: aviso claro (e continua esperando)
+    acao, quando, inicio, _ = pj._pedido_premiere
+    pj._pedido_premiere = (acao, quando, inicio - 100, False)
+    pj._conferir_premiere()
+    assert "ainda não pegou o pedido" in pj.status.banner_erro.text()
+    assert pj.timer_premiere.isActive()
+
+    # o serviço do Premiere grava o resultado: o app mostra e para de acompanhar
+    (sis / "pedido_premiere.json").unlink()
+    (sis / "resultado_premiere.json").write_text(json.dumps({
+        "acao": "abrir", "pedido_em": pedido["quando"], "estado": "ok", "por": "servico",
+        "mensagens": ["ok:Projeto criado: E:\\EV.prproj", "ok:Pastas no padrão da Fokuss."]}),
+        encoding="utf-8")
+    pj._conferir_premiere()
+    assert not pj.timer_premiere.isActive()
+    assert "Projeto do Premiere pronto" in pj.status.banner_ok.text()
+    assert "Premiere: Pastas no padrão da Fokuss." in pj.status.log.toPlainText()
+
+
+def test_resultado_de_outro_pedido_e_ignorado(tmp_path):
+    import json
+
+    from roteiro_ia.config import Settings
+    from roteiro_ia.premiere.job import ler_resultado
+    s = Settings(system_dir=str(tmp_path), protected_roots=[])
+    (tmp_path / "resultado_premiere.json").write_text(json.dumps(
+        {"pedido_em": "2026-11-10T09:00:00", "estado": "ok"}), encoding="utf-8")
+    assert ler_resultado(s, "2026-11-10T10:00:00") is None
+    assert ler_resultado(s, "2026-11-10T09:00:00")["estado"] == "ok"

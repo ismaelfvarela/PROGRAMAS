@@ -28,6 +28,7 @@ PASTA_PECAS = {"casamento": "EPS", "formatura": "PARTES DA COLAÇÃO"}
 JOB = "job.json"
 ULTIMO_JOB = "ultimo_job.json"
 PEDIDO = "pedido_premiere.json"
+RESULTADO = "resultado_premiere.json"  # gravado pelo painel/serviço do Premiere
 ACOES = ("abrir", "puxar")
 
 
@@ -105,6 +106,19 @@ def write_job(p: EventPaths, s: Settings, xml_path: Path | None, db: ProjectDB |
         "proxies": _do_banco(p, s, db, _proxies),
     })
     return _gravar(p, s, job)
+
+
+def ler_resultado(s: Settings, pedido_em: str) -> dict | None:
+    """Resultado que o Premiere gravou para o pedido feito em `pedido_em` (None = ainda não)."""
+    try:
+        r = json.loads((Path(s.system_dir) / RESULTADO).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return r if isinstance(r, dict) and r.get("pedido_em") == pedido_em else None
+
+
+def pedido_pendente(s: Settings) -> bool:
+    return (Path(s.system_dir) / PEDIDO).is_file()
 
 
 def pedir_ao_premiere(s: Settings, acao: str, job: Path, agora: datetime | None = None) -> Path:

@@ -4,8 +4,6 @@
 (function () {
   var SISTEMA = "Y:\\SISTEMA ROTEIRO";
   var PADRAO = SISTEMA + "\\ultimo_job.json";
-  var PEDIDO = SISTEMA + "\\pedido_premiere.json";
-  var PEDIDO_VALIDO_MS = 30 * 60 * 1000;
   var jobPath = PADRAO;
   var ocupado = false;
   var fs = null;
@@ -114,20 +112,24 @@
     }
   };
 
-  // Pedido deixado pelo app Roteiro IA (bot\u00f5es "Abrir no Premiere" e "Puxar roteiro").
+  // Pedido deixado pelo app Roteiro IA (botoes "Abrir no Premiere" e "Puxar roteiro"). O
+  // servico invisivel (servico.js) atende o mesmo arquivo; quem pegar primeiro executa.
+  var TITULOS = {
+    abrir: ["Projeto pronto", "Projeto pronto, com avisos", "N\u00e3o foi poss\u00edvel abrir o projeto"],
+    puxar: ["Roteiro no projeto", "Roteiro no projeto, com avisos", "N\u00e3o foi poss\u00edvel puxar o roteiro"]
+  };
   function conferirPedido() {
-    if (ocupado || !fs) { return; }
-    var pedido;
-    try {
-      if (!fs.existsSync(PEDIDO)) { return; }
-      pedido = lerJson(PEDIDO);
-      fs.unlinkSync(PEDIDO);
-    } catch (e) { return; }
-    var quando = Date.parse(pedido.quando || "");
-    if (!isNaN(quando) && Date.now() - quando > PEDIDO_VALIDO_MS) { return; }  // pedido velho
-    if (!ACOES.hasOwnProperty(pedido.acao) || pedido.acao === "exportar") { return; }
+    if (ocupado || !window.RoteiroPedidos) { return; }
+    var pedido = window.RoteiroPedidos.pegar("painel");
+    if (!pedido) { return; }
     if (pedido.job) { jobPath = pedido.job; mostrarJob(); }
-    ACOES[pedido.acao]();
+    elLog.innerHTML = "";
+    travar(true);
+    log("Pedido do Roteiro IA: " + (pedido.acao === "puxar" ? "puxar o roteiro" : "abrir o projeto") + "...");
+    window.RoteiroPedidos.executar(pedido, "painel", function (res) {
+      travar(false);
+      mostrar(res, TITULOS[pedido.acao]);
+    });
   }
 
   btnEscolher.addEventListener("click", escolher);
