@@ -84,7 +84,7 @@ class PipelineWorker(_Base):
 
     def __init__(self, factory: PipelineFactory, acao: str = "run", aprovado_custo: bool = False,
                  pedido: str | None = None, refazer_falhas: bool = True):
-        if acao not in ("prepare", "run", "revise"):
+        if acao not in ("prepare", "run", "revise", "manual"):
             raise ValueError(f"Ação desconhecida: {acao}")
         super().__init__()
         self._factory = factory
@@ -112,6 +112,9 @@ class PipelineWorker(_Base):
                 return "preparado"
             if self.acao == "revise":
                 pipe.revise(self.pedido or "", aprovado_custo=self.aprovado_custo)
+                return "ajustado"
+            if self.acao == "manual":  # roteiro feito pelo chat: só PDF e XML
+                pipe.concluir_roteiro_manual()
                 return "ajustado"
             status = pipe.run(aprovado_custo=self.aprovado_custo, refazer_falhas=self.refazer_falhas)
             if status == "pausado":

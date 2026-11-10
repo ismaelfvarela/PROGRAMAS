@@ -493,3 +493,18 @@ def test_trilhas_preferidas_vem_primeiro_com_estrela(env):
     assert linhas[0].startswith("M:\\Trilhas\\rapida.mp3")
     assert linhas[0].endswith("★ do casal/pedida")
     assert len(linhas) == 2 and "★" not in linhas[1]
+
+
+def test_catalogo_enxuto_do_chat(env):
+    db, idx = env
+    from roteiro_ia.models import Segment
+    m = db.list_media()[0]
+    (fraco,) = db.add_segments([Segment(media_id=m.id, start_s=40, end_s=50)])
+    a = sa(fraco, "extra")
+    db.set_analysis(a.model_copy(update={"emocao_intensidade": 3, "qualidade": 8,
+                                         "falas_chave": [], "descricao": "x" * 200,
+                                         "som_ambiente": "vento", "som_ambiente_util": False}))
+    cheio, chat = build_catalog(db), build_catalog(db, compact="chat")
+    assert "40.0–50.0" in cheio and "40.0–50.0" not in chat  # pouca emoção e nada que o salve
+    assert "40.0–50.0" in build_catalog(db, compact=True)    # o corte da API não tira
+    assert len(chat) < len(cheio) and "eu aceito" in chat     # o que tem fala fica

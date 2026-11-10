@@ -330,6 +330,38 @@ class Pipeline:
         finally:
             self._close_log(h)
 
+    # ------------------------------------------------------------ roteiro pelo chat
+    def sessao_roteiro_manual(self, pedido_ajuste: str | None = None, compact: bool = False):
+        """Pedido do roteiro para mandar num chat (sem a API): o mesmo contexto da etapa do
+        roteiro (trilhas com ★, observações, estilo). Só no Casamento."""
+        from roteiro_ia.script.generate import montar_pedido
+        from roteiro_ia.script.manual import SessaoManual
+        if self.req.area != "casamento":
+            raise PipelineError("O roteiro pelo chat ainda é só do Casamento.")
+        if self.db.stage_status("analise") != "feito":
+            raise PipelineError("O roteiro pelo chat precisa da análise das cenas pronta (ela "
+                                "envia os vídeos e só roda pela API).")
+        obs = self._observacoes()
+        self._indexar_baixadas(obs)
+        idx = self._indice_do_roteiro(obs)
+        base, pedido = montar_pedido(self.db, idx, self._perfil(), self.req.n_episodios,
+                                     set(self.req.derivados), pedido_ajuste, observacoes=obs,
+                                     compact="chat" if compact else False)
+        return SessaoManual(self.db, idx, base, pedido, pedido_ajuste)
+
+    def concluir_roteiro_manual(self) -> None:
+        """Roteiro já gravado pelo chat: a etapa fica feita e saem o PDF e o XML/job."""
+        h = self._open_log()
+        try:
+            _log.info("Roteiro feito pelo chat (sem a API); gerando PDF e XML.")
+            self.db.set_stage("roteiro", "feito", "pelo chat")
+            self._emit("roteiro", "Concluído: pré-roteiro (pelo chat)", 1.0)
+            self._run_stage("pdf", force=True)
+            controle.atual().checkpoint()
+            self._run_stage("premiere", force=True)
+        finally:
+            self._close_log(h)
+
     def _run_stage(self, name: str, force: bool = False, refazer_falhas: bool = True) -> None:
         db = self.db
         status = db.stage_status(name)
