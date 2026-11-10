@@ -231,7 +231,8 @@ def test_revise_nao_reprocessa_midia(tmp_path, sleeps, monkeypatch):
     calls.clear()
     seen = {}
 
-    def fake_generate(db, c, idx, style, model, n_episodios, derivados, pedido_ajuste=None):
+    def fake_generate(db, c, idx, style, model, n_episodios, derivados, pedido_ajuste=None,
+                      observacoes=None):
         seen.update(model=model, n=n_episodios, derivados=derivados, pedido=pedido_ajuste)
         return roteiro_com([])
     monkeypatch.setattr(pipeline, "generate_roteiro", fake_generate)
@@ -663,7 +664,8 @@ def test_estilo_do_pipeline_usa_a_area_do_projeto(tmp_path, monkeypatch):
 def _caminhos_vistos_pelo_roteiro(pipe, monkeypatch):
     seen = {}
 
-    def fake_generate(db, c, idx, style, model, n_episodios, derivados, pedido_ajuste=None):
+    def fake_generate(db, c, idx, style, model, n_episodios, derivados, pedido_ajuste=None,
+                      observacoes=None):
         seen["paths"] = sorted(t.path for t in idx.all())
         return roteiro_com([])
     monkeypatch.setattr(pipeline, "generate_roteiro", fake_generate)
@@ -700,3 +702,47 @@ def test_roteiro_com_pasta_propria_usa_so_ela(tmp_path, sleeps, monkeypatch):
     pipe._index().upsert(tr(propria))
     assert _caminhos_vistos_pelo_roteiro(pipe, monkeypatch) == [propria]
     pipe.close()
+
+
+def test_roteiro_rele_as_observacoes_e_usa_a_pasta_do_casal(tmp_path, sleeps, monkeypatch):
+    # o editor muda as observações com o projeto já rodando (ou esperando a cota): o roteiro
+    # usa as do projeto.json; as trilhas da pasta do casal entram e ficam marcadas (★)
+    import os
+
+    from roteiro_ia.observacoes import Observacoes
+    pipe, _calls, _ = mk_pipe(tmp_path)
+    assert pipe.run() == "concluido"
+    casal = tmp_path / "CASAL"
+    casal.mkdir()
+    dentro = os.path.abspath(tmp_path / "M" / "a.wav")
+    do_casal = os.path.abspath(casal / "nossa.wav")
+    pipe._index().upsert(tr(dentro))
+    pipe._index().upsert(tr(do_casal))
+    req = ProjectRequest.load(pipe._project_file())
+    req.observacoes = Observacoes(perfil="discreto", musicas_pasta=str(casal))
+    req.save(pipe._project_file(), pipe.s)
+    seen = {}
+
+    def fake_generate(db, c, idx, style, model, n_episodios, derivados, pedido_ajuste=None,
+                      observacoes=None):
+        seen.update(paths=sorted(x.path for x in idx.all()), pref=idx.preferidas, obs=observacoes)
+        return roteiro_com([])
+    monkeypatch.setattr(pipeline, "generate_roteiro", fake_generate)
+    pipe._st_roteiro()
+    assert seen["paths"] == sorted([dentro, do_casal]) and seen["pref"] == {do_casal}
+    assert seen["obs"].perfil == "discreto"
+    pipe.close()
+
+
+def test_pdf_mostra_as_observacoes():
+    from datetime import date
+    from types import SimpleNamespace
+
+    from roteiro_ia.observacoes import Observacoes
+    from roteiro_ia.report.pdf import render_html
+    p = SimpleNamespace(event_name="EV", event_date=date(2023, 9, 9))
+    o = Observacoes(obrigatorio="a avó na entrada", musicas_link="https://x/playlist")
+    html = render_html(roteiro_com([]), p, [], observacoes=o)
+    assert "Observações usadas no roteiro" in html and "a avó na entrada" in html
+    assert "https://x/playlist" in html
+    assert "Observações usadas" not in render_html(roteiro_com([]), p, [], observacoes=Observacoes())

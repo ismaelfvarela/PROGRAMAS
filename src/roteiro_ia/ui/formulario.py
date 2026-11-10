@@ -7,13 +7,14 @@ import shutil
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QGridLayout,
-                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
-                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog,
+                               QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+                               QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from roteiro_ia.config import Settings, pasta_musicas_padrao
 from roteiro_ia.inventory import VIDEO_EXTS, list_subfolders
 from roteiro_ia.models import FolderAssignment, Role
+from roteiro_ia.observacoes import Observacoes
 from roteiro_ia.paths import EventNameError, estimate_proxy_gb, parse_event_name
 from roteiro_ia.pipeline import ProjectRequest
 from roteiro_ia.ui.widgets import Card, CampoPastaMusicas, SubfolderTable, set_prop
@@ -84,6 +85,7 @@ def _pasta_inicial() -> str:
 class FormularioEvento(QWidget):
     iniciar = Signal()
     continuar = Signal()
+    observacoes_mudaram = Signal()
 
     def __init__(self, s: Settings, runner: Runner, parent: QWidget | None = None,
                  area: str = "casamento"):
@@ -227,6 +229,12 @@ class FormularioEvento(QWidget):
         dupla.addWidget(c5, 1)
         lay.addLayout(dupla)
 
+        # observações do editor (Casamento; a Formatura pode ligar com _card_observacoes)
+        self.observacoes = Observacoes()
+        self.card_observacoes = None
+        if self.area == "casamento":
+            lay.addWidget(self._card_observacoes())
+
         # 7. iniciar
         self.btn_iniciar = QPushButton("Iniciar")
         self.btn_iniciar.setObjectName("primario")
@@ -352,6 +360,46 @@ class FormularioEvento(QWidget):
             return
         QMessageBox.information(self, "Chave do Gemini", "Chave gravada com segurança.")
 
+    # ------------------------------------------------------------ observações do editor
+    def _card_observacoes(self) -> Card:
+        """Fica sempre habilitado (fora de self.cards): dá para escrever até com o projeto
+        rodando ou esperando a cota; vale no próximo roteiro gerado."""
+        c = Card("Observações do editor")
+        linha = QHBoxLayout()
+        linha.setSpacing(10)
+        self.lbl_observacoes = QLabel()
+        self.lbl_observacoes.setWordWrap(True)
+        self.lbl_observacoes.setProperty("muted", True)
+        self.btn_observacoes = QPushButton("Escrever observações…")
+        linha.addWidget(self.lbl_observacoes, 1)
+        linha.addWidget(self.btn_observacoes)
+        c.body.addLayout(linha)
+        self.btn_observacoes.clicked.connect(self.editar_observacoes)
+        self.card_observacoes = c
+        self._resumo_observacoes()
+        return c
+
+    def _resumo_observacoes(self) -> None:
+        if self.card_observacoes is None:
+            return
+        n = self.observacoes.preenchidas()
+        self.lbl_observacoes.setText(
+            "Perfil do casal, o que não pode faltar, o que evitar e as músicas. A IA segue "
+            "com prioridade." if n == 0 else
+            f"{n} campo(s) preenchido(s): a IA segue com prioridade em todo roteiro deste evento.")
+
+    def set_observacoes(self, o: Observacoes) -> None:
+        self.observacoes = o
+        self._resumo_observacoes()
+
+    def editar_observacoes(self) -> None:
+        from roteiro_ia.ui.observacoes import ObservacoesDialog
+        dlg = ObservacoesDialog(self.observacoes, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self.set_observacoes(dlg.observacoes())
+        self.observacoes_mudaram.emit()
+
     # ------------------------------------------------------------ pedido
     def assignments(self) -> list[FolderAssignment]:
         return self.tabela.assignments()
@@ -366,7 +414,7 @@ class FormularioEvento(QWidget):
             assignments=self.assignments(),
             n_episodios=None if self.chk_livre.isChecked() else self.spin_episodios.value(),
             derivados=derivados, gemini_mode=self.modo(), area=self.area,
-            pasta_musicas=self.campo_musicas.pasta())
+            pasta_musicas=self.campo_musicas.pasta(), observacoes=self.observacoes)
 
     def load_request(self, req: ProjectRequest) -> None:
         """Preenche o formulário com um projeto salvo (Continuar projeto existente)."""
@@ -386,6 +434,7 @@ class FormularioEvento(QWidget):
         self.chk_stories.setChecked("stories" in req.derivados)
         (self.btn_pago if req.gemini_mode == "pago" else self.btn_gratis).setChecked(True)
         self.campo_musicas.set_pasta(req.pasta_musicas)
+        self.set_observacoes(req.observacoes)
 
     # ------------------------------------------------------------ estado
     def set_rodando(self, rodando: bool) -> None:

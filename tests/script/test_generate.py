@@ -472,3 +472,24 @@ def test_roteiro_curto_volta_para_correcao_e_vira_alerta(env):
     assert len(c.calls) == 3  # 1ª + 2 rodadas de correção
     assert "as cenas somam 15 s" in c.calls[1][3]
     assert any(a.startswith("Duração: episódio 1") for a in r.alertas)
+
+
+def test_observacoes_entram_com_prioridade_e_ficam_nas_correcoes(env):
+    from roteiro_ia.observacoes import Observacoes
+    db, idx = env
+    obs = Observacoes(perfil="casal discreto", obrigatorio="discurso do pai da noiva")
+    ruim = rot(piece(dur=360))  # força as rodadas de correção
+    c = FakeClient([ruim, ruim, ruim])
+    generate_roteiro(db, c, idx, None, "pro", 1, set(), observacoes=obs)
+    assert all("PRIORIDADE MÁXIMA" in call[3] and "discurso do pai da noiva" in call[3]
+               for call in c.calls)
+
+
+def test_trilhas_preferidas_vem_primeiro_com_estrela(env):
+    from roteiro_ia.observacoes import IndiceComPreferidas, Observacoes
+    db, idx = env
+    v = IndiceComPreferidas(idx, [], Observacoes(musicas="rapida"))
+    linhas = music_shortlist(v).splitlines()
+    assert linhas[0].startswith("M:\\Trilhas\\rapida.mp3")
+    assert linhas[0].endswith("★ do casal/pedida")
+    assert len(linhas) == 2 and "★" not in linhas[1]
