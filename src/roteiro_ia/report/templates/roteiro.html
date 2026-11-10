@@ -119,8 +119,8 @@
   {% endif %}
 
   {% if pc.termos_musicbed %}
-  <div class="label">Buscar no Artlist / Musicbed (clique para abrir no Artlist)</div>
-  <div class="terms">{% for t in pc.termos_musicbed %}<span><a href="{{ artlist(t) }}">{{ t }}</a></span>{% endfor %}</div>
+  <div class="label">Buscar músicas (clique para abrir a busca)</div>
+  <div class="terms">{% for t in pc.termos_musicbed %}<span>{{ t }}: <a href="{{ artlist(t) }}">Artlist</a> · <a href="{{ musicbed(t) }}">Musicbed</a></span>{% endfor %}</div>
   {% endif %}
 
   {% if pc.misturas %}
