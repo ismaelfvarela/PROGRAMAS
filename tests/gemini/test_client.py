@@ -488,3 +488,28 @@ def test_outras_respostas_continuam_usando_o_lite():
     c, be = mk([err429v(DIA), '{"ok": true}'], names=NOMES)
     assert c.generate_json("gemini-3.6-flash", [], Out, "p").ok
     assert modelos(be) == ["gemini-3.6-flash", "gemini-3.6-flash-lite"]
+
+
+def test_modelo_retirado_404_sai_do_revezamento_e_espera_a_cota(tmp_path):
+    # Nicole e Osny: os flash bons esgotados até 05:00, o roteiro (sem lite) caiu no
+    # gemini-2.5-flash, que a Google retirou (404) — a etapa parava com erro
+    from roteiro_ia.script.generate import Roteiro
+    nomes = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.6-flash-lite"]
+    e404 = errors.ClientError(404, {"error": {"code": 404, "status": "NOT_FOUND",
+                                              "message": "This model models/gemini-2.5-flash is no "
+                                              "longer available to new users."}})
+    c, be = mk([err429v(DIA, delay="7300s"), e404], names=nomes)
+    with pytest.raises(QuotaPaused) as e:
+        c.generate_json("gemini-3.6-flash", [], Roteiro, "p")
+    assert e.value.daily is True
+    assert modelos(be) == ["gemini-3.6-flash", "gemini-2.5-flash"]
+    dados = json.loads((tmp_path / "sys" / "cota.json").read_text(encoding="utf-8"))
+    assert dados["indisponiveis"] == ["gemini-2.5-flash"]
+
+
+def test_404_fora_do_revezamento_continua_erro():
+    s = Settings(gemini_mode="pago")
+    e404 = errors.ClientError(404, {"error": {"code": 404, "status": "NOT_FOUND", "message": "x"}})
+    c = GeminiClient(s, backend=SimpleNamespace(models=FakeModels([e404])))
+    with pytest.raises(errors.ClientError):
+        c.generate_json("gemini-2.5-flash", [], Out, "p")

@@ -20,6 +20,7 @@ from roteiro_ia.pipeline import PROJECT_FILE, Pipeline, ProjectRequest
 from roteiro_ia.premiere.job import pedir_ao_premiere, write_job
 from roteiro_ia.ui.fila import FilaProjetos
 from roteiro_ia.ui.status import StatusPanel
+from roteiro_ia.ui.widgets import RolagemVertical
 from roteiro_ia.ui.worker import PipelineWorker, Runner
 
 # (pedido, settings, eventos) -> objeto com prepare/run/revise/close/resume_at/db
@@ -115,8 +116,9 @@ class ProjetoTab(QWidget):
         lay.setSpacing(16)
         self.form = area_por_id(area).formulario(s, runner, area=area)
         self.status = StatusPanel()
-        lay.addWidget(self.form, 55)
-        lay.addWidget(self.status, 45)
+        # a Formatura já rola o próprio formulário; o do Casamento e o andamento rolam aqui
+        lay.addWidget(self.form if area != "casamento" else RolagemVertical(self.form), 55)
+        lay.addWidget(RolagemVertical(self.status), 45)
 
         self.timer_retomar = QTimer(self)
         self.timer_retomar.setSingleShot(True)
