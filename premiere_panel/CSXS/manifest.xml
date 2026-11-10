@@ -3,6 +3,7 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
     <Extension Id="com.fokuss.roteiroia.panel" Version="1.0.0" />
+    <Extension Id="com.fokuss.roteiroia.servico" Version="1.0.0" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -41,6 +42,35 @@
               <Width>260</Width>
               <Height>360</Height>
             </MinSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+    <!-- servico invisivel: abre sozinho com o Premiere e atende os pedidos do app -->
+    <Extension Id="com.fokuss.roteiroia.servico">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./servico.html</MainPath>
+          <ScriptPath>./host/montar.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>false</AutoVisible>
+          <StartOn>
+            <Event>com.adobe.csxs.events.ApplicationActivate</Event>
+            <Event>applicationActivate</Event>
+          </StartOn>
+        </Lifecycle>
+        <UI>
+          <Type>Custom</Type>
+          <Geometry>
+            <Size>
+              <Width>1</Width>
+              <Height>1</Height>
+            </Size>
           </Geometry>
         </UI>
       </DispatchInfo>

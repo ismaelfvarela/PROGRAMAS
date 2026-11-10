@@ -103,3 +103,15 @@ def test_formatura_usa_partes_da_colacao(tmp_path):
     out = rodar(tmp_path, ["puxarRoteiro"], job=job)
     assert "PARTES DA COLAÇÃO/" in out["arvore"] and "EPS/" not in out["arvore"]
     assert out["arvore"]["PARTES DA COLAÇÃO/"] == {"EP 01": "SEQ", "EP 02": "SEQ", "TEASER": "SEQ"}
+
+
+def test_pedidos_um_so_pega_e_grava_o_resultado(tmp_path):
+    r = subprocess.run([NODE, str(Path(__file__).parent / "js" / "pedidos_teste.js"),
+                        str(PANEL / "pedidos.js"), str(tmp_path)],
+                       capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["so_um_pega"] and out["acao"] == "puxar" and not out["sobrou_pedido"]
+    assert out["chamadas"] == ["puxarRoteiro"]
+    assert out["resultado"]["estado"] == "ok" and out["resultado"]["por"] == "servico"
+    assert out["velho_ignorado"] and out["desconhecido_ignorado"] and out["lendo_sobrando"] == 0
