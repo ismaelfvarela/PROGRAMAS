@@ -7,7 +7,9 @@ from tests.script.test_generate import env, piece, ref, rot  # noqa: F401 - fixt
 
 def test_pedido_leva_o_formato_json():
     t = texto_para_o_chat("PEDIDO X")
-    assert t.startswith("PEDIDO X") and "SOMENTE com um único JSON" in t and '"pecas"' in t
+    # o formato no começo e no fim (o chat lê mal o fim de anexos grandes)
+    assert t.startswith("ATENÇÃO — FORMATO DA RESPOSTA") and "PEDIDO X" in t
+    assert "SOMENTE com um único JSON" in t and '"pecas"' in t
     assert "termos_musicbed" in instrucao_json()
 
 
@@ -20,7 +22,7 @@ def test_le_resposta_crua_com_cerca_e_com_texto_em_volta():
 
 @pytest.mark.parametrize("texto,trecho", [
     ("", "Cole a resposta"),
-    ("não sei fazer isso", "não tem um JSON"),
+    ("não sei fazer isso", "texto corrido"),
     ('{"arco": "a", "pecas": [', "o chat cortou"),
     ('{"arco": "a", "pecas": [}', "incompleto ou quebrado"),
     ('{"arco": "a"}', "formato do roteiro"),
@@ -38,7 +40,7 @@ def test_sessao_corrige_ate_duas_vezes_e_grava(env):  # noqa: F811
     assert s.conferir(ruim.model_dump_json())
     assert s.pode_corrigir()
     c1 = s.texto_correcao()
-    assert c1.startswith("BASE") and "NAO_EXISTE" in c1 and "SOMENTE com um único JSON" in c1
+    assert "BASE" in c1 and "NAO_EXISTE" in c1 and "SOMENTE com um único JSON" in c1
     s.conferir(ruim.model_dump_json())
     s.texto_correcao()
     s.conferir(ruim.model_dump_json())

@@ -68,11 +68,16 @@ def test_janela_do_chat_do_pedido_ao_uso(qtbot, tmp_path, monkeypatch):
     assert arq.read_text(encoding="utf-8") == "PEDIDO COMPLETO"
     assert abertos == ["https://gemini.google.com/app"] and mostrados == [arq]
     from PySide6.QtGui import QGuiApplication
-    assert QGuiApplication.clipboard().text() == "PEDIDO COMPLETO"
+    assert QGuiApplication.clipboard().text() == "PEDIDO COMPLETO"  # pequeno: o texto todo
 
-    dlg.resposta.setPlainText("não é json")
+
+    dlg.resposta.setPlainText("**Episódio 1** — texto corrido, sem JSON")
     dlg.btn_conferir.click()
-    assert "não tem um JSON" in dlg.banner_erro.text() and not dlg.btn_usar.isEnabled()
+    assert "texto corrido" in dlg.banner_erro.text() and not dlg.btn_usar.isEnabled()
+    assert dlg.btn_so_json.isVisibleTo(dlg)
+    dlg.btn_so_json.click()
+    assert QGuiApplication.clipboard().text().startswith("Sua resposta veio em texto corrido")
+    assert "JSON Schema" in QGuiApplication.clipboard().text()
 
     dlg.resposta.setPlainText(_json("RUIM"))
     dlg.btn_conferir.click()
@@ -103,3 +108,19 @@ def test_outro_chat_e_ajuste(qtbot, tmp_path, monkeypatch):
     assert pipe.pedidos == [("mais votos no episódio 2", True)]  # Claude: versão compacta
     interna = dlg.combo.findData("interna")
     assert not dlg.combo.model().item(interna).isEnabled()
+
+
+def test_pedido_grande_copia_a_mensagem_que_exige_o_json(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtGui import QGuiApplication
+
+    from roteiro_ia.ui import chat as mod
+    monkeypatch.setattr(mod, "_abrir_url", lambda u: None)
+    monkeypatch.setattr(mod, "_mostrar_no_explorador", lambda a: None)
+    pipe = _Pipe()
+    pipe.sessao.texto_inicial = lambda: "X" * (mod.LIMITE_COLAR + 1)
+    dlg = mod.RoteiroChatDialog(pipe, tmp_path, roteiro_existe=False)
+    qtbot.addWidget(dlg)
+    dlg.btn_pedido.click()
+    msg = QGuiApplication.clipboard().text()
+    assert msg.startswith("Anexei o arquivo PEDIDO DO ROTEIRO.txt") and "APENAS" in msg
+    assert "ANEXE" in dlg.lbl_pedido.text() and "COLE a mensagem" in dlg.lbl_pedido.text()
