@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -95,11 +96,106 @@ def ler_resposta(texto: str) -> Roteiro:
         raise RespostaInvalida(f"O JSON da resposta está incompleto ou quebrado ({e}). Peça no "
                                "chat: \"responda de novo só com o JSON completo\".") from None
     try:
-        return Roteiro.model_validate(dados)
+        return Roteiro.model_validate(normalizar(dados))
     except ValidationError as e:
         faltas = "; ".join(f"{'.'.join(str(x) for x in er['loc'])}: {er['msg']}"
                            for er in e.errors()[:5])
         raise RespostaInvalida(f"O JSON não está no formato do roteiro: {faltas}") from None
+
+
+_ORIGENS = {"biblioteca", "musicbed", "popular"}
+_CORTES = {"1-3", "2-4", "misto"}
+_TIPOS = {"episodio", "trailer", "teaser", "stories"}
+
+
+def _lista_txt(v) -> list[str]:
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v] if v.strip() else []
+    return [str(x) for x in v if str(x).strip()]
+
+
+def _cena(c):
+    """Cena do chat → SceneRef: sem descrição, usa o motivo (ou a fala)."""
+    if not isinstance(c, dict):
+        return c
+    c = dict(c)
+    c.setdefault("fala", None)
+    c.setdefault("motivo", None)
+    if not str(c.get("descricao") or "").strip():
+        c["descricao"] = c.get("motivo") or c.get("fala") or "(sem descrição)"
+    return c
+
+
+def _trilha(t, termos: list[str]):
+    """Trilha do chat → MusicSuggestion (campos que faltam preenchidos). Só termos de busca
+    (sem música) vão para os termos da peça. Devolve None quando não sobra trilha."""
+    if not isinstance(t, dict):
+        return None
+    t = dict(t)
+    for k in ("termos_musicbed", "termos", "busca"):
+        termos += _lista_txt(t.pop(k, None))
+    path = t.get("path") or None
+    titulo = t.get("titulo") or t.get("nome") or (Path(str(path)).stem if path else "")
+    if not titulo and not path:
+        return None
+    origem = t.get("origem") if t.get("origem") in _ORIGENS else ("biblioteca" if path else "popular")
+    return {
+        "origem": origem, "path": path, "titulo": titulo, "bpm": t.get("bpm"),
+        "clima": t.get("clima") or "", "motivo": t.get("motivo") or "",
+        "padrao_corte": t.get("padrao_corte") if t.get("padrao_corte") in _CORTES else "misto",
+        "exige_licenca": bool(t.get("exige_licenca", origem == "popular")),
+        "trecho_inicio_s": t.get("trecho_inicio_s"),
+    }
+
+
+def _peca(p):
+    if not isinstance(p, dict):
+        return p
+    p = dict(p)
+    for k in ("abertura", "gancho"):
+        if p.get(k) is not None:
+            p[k] = _cena(p[k])
+    p.setdefault("gancho", None)
+    p["desenvolvimento"] = [_cena(c) for c in p.get("desenvolvimento") or []]
+    termos = _lista_txt(p.get("termos_musicbed"))
+    trilhas = [x for x in (_trilha(t, termos) for t in p.get("trilhas") or []) if x]
+    p["trilhas"] = trilhas
+    p["termos_musicbed"] = list(dict.fromkeys(termos))
+    p["misturas"] = _lista_txt(p.get("misturas"))
+    p.setdefault("titulo", "")
+    p.setdefault("tema", "")
+    p.setdefault("gancho_resolve_em", None)
+    p.setdefault("curva_emocao", [])
+    if p.get("tipo") not in _TIPOS:
+        p["tipo"] = "episodio"
+    p.setdefault("numero", None)
+    if p.get("duracao_estimada_s") is None:
+        cenas = [p.get("abertura"), *p["desenvolvimento"], p.get("gancho")]
+        p["duracao_estimada_s"] = sum(float(c["end_s"]) - float(c["start_s"])
+                                      for c in cenas if isinstance(c, dict)
+                                      and "start_s" in c and "end_s" in c)
+    return p
+
+
+def normalizar(dados):
+    """Desvios comuns do chat (nomes de campos, campos faltando) → formato do roteiro. O
+    conteúdo não muda; o que for inválido (cena ou trilha que não existe) a conferência acusa."""
+    if not isinstance(dados, dict):
+        return dados
+    d = dict(dados)
+    if "arco" not in d:
+        for k in ("arco_da_serie", "arco_serie", "arco_narrativo"):
+            if k in d:
+                d["arco"] = d.pop(k)
+                break
+    d.setdefault("arco", "")
+    if "pecas" not in d and "peças" in d:
+        d["pecas"] = d.pop("peças")
+    d["pecas"] = [_peca(p) for p in d.get("pecas") or []]
+    d["alertas"] = _lista_txt(d.get("alertas"))
+    return d
 
 
 @dataclass
