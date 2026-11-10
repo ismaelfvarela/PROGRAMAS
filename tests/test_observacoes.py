@@ -53,3 +53,22 @@ def test_projeto_guarda_as_observacoes_e_le_projeto_antigo(tmp_path):
     d = req.to_dict()
     del d["observacoes"]  # projeto.json de antes desta versão
     assert ProjectRequest.from_dict(d).observacoes == Observacoes()
+
+
+def test_links_de_musica_do_artlist_viram_nomes():
+    texto = ("https://artlist.io/royalty-free-music/song/send-it-instrumental-version/6001704 // "
+             "https://artlist.io/royalty-free-music/song/unbreakable-spirit/6001538 /// "
+             "https://artlist.io/royalty-free-music/search?includedIds=40 // "
+             "https://artlist.io/royalty-free-music/song/im-right-here-piano-version/6001683")
+    assert nomes_pedidos(texto) == ["send it instrumental version", "unbreakable spirit",
+                                    "im right here piano version"]
+    o = Observacoes(musicas=texto)
+    caminhos = ["M:\\2026\\11- NOVEMBRO\\04 - Unbreakable Spirit.mp3", "M:\\x\\Outra.mp3"]
+    assert trilhas_preferidas(caminhos, o) == {caminhos[0]}
+
+
+def test_baixadas_sao_preferidas_e_aparecem_no_pdf():
+    o = Observacoes(baixadas=["M:\\2026\\11- NOVEMBRO\\05 - Song.mp3"])
+    assert not o.vazia() and o.preenchidas() == 0
+    assert trilhas_preferidas(["m:\\2026\\11- novembro\\05 - Song.mp3"], o)
+    assert ("Músicas baixadas para o evento", "05 - Song.mp3") in o.itens_pdf()

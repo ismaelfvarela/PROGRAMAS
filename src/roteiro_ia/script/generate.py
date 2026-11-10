@@ -41,7 +41,7 @@ _FORMATO = """Formato das referências (obrigatório):
 - Cada cena (abertura, desenvolvimento, gancho) usa rel_path EXATAMENTE como aparece no catálogo e start_s/end_s em segundos RELATIVOS AO ARQUIVO, dentro do intervalo do segmento escolhido (início < fim).
 - Episódios: tipo "episodio", numero 1, 2, 3… em sequência. Derivados: tipo "trailer", "teaser" ou "stories", numero null.
 - curva_emocao: intensidade 0–10 ao longo da peça; duracao_estimada_s em segundos.
-- Trilhas por peça: 2–3 opções origem "biblioteca" com path EXATAMENTE como na lista de trilhas (BPM, clima, motivo, padrao_corte); termos de busca para Musicbed em termos_musicbed (origem "musicbed" se sugerir uma faixa de lá); músicas populares com origem "popular" e exige_licenca=true. trecho_inicio_s (opcional): segundo da música em que ela deve começar; null = do início.
+- Trilhas por peça: 2–3 opções origem "biblioteca" com path EXATAMENTE como na lista de trilhas (BPM, clima, motivo, padrao_corte); 2–3 termos de busca EM INGLÊS em termos_musicbed (o editor busca com eles no Artlist e no Musicbed; ex.: "emotional piano build", "uplifting acoustic wedding"; origem "musicbed" se sugerir uma faixa de lá); músicas populares com origem "popular" e exige_licenca=true. trecho_inicio_s (opcional): segundo da música em que ela deve começar; null = do início.
 - alertas: momentos importantes sem take bom ou qualquer ressalva para o editor."""
 
 _BPM_BANDS = ((0.0, 90.0), (90.0, 120.0), (120.0, float("inf")))

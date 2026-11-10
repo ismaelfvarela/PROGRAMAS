@@ -117,6 +117,9 @@ class MainWindow(QMainWindow):
                                  fila=self.fila)
             estilo = EstiloTab(s, settings_path, self.runner, area=area.id)
             tabs.addTab(projeto, "Projeto")
+            if area.id == "casamento":
+                from roteiro_ia.ui.musicas import MusicasTab
+                tabs.addTab(MusicasTab(projeto, s), "Músicas a baixar")
             tabs.addTab(estilo, "Estilo")  # Trilhas e Configurações entram em _trocar_area
             pagina = PaginaArea(tabs, projeto, estilo)
             self.areas[area.id] = pagina
@@ -174,13 +177,14 @@ class MainWindow(QMainWindow):
         id = area_por_id(id).id  # id desconhecido cai no Casamento
         pagina = self.areas[id]
         if id != self._area:
-            # Trilhas e Configurações saem das abas da área anterior e vão para as da nova
-            for w, pos, nome in ((self.trilhas, 1, "Trilhas"), (self.config, 3, "Configurações")):
+            # Trilhas e Configurações saem das abas da área anterior e vão para as da nova:
+            # Trilhas logo depois de Projeto, Configurações sempre por último
+            for w, pos, nome in ((self.trilhas, 1, "Trilhas"), (self.config, None, "Configurações")):
                 for p in self.areas.values():
                     i = p.tabs.indexOf(w)
                     if i >= 0:
                         p.tabs.removeTab(i)
-                pagina.tabs.insertTab(pos, w, nome)
+                pagina.tabs.insertTab(pagina.tabs.count() if pos is None else pos, w, nome)
             self._area = id
         self.stack.setCurrentWidget(pagina)
         self.botoes_area[id].setChecked(True)

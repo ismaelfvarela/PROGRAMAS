@@ -107,7 +107,7 @@ def test_trilhas_e_config_sao_uma_so_instancia(janela):
     w = janela
     cas, form = w.areas["casamento"].tabs, w.areas["formatura"].tabs
     assert [cas.tabText(i) for i in range(cas.count())] == [
-        "Projeto", "Trilhas", "Estilo", "Configurações"]
+        "Projeto", "Trilhas", "Músicas a baixar", "Estilo", "Configurações"]
     w.mostrar_area("formatura")
     assert form.indexOf(w.trilhas) == 1
     assert form.indexOf(w.config) == 3
@@ -115,7 +115,7 @@ def test_trilhas_e_config_sao_uma_so_instancia(janela):
     assert [form.tabText(i) for i in range(form.count())] == [
         "Projeto", "Trilhas", "Estilo", "Configurações"]
     w.mostrar_area("casamento")
-    assert cas.indexOf(w.trilhas) == 1 and cas.indexOf(w.config) == 3
+    assert cas.indexOf(w.trilhas) == 1 and cas.indexOf(w.config) == 4
     assert form.indexOf(w.trilhas) == -1
 
 

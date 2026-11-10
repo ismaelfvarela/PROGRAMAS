@@ -500,6 +500,16 @@ class Pipeline:
         return update_index(self.s, idx, on_progress=self._progress("trilhas"),
                             tracker=self._tracker, atualizar_versao=False, root=Path(pasta))
 
+    def _indexar_baixadas(self, obs: Observacoes) -> None:
+        """Músicas baixadas para o evento (aba Músicas a baixar) entram no índice antes do
+        roteiro — também num ajuste, que não passa pela etapa de trilhas. Só as novas são
+        analisadas."""
+        idx = self._index()
+        for pasta in sorted({str(Path(b).parent) for b in obs.baixadas}):
+            if os.path.isdir(pasta):
+                update_index(self.s, idx, tracker=self._tracker, atualizar_versao=False,
+                             root=Path(pasta))
+
     def _indice_do_roteiro(self, obs: Observacoes):
         """Trilhas da pasta da área + as da pasta do casal, com as preferidas marcadas (★)."""
         pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
@@ -524,6 +534,7 @@ class Pipeline:
         # = music_root); trilhas que outro projeto indexou de pasta privada ficam de fora — a
         # não ser as da pasta de músicas do casal (observações do editor)
         obs = self._observacoes()
+        self._indexar_baixadas(obs)
         generate_roteiro(self.db, self._client(), self._indice_do_roteiro(obs), self._perfil(),
                          model, self.req.n_episodios, set(self.req.derivados),
                          pedido_ajuste=self._pedido, observacoes=obs)

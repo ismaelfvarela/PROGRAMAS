@@ -521,13 +521,20 @@ class ProjetoTab(QWidget):
         dlg = AjusteDialog(self)
         if dlg.exec() != QDialog.Accepted or not dlg.pedido():
             return
+        self.ajustar(dlg.pedido())
+
+    def ajustar(self, pedido: str) -> bool:
+        """Refaz roteiro, PDF e XML com o pedido (também usado pela aba Músicas a baixar)."""
+        if self._req is None or self.rodando or not pedido:
+            return False
         if self._req.gemini_mode == "pago" and QMessageBox.question(
                 self, "Modo pago do Gemini", "O ajuste usa o Gemini no modo pago. Continuar?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-            return
+            return False
         self.status.limpar_avisos()
-        self.status.log_line(f"Pedido de ajuste: {dlg.pedido()}")
-        self._start("revise", aprovado=True, pedido=dlg.pedido())
+        self.status.log_line(f"Pedido de ajuste: {pedido}")
+        self._start("revise", aprovado=True, pedido=pedido)
+        return True
 
     def menu_recentes(self) -> QMenu:
         """Lista suspensa: projetos abertos por último primeiro, com a última alteração."""

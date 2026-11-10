@@ -13,6 +13,7 @@ from markupsafe import Markup
 from roteiro_ia import controle, proc
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
+from roteiro_ia.downloads import link_artlist
 from roteiro_ia.models import TrackInfo
 from roteiro_ia.music_index import MusicIndex
 from roteiro_ia.paths import EventPaths
@@ -132,7 +133,8 @@ def render_html(r: Roteiro, p: EventPaths, alertas_tecnicos: list[str],
     return tpl.render(
         evento=p.event_name, data=f"{d.day} de {_MESES[d.month - 1]} de {d.year}", arco=r.arco,
         itens=view, alertas=list(alertas_tecnicos) + list(r.alertas), ref=fmt_ref,
-        observacoes=observacoes.itens_pdf() if observacoes is not None else [])
+        observacoes=observacoes.itens_pdf() if observacoes is not None else [],
+        artlist=link_artlist)
 
 
 def find_edge() -> Path:
