@@ -34,7 +34,8 @@ from roteiro_ia.models import MediaInfo, Role
 from roteiro_ia.music_index import IndiceFiltrado
 from roteiro_ia.paths import EventNameError, build_event_paths, parse_event_name
 from roteiro_ia.gemini.client import QuotaPaused
-from roteiro_ia.pipeline import Pipeline, PipelineError, music_paths
+from roteiro_ia.controle import Interrompido
+from roteiro_ia.pipeline import FALHAS_PREFIX, Pipeline, PipelineError, music_paths
 from roteiro_ia.premiere.fcpxml import write_xml
 from roteiro_ia.report.pdf import html_to_pdf
 from roteiro_ia.safety import safe_mkdir, safe_write_text
@@ -98,11 +99,22 @@ class PipelineFormatura(Pipeline):
     def _st_estilo(self) -> str:
         """Com vídeos modelo do ano, o estilo vem deles; senão, dos links da aba Estilo."""
         mod = self._pasta_modelos()
-        if mod is None:
-            return super()._st_estilo()
-        ano, pasta = mod
-        self._models()
-        prof = estudar_modelos(self._client(), self.s, ano, pasta)
+        try:
+            if mod is None:
+                return super()._st_estilo()
+            ano, pasta = mod
+            self._models()
+            prof = estudar_modelos(self._client(), self.s, ano, pasta)
+        except (QuotaPaused, Interrompido):
+            raise
+        except Exception as e:  # noqa: BLE001 - o estilo ajuda, mas não é obrigatório
+            # ex.: 503 "high demand" do Gemini. O projeto segue sem o estilo; a etapa fica
+            # "feita com falhas" e é refeita no próximo Continuar (os vídeos já estudados
+            # ficam no cache).
+            self._emit("estilo", "O Gemini não conseguiu estudar o estilo agora (servidor "
+                       f"ocupado ou erro: {e}). O projeto segue sem ele; o estudo é refeito no "
+                       "próximo Continuar.", 1.0)
+            return f"{FALHAS_PREFIX}1"
         return f"vídeos modelo de {ano} estudados" if prof else "nenhum vídeo modelo na pasta do ano"
 
     def _perfil(self):
