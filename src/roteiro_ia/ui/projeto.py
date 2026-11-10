@@ -16,10 +16,12 @@ from PySide6.QtWidgets import (QDialog, QMenu, QDialogButtonBox, QHBoxLayout, QL
 from roteiro_ia import proc, recentes
 from roteiro_ia.areas import area_por_id
 from roteiro_ia.config import Settings
+from roteiro_ia.db import ProjectDB
 from roteiro_ia.models import Role
 from roteiro_ia.paths import build_event_paths
 from roteiro_ia.pipeline import PROJECT_FILE, Pipeline, ProjectRequest
 from roteiro_ia.premiere.job import ler_resultado, pedido_pendente, pedir_ao_premiere, write_job
+from roteiro_ia.script.generate import Roteiro
 from roteiro_ia.ui.fila import FilaProjetos
 from roteiro_ia.ui.status import StatusPanel
 from roteiro_ia.ui.widgets import RolagemVertical
@@ -469,6 +471,8 @@ class ProjetoTab(QWidget):
             self.status.banner_erro.mostrar("O roteiro ainda não foi gerado: o XML do Premiere sai "
                                             "no fim do processamento (etapa Premiere).")
             return
+        if acao == "puxar" and not self._musicas_da_internet_ok(p):
+            return
         agora = datetime.now().replace(microsecond=0)
         try:
             job = write_job(p, self.s, xml if xml.is_file() else None, area=self.area)
@@ -496,6 +500,31 @@ class ProjetoTab(QWidget):
         self.status.banner_ok.mostrar(
             f"Abrindo o Premiere para {oque}. Quando ele abrir, o painel Roteiro IA faz sozinho; "
             "na primeira vez, abra o painel em Janela → Extensões → Roteiro IA.")
+
+    def _musicas_da_internet_ok(self, p) -> bool:
+        """Antes de puxar: músicas da internet no roteiro precisam estar baixadas e no roteiro
+        (senão a timeline vem sem elas). Pergunta se quer puxar mesmo assim."""
+        try:
+            with ProjectDB(p.db_path, self.s) as db:
+                txt = db.latest_roteiro()
+        except Exception:  # noqa: BLE001 - sem banco: não há o que avisar
+            return True
+        if not txt:
+            return True
+        r = Roteiro.model_validate_json(txt)
+        fora = list(dict.fromkeys(t.titulo for pc in r.pecas for t in pc.trilhas
+                                  if t.origem in ("popular", "musicbed")))
+        if not fora:
+            return True
+        lista = "\n".join(f"• {n}" for n in fora[:8]) + (f"\n… e mais {len(fora) - 8}"
+                                                         if len(fora) > 8 else "")
+        return QMessageBox.question(
+            self, "Músicas da internet",
+            f"O roteiro tem {len(fora)} música(s) da internet que não estão no M::\n{lista}\n\n"
+            "Para virem certinho no Premiere, baixe antes: aba Músicas a baixar → Trazer as "
+            "marcadas para o M: → Refazer o roteiro com as baixadas. Puxar mesmo assim (a "
+            "timeline vem sem essas músicas)?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
 
     def _conferir_premiere(self) -> None:
         """Mostra o resultado do pedido; avisa se ninguém no Premiere pegou o pedido."""

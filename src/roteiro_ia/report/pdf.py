@@ -13,7 +13,7 @@ from markupsafe import Markup
 from roteiro_ia import controle, proc
 from roteiro_ia.config import Settings
 from roteiro_ia.db import ProjectDB
-from roteiro_ia.downloads import link_artlist, link_musicbed
+from roteiro_ia.downloads import link_artlist, link_musicbed, link_youtube
 from roteiro_ia.models import TrackInfo
 from roteiro_ia.music_index import MusicIndex
 from roteiro_ia.paths import EventPaths
@@ -110,6 +110,35 @@ def clima_voz(ms: MusicSuggestion, info: TrackInfo | None) -> str:
     return f"{clima} · {voz}"
 
 
+_ONDE = {"biblioteca": "já na biblioteca (M:)", "popular": "da internet — precisa de licença",
+         "musicbed": "Musicbed"}
+
+
+def indice_musicas(r: Roteiro) -> list[dict]:
+    """Índice das músicas do roteiro, por peça: as escolhidas (com onde estão) e os termos de
+    busca, com links para Artlist, Musicbed e YouTube (as da internet, para ouvir e baixar)."""
+    pecas = sorted(r.pecas, key=lambda x: (_ORDEM_TIPO.get(x.tipo, 9), x.numero or 0))
+    out = []
+    for pc in pecas:
+        rotulo = _ROTULO_TIPO.get(pc.tipo, pc.tipo)
+        if pc.tipo == "episodio" and pc.numero is not None:
+            rotulo = f"{rotulo} {pc.numero}"
+        musicas = []
+        for ms in pc.trilhas:
+            nome = (Path(ms.path.replace("\\", "/")).name if ms.origem == "biblioteca" and ms.path
+                    else ms.titulo)
+            links = []
+            if ms.origem != "biblioteca":
+                links = [("YouTube", link_youtube(ms.titulo)), ("Artlist", link_artlist(ms.titulo)),
+                         ("Musicbed", link_musicbed(ms.titulo))]
+            musicas.append({"nome": nome, "onde": _ONDE.get(ms.origem, ms.origem),
+                            "clima": ms.clima, "links": links})
+        termos = [{"t": t, "links": [("Artlist", link_artlist(t)), ("Musicbed", link_musicbed(t))]}
+                  for t in pc.termos_musicbed]
+        out.append({"rotulo": rotulo, "titulo": pc.titulo, "musicas": musicas, "termos": termos})
+    return out
+
+
 def render_html(r: Roteiro, p: EventPaths, alertas_tecnicos: list[str],
                 idx: MusicIndex | None = None, observacoes=None) -> str:
     pecas = sorted(r.pecas, key=lambda x: (_ORDEM_TIPO.get(x.tipo, 9), x.numero or 0))
@@ -134,7 +163,7 @@ def render_html(r: Roteiro, p: EventPaths, alertas_tecnicos: list[str],
         evento=p.event_name, data=f"{d.day} de {_MESES[d.month - 1]} de {d.year}", arco=r.arco,
         itens=view, alertas=list(alertas_tecnicos) + list(r.alertas), ref=fmt_ref,
         observacoes=observacoes.itens_pdf() if observacoes is not None else [],
-        artlist=link_artlist, musicbed=link_musicbed)
+        artlist=link_artlist, musicbed=link_musicbed, indice=indice_musicas(r))
 
 
 def find_edge() -> Path:

@@ -36,7 +36,8 @@ class TextosAnalise:
     papel: str
     evento: str
     momentos: list[str] = field(default_factory=list)
-    problemas: str = "falhas técnicas (tremido, foco, áudio ruim, escuro)"
+    problemas: str = ("falhas técnicas (tremido, chicote = movimento brusco de câmera passando de "
+                      "um enquadramento a outro, foco, áudio ruim, escuro)")
 
 
 TEXTOS_CASAMENTO = TextosAnalise(
