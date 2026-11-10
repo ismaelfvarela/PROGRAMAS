@@ -67,6 +67,12 @@ def _is_quota(e: Exception) -> bool:
     )
 
 
+def _is_retirado(e: Exception) -> bool:
+    """404 do modelo (ex.: "gemini-2.5-flash is no longer available to new users"): o modelo
+    aparece na lista da chave mas não atende; no revezamento, sai como os de limite 0."""
+    return isinstance(e, errors.APIError) and e.code == 404
+
+
 def _is_server(e: Exception) -> bool:
     return isinstance(e, errors.APIError) and isinstance(e.code, int) and 500 <= e.code < 600
 
@@ -309,6 +315,8 @@ class GeminiClient:
             try:
                 return fn()
             except Exception as e:  # noqa: BLE001
+                if rotate and _is_retirado(e):
+                    raise _ModelQuota("zero", None) from e
                 quota = _is_quota(e)
                 if not quota and not _is_server(e) and not _is_transport(e):
                     raise
@@ -364,7 +372,8 @@ class GeminiClient:
             except _ModelQuota as q:
                 if q.kind == "zero":
                     self._indisponiveis.add(atual)
-                    log.warning("Modelo %s sem cota no plano gratuito; fora do revezamento.", atual)
+                    log.warning("Modelo %s sem cota no plano gratuito ou indisponível para esta "
+                                "chave; fora do revezamento.", atual)
                 else:
                     self._esgotados[atual] = q.resume_at
                     log.warning("Cota diária do modelo %s esgotada até %s; tentando o próximo.",

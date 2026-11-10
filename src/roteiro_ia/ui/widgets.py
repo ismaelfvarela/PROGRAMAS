@@ -6,7 +6,7 @@ import os
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QProgressBar, QPushButton, QTableWidget,
+                               QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from roteiro_ia.models import FolderAssignment, Role
@@ -438,3 +438,30 @@ class BarraGeral(QWidget):
         self.btn_pausar.setEnabled(n > 0 and pode_pausar)
         self.btn_continuar.setEnabled(n > 0 and pode_continuar)
         self.btn_parar.setEnabled(n > 0 and pode_parar)
+
+
+class RolagemVertical(QScrollArea):
+    """Rola só na vertical, sem moldura, e pede a largura mínima do conteúdo (nada cortado à
+    direita). Em telas baixas os cartões mantêm o tamanho e aparece a barra de rolagem, em vez
+    de a lista de etapas e a tabela de pastas ficarem esmagadas."""
+
+    def __init__(self, conteudo: QWidget, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setWidget(conteudo)
+        # o fundo é o da janela (o setWidget liga o preenchimento do conteúdo; a área de
+        # rolagem pintaria um cinza claro entre os cartões)
+        conteudo.setAutoFillBackground(False)
+        self.viewport().setAutoFillBackground(False)
+        self.setObjectName('rolagem')
+        self.setStyleSheet('QScrollArea#rolagem { background: transparent; }')
+
+    def minimumSizeHint(self):
+        base = super().minimumSizeHint()
+        w = self.widget()
+        if w is None:
+            return base
+        largura = w.minimumSizeHint().width() + self.verticalScrollBar().sizeHint().width() + 2
+        return base.expandedTo(QSize(largura, base.height()))
