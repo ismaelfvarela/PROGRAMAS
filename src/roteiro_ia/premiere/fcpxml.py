@@ -296,6 +296,54 @@ def piece_name(piece: Piece) -> str:
     return _DERIVADO_NAME[piece.tipo]
 
 
+@dataclass(frozen=True)
+class Formato:
+    """Formato das timelines: o da maioria dos vídeos do projeto (resolução já girada,
+    quadros por segundo) e a taxa de amostragem do áudio deles."""
+    width: int = 1920
+    height: int = 1080
+    rate: tuple[int, int] = DEFAULT_RATE
+    samplerate: int = 48000
+
+    def vertical(self) -> "Formato":
+        w, h = sorted((self.width, self.height))
+        return Formato(w, h, self.rate, self.samplerate)
+
+
+AMOSTRA_AUDIO = 12  # vídeos sondados (ffprobe) para a taxa de amostragem do áudio
+
+
+def _samplerate(path: Path) -> int | None:
+    from roteiro_ia import proc
+    from roteiro_ia.media.tools import ffprobe_bin
+    try:
+        r = proc.run([ffprobe_bin(), "-v", "error", "-select_streams", "a:0", "-show_entries",
+                      "stream=sample_rate", "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                     text=True, encoding="utf-8", errors="replace", timeout=30)
+        return int(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+    except Exception:  # noqa: BLE001 - sem ffprobe, arquivo fora do ar…: fica o padrão
+        return None
+
+
+def formato_do_projeto(db: ProjectDB, source_root: Path, sondar=_samplerate) -> Formato:
+    """Maioria dos vídeos do projeto (fora os ignorados): resolução (girada quando o vídeo está
+    em pé), quadros e a taxa de amostragem do áudio (amostra de AMOSTRA_AUDIO vídeos)."""
+    videos = [m for m in db.list_media()
+              if m.kind == "video" and m.role != Role.ignorar and m.width > 0 and m.height > 0]
+    if not videos:
+        return Formato()
+    tam = Counter((m.height, m.width) if m.rotation % 180 == 90 else (m.width, m.height)
+                  for m in videos)
+    (w, h), _n = tam.most_common(1)[0]
+    rate = _seq_rate(videos)
+    com_audio = [m for m in videos if m.audio_channels > 0]
+    passo = max(1, len(com_audio) // AMOSTRA_AUDIO)
+    taxas = Counter(t for t in (sondar(Path(source_root) / m.rel_path)
+                                for m in com_audio[::passo][:AMOSTRA_AUDIO]) if t)
+    sr = taxas.most_common(1)[0][0] if taxas else 48000
+    return Formato(w, h, rate, sr)
+
+
 def _seq_rate(medias: list[MediaInfo]) -> tuple[int, int]:
     c = Counter(r for r in (_media_rate(m) for m in medias) if r)
     if not c:
@@ -329,7 +377,9 @@ def _overlaps(t0: float, t1: float, cands, syncs) -> list[tuple[float, float, fl
 
 def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map: dict[str, str],
                    source_root: Path, ctx: _Ctx | None = None,
-                   name: str | None = None) -> ET.Element:
+                   name: str | None = None, formato: Formato | None = None) -> ET.Element:
+    """`formato`: o do projeto (build_xml); sem ele, os quadros vêm das cenas da peça e a
+    resolução é a padrão (1920×1080)."""
     own_ctx = ctx is None
     ctx = ctx or _Ctx()
     name = name or piece_name(piece)
@@ -343,7 +393,10 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
         if m is None:
             raise ValueError(f"Mídia do roteiro não encontrada no projeto: {ref.rel_path}")
         scenes.append((kind, ref, m))
-    rate = _seq_rate([m for _, _, m in scenes])
+    fmt = formato or Formato(rate=_seq_rate([m for _, _, m in scenes]))
+    if piece.tipo == "stories":
+        fmt = fmt.vertical()
+    rate = fmt.rate
 
     seq = ET.Element("sequence", id="seq-" + name.replace(" ", "_"))
     _sub(seq, "name", name)
@@ -358,9 +411,8 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
     video = _sub(media, "video")
     fmt_sc = _sub(_sub(video, "format"), "samplecharacteristics")
     _rate_el(fmt_sc, rate)
-    w, h = (1080, 1920) if piece.tipo == "stories" else (1920, 1080)
-    _sub(fmt_sc, "width", w)
-    _sub(fmt_sc, "height", h)
+    _sub(fmt_sc, "width", fmt.width)
+    _sub(fmt_sc, "height", fmt.height)
     _sub(fmt_sc, "anamorphic", "FALSE")
     _sub(fmt_sc, "pixelaspectratio", "square")
     _sub(fmt_sc, "fielddominance", "none")
@@ -368,7 +420,7 @@ def build_sequence(piece: Piece, db: ProjectDB, idx: MusicIndex, music_path_map:
     _sub(audio, "numOutputChannels", 2)
     afmt = _sub(_sub(audio, "format"), "samplecharacteristics")
     _sub(afmt, "depth", 16)
-    _sub(afmt, "samplerate", 48000)
+    _sub(afmt, "samplerate", fmt.samplerate)
 
     # Clipitems são montados em listas e anexados no fim (as faixas dependem do conteúdo).
     v_tracks: list[ET.Element] = [ET.Element("track")]
@@ -528,7 +580,9 @@ def _bin(parent: ET.Element, name: str) -> ET.Element:
 
 
 def build_xml(r: Roteiro, db: ProjectDB, idx: MusicIndex, music_path_map: dict[str, str],
-              source_root: Path) -> str:
+              source_root: Path, formato: Formato | None = None) -> str:
+    """Timelines no formato da maioria dos vídeos do projeto (`formato_do_projeto`)."""
+    formato = formato or formato_do_projeto(db, source_root)
     ctx = _Ctx()
     root = ET.Element("xmeml", version="4")
     project = _sub(root, "project")
@@ -542,7 +596,8 @@ def build_xml(r: Roteiro, db: ProjectDB, idx: MusicIndex, music_path_map: dict[s
         base = piece_name(p)
         used[base] += 1
         name = base if used[base] == 1 else f"{base} {used[base]}"
-        children.append(build_sequence(p, db, idx, music_path_map, source_root, ctx, name))
+        children.append(build_sequence(p, db, idx, music_path_map, source_root, ctx, name,
+                                       formato))
 
     _fill_files(root, ctx)
     ET.indent(root, space="  ")

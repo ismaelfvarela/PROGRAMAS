@@ -792,3 +792,27 @@ def test_roteiro_pelo_chat_exige_a_analise_pronta(tmp_path, sleeps):
     with pytest.raises(pipeline.PipelineError, match="análise das cenas"):
         pipe.sessao_roteiro_manual()
     pipe.close()
+
+
+def test_indice_das_musicas_no_pdf():
+    from datetime import date
+    from types import SimpleNamespace
+
+    from roteiro_ia.report.pdf import indice_musicas, render_html
+    from roteiro_ia.script.generate import MusicSuggestion
+    r = roteiro_com([])
+    pc = r.pecas[0]
+    pc.trilhas = [
+        MusicSuggestion(origem="biblioteca", path="M:\\2025\\05 - MAIO\\03 - Lenta.mp3",
+                        titulo="Lenta", bpm=80, clima="emotivo", motivo="m", padrao_corte="1-3",
+                        exige_licenca=False),
+        MusicSuggestion(origem="popular", path=None, titulo="Perfect - Ed Sheeran", bpm=None,
+                        clima="romântico", motivo="m", padrao_corte="1-3", exige_licenca=True)]
+    pc.termos_musicbed = ["emotional piano build"]
+    ix = indice_musicas(r)[0]
+    assert ix["musicas"][0]["nome"] == "03 - Lenta.mp3" and ix["musicas"][0]["links"] == []
+    assert "precisa de licença" in ix["musicas"][1]["onde"]
+    assert [n for n, _u in ix["musicas"][1]["links"]] == ["YouTube", "Artlist", "Musicbed"]
+    html = render_html(r, SimpleNamespace(event_name="EV", event_date=date(2023, 9, 9)), [])
+    assert "Índice das músicas" in html and "Perfect - Ed Sheeran" in html
+    assert "artlist.io/royalty-free-music/search?terms=emotional+piano+build" in html

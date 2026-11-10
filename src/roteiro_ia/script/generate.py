@@ -35,7 +35,8 @@ REGRAS_FOKUSS = """Regras de edição da Fokuss (siga todas):
 9. Trailer, teaser e stories/reels: mesma estrutura das peças, focados nos momentos de maior impacto, SEM entregar os ganchos dos episódios.
 10. Mídias marcadas [só áudio] no catálogo (mesa, gravador, lapela) não têm imagem: use-as só como 'fala' sobre uma cena de vídeo do mesmo momento, NUNCA como rel_path de uma cena.
 11. Som ambiente da câmera: o som ambiente da câmera (risos, aplausos, emoção, falas ao fundo; veja 'som:' no catálogo, ★ = útil) pode ser usado para dar realismo; marque usar_som_camera=true nas cenas em que ele deve ficar audível junto da mesa/ambiente.
-12. Trilha pela melodia, não só pela batida (veja voz, clima, instrumentos e intro na lista de trilhas): embaixo de fala real (votos, discursos, depoimentos) prefira trilha instrumental — ou só o trecho instrumental de uma cantada, usando a intro instrumental antes de a voz entrar; montagens sem fala aceitam trilha cantada; gancho e clímax pedem trilha épica, inspiradora ou de perfil crescente; abertura emotiva pede piano, cordas ou clima calmo. Quando a música deve começar em outro ponto (ex.: pular para o refrão ou para um trecho instrumental), informe trecho_inicio_s em segundos."""
+12. Trilha pela melodia, não só pela batida (veja voz, clima, instrumentos e intro na lista de trilhas): embaixo de fala real (votos, discursos, depoimentos) prefira trilha instrumental — ou só o trecho instrumental de uma cantada, usando a intro instrumental antes de a voz entrar; montagens sem fala aceitam trilha cantada; gancho e clímax pedem trilha épica, inspiradora ou de perfil crescente; abertura emotiva pede piano, cordas ou clima calmo. Quando a música deve começar em outro ponto (ex.: pular para o refrão ou para um trecho instrumental), informe trecho_inicio_s em segundos.
+13. Nada de chicote nem tremido: dentro de cada segmento, use como start_s/end_s os intervalos "bons:" do catálogo (pontos bons de entrada e saída) e corte antes de qualquer movimento brusco de câmera; trechos com "problemas:" (chicote, tremido, foco) só entram se forem o único take de um momento importante — nesse caso, use só a parte limpa e avise nos alertas."""
 
 _FORMATO = """Formato das referências (obrigatório):
 - Cada cena (abertura, desenvolvimento, gancho) usa rel_path EXATAMENTE como aparece no catálogo e start_s/end_s em segundos RELATIVOS AO ARQUIVO, dentro do intervalo do segmento escolhido (início < fim).
@@ -153,6 +154,13 @@ def build_catalog(db: ProjectDB, compact: bool | str = False) -> str:
         gancho = "sim" + (f" ({_clean(a.motivo_gancho)})" if a.motivo_gancho else "") \
             if a.potencial_gancho else "não"
         extras = " | lembrança: sim" if a.sugestao_lembranca else ""
+        # pontos bons de entrada/saída e as falhas: sem eles a IA escolhia o segmento inteiro,
+        # com chicote (movimento brusco de câmera) e tremido dentro da cena
+        if a.melhores_trechos:
+            extras += " | bons: " + "; ".join(f"{h.start_s:.1f}–{h.end_s:.1f}"
+                                              for h in a.melhores_trechos)
+        if a.problemas:
+            extras += " | problemas: " + _clean(", ".join(a.problemas))
         if a.som_ambiente and (a.som_ambiente_util or not enxuto):
             extras += f" | som: {_clean(a.som_ambiente)}" + (" ★" if a.som_ambiente_util else "")
         if m.kind != "video":

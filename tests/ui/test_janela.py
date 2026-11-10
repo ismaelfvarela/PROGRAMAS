@@ -406,3 +406,37 @@ def test_resultado_de_outro_pedido_e_ignorado(tmp_path):
         {"pedido_em": "2026-11-10T09:00:00", "estado": "ok"}), encoding="utf-8")
     assert ler_resultado(s, "2026-11-10T10:00:00") is None
     assert ler_resultado(s, "2026-11-10T09:00:00")["estado"] == "ok"
+
+
+def test_puxar_avisa_das_musicas_da_internet(janela, evento, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QMessageBox
+
+    from roteiro_ia.db import ProjectDB
+    from roteiro_ia.paths import build_event_paths
+    from roteiro_ia.script.generate import MusicSuggestion, Piece, Roteiro, SceneRef
+    from roteiro_ia.ui import projeto as mod
+    monkeypatch.setattr(mod, "premiere_aberto", lambda: True)
+    pj = janela.projeto
+    pj.set_event_folder(evento)
+    pj._req = pj.form.build_request()
+    p = build_event_paths(evento, janela.s, pj._req.work_drive)
+    Path(p.analysis_dir).mkdir(parents=True)
+    (Path(p.analysis_dir) / f"{p.event_name} - PREMIERE.xml").write_text("<xmeml/>", encoding="utf-8")
+    cena = SceneRef(rel_path="A\\a.MP4", start_s=0, end_s=5, descricao="d", fala=None, motivo=None)
+    pop = MusicSuggestion(origem="popular", path=None, titulo="Marry You", bpm=None, clima="c",
+                          motivo="m", padrao_corte="2-4", exige_licenca=True)
+    pc = Piece(tipo="episodio", numero=1, titulo="T", tema="t", abertura=cena, desenvolvimento=[],
+               gancho=None, gancho_resolve_em=None, curva_emocao=[5], duracao_estimada_s=5,
+               misturas=[], trilhas=[pop], termos_musicbed=[])
+    with ProjectDB(p.db_path, janela.s) as db:
+        db.add_roteiro(Roteiro(arco="a", pecas=[pc], alertas=[]).model_dump_json())
+    perguntas = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: perguntas.append(a[2]) or QMessageBox.No)
+    pedido = Path(janela.s.system_dir) / "pedido_premiere.json"
+    pj.status.btn_puxar.click()
+    assert perguntas and "Marry You" in perguntas[0] and "Músicas a baixar" in perguntas[0]
+    assert not pedido.exists()  # respondeu Não: não puxa
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    pj.status.btn_puxar.click()
+    assert pedido.exists()
