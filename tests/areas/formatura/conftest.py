@@ -1,6 +1,8 @@
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if os.path.isdir("C:/Windows/Fonts"):  # medidas de texto reais (sem elas, larguras irreais)
+    os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
 
 import pytest  # noqa: E402
 

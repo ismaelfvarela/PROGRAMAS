@@ -222,3 +222,21 @@ def test_dialogo_edita_existente(qtbot, settings_tmp, ficha):
     d.aceitar()
     assert [f.instituicao for f in listar(settings_tmp)] == ["Escola X2"]
     assert d.resultado.id == ficha.id
+
+
+def test_cabe_em_tela_estreita(form, settings_tmp, tmp_path):
+    """Curso com nome longo e caminho longo não podem alargar a tela (notebook de 1280 px)."""
+    longa = salvar(settings_tmp, Formatura(
+        instituicao="SENAI Mecatrônica Unidade Joinville Norte", ano=2026, semestre=2,
+        cursos=[Curso(nome="MECANICO DE MANUTENÇÃO AUTOMOTIVA E SISTEMAS ELETRÔNICOS EMBARCADOS",
+                      turmas=["TARDE", "MANHÃ"])]))
+    ev = tmp_path / "R" / ("2026-09-09 - SENAI MECATRONICA - COSTURA E MANUTENCAO AUTOMOTIVA "
+                           "TURMA DA TARDE E DA MANHA")
+    for d in ("IMAGEM", "H4"):
+        (ev / d).mkdir(parents=True)
+    form.set_event_folder(ev)
+    _escolher(form.combo_formatura, longa.id)
+    _escolher(form.combo_curso, longa.cursos[0].nome)
+    for grupo in (form.seg_clipes, form.seg_colacao):
+        grupo.click()
+        assert form.rolagem.widget().minimumSizeHint().width() <= 700

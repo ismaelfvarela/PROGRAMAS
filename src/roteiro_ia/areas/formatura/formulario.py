@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QButtonGroup, QFrame, QScrollArea, QVBoxLayout, QCheckBox, QComboBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QScrollArea, QSizePolicy,
+                               QVBoxLayout, QCheckBox, QComboBox, QDoubleSpinBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton,
                                QTableWidget, QTableWidgetItem, QWidget)
@@ -81,7 +82,18 @@ class FormularioFormatura(FormularioEvento):
                             "separadas por dia.")
         self.lbl_aviso = QLabel()
         self.lbl_aviso.setProperty("muted", True)
+        self.lbl_aviso.setWordWrap(True)
         self.layout().addWidget(self.lbl_aviso)
+        # caminho e nome do evento quebram linha: um caminho longo não alarga a tela
+        for lbl in (self.lbl_evento, self.lbl_espaco):
+            lbl.setWordWrap(True)
+            lbl.setMinimumWidth(80)
+        # o caminho pode ser um "palavrão" sem espaços: encolhe (o inteiro fica na dica do mouse)
+        for lbl in (self.lbl_caminho, self.campo_musicas.lbl_caminho):
+            pol = lbl.sizePolicy()
+            pol.setHorizontalPolicy(QSizePolicy.Ignored)
+            lbl.setSizePolicy(pol)
+            lbl.setMinimumWidth(60)
         self._rolagem()
         self._recarregar_formaturas()
         self._mudou_grupo()
@@ -136,17 +148,23 @@ class FormularioFormatura(FormularioEvento):
         self.combo_formatura = QComboBox()
         self.btn_formaturas = QPushButton("Formaturas…")
         self.btn_nova = QPushButton("+ Nova")
-        self.btn_duplicar = QPushButton("Duplicar de uma oficina…")
-        seg.addSpacing(16)
-        seg.addWidget(QLabel("Formatura"))
-        seg.addSpacing(8)
-        seg.addWidget(self.combo_formatura, 1)
+        self.btn_duplicar = QPushButton("Duplicar oficina…")
+        self.btn_duplicar.setToolTip("Copia a preparação de uma oficina já feita para outra turma.")
+        seg.addStretch(1)
         for b in (self.btn_formaturas, self.btn_nova, self.btn_duplicar):
             seg.addSpacing(6)
             seg.addWidget(b)
         card.body.addLayout(seg)
 
-        # clipes: uma linha só (tipo, curso, turma, duração)
+        # grade de 4 colunas (rótulo, campo, rótulo, campo): cabe em telas estreitas
+        g = QGridLayout()
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(8)
+        g.setColumnStretch(1, 3)
+        g.setColumnStretch(3, 2)
+        g.addWidget(QLabel("Formatura"), 0, 0)
+        g.addWidget(self.combo_formatura, 0, 1, 1, 3)
+        # clipes: tipo e duração; curso e turma
         self.combo_tipo = QComboBox()
         for t in TIPOS_CLIPE:
             self.combo_tipo.addItem(INFO_TIPO[t].nome, t.value)
@@ -159,51 +177,56 @@ class FormularioFormatura(FormularioEvento):
         self.spin_duracao.setValue(INFO_TIPO[TipoTrabalho.oficina].duracao_min)
         self.lbl_tipo, self.lbl_curso = QLabel("Tipo"), QLabel("Curso")
         self.lbl_turma, self.lbl_duracao = QLabel("Turma"), QLabel("Duração")
-        linha = QHBoxLayout()
-        linha.setSpacing(8)
-        for lbl, w, est in ((self.lbl_tipo, self.combo_tipo, 2), (self.lbl_curso, self.combo_curso, 3),
-                            (self.lbl_turma, self.combo_turma, 2),
-                            (self.lbl_duracao, self.spin_duracao, 1)):
-            linha.addWidget(lbl)
-            linha.addWidget(w, est)
-            linha.addSpacing(8)
-        # colação: local, cidade e canais numa linha; turmas da noite logo abaixo
+        g.addWidget(self.lbl_tipo, 1, 0)
+        g.addWidget(self.combo_tipo, 1, 1)
+        g.addWidget(self.lbl_duracao, 1, 2)
+        g.addWidget(self.spin_duracao, 1, 3)
+        g.addWidget(self.lbl_curso, 2, 0)
+        g.addWidget(self.combo_curso, 2, 1)
+        g.addWidget(self.lbl_turma, 2, 2)
+        g.addWidget(self.combo_turma, 2, 3)
+        # colação: local e cidade; canais da mesa; turmas da noite
         self.edit_local, self.edit_cidade = QLineEdit(), QLineEdit()
         self.combo_canais = QComboBox()
         self.combo_canais.addItem("Áudio da mesa já misturado", "misturado")
         self.combo_canais.addItem("L = mesa de som / R = ambiente", "L_mesa_R_ambiente")
         self.lbl_local, self.lbl_cidade = QLabel("Local"), QLabel("Cidade")
-        self.lbl_turmas, self.lbl_canais = QLabel("Turmas da noite"), QLabel("Canais da mesa")
-        for lbl, w, est in ((self.lbl_local, self.edit_local, 3), (self.lbl_cidade, self.edit_cidade, 2),
-                            (self.lbl_canais, self.combo_canais, 2)):
-            linha.addWidget(lbl)
-            linha.addWidget(w, est)
-            linha.addSpacing(8)
-        card.body.addLayout(linha)
+        self.lbl_turmas, self.lbl_canais = QLabel("Turmas"), QLabel("Canais")
+        self.lbl_canais.setToolTip("Canais de áudio da gravação da mesa de corte")
+        self.lbl_turmas.setToolTip("Turmas que se formam nesta noite")
+        g.addWidget(self.lbl_local, 3, 0)
+        g.addWidget(self.edit_local, 3, 1)
+        g.addWidget(self.lbl_cidade, 3, 2)
+        g.addWidget(self.edit_cidade, 3, 3)
+        g.addWidget(self.lbl_canais, 4, 0)
+        g.addWidget(self.combo_canais, 4, 1, 1, 3)
         self.lista_turmas = QListWidget()
         self.lista_turmas.setFlow(QListWidget.LeftToRight)
         self.lista_turmas.setWrapping(True)
         self.lista_turmas.setSpacing(4)
         self.lista_turmas.setMinimumHeight(36)
-        self.lista_turmas.setMaximumHeight(64)
-        turmas = QHBoxLayout()
-        turmas.addWidget(self.lbl_turmas, 0, Qt.AlignTop)
-        turmas.addWidget(self.lista_turmas, 1)
-        card.body.addLayout(turmas)
+        self.lista_turmas.setMaximumHeight(80)
+        g.addWidget(self.lbl_turmas, 5, 0, Qt.AlignTop)
+        g.addWidget(self.lista_turmas, 5, 1, 1, 3)
+        card.body.addLayout(g)
         # duplicada de outra oficina
-        self.chk_seguir = QCheckBox("Seguir a ideia da original: mesmos assuntos e ordem, com "
-                                    "música nova, e ritmo e cenas pela trilha nova")
+        self.chk_seguir = QCheckBox("Seguir a ideia da original (com música nova)")
+        self.chk_seguir.setToolTip("Mesmos assuntos e ordem da oficina original, com música nova; "
+                                   "o ritmo e as cenas seguem a trilha nova.")
         self.chk_seguir.setChecked(True)
         self.lbl_duplicado = QLabel()
         self.lbl_duplicado.setProperty("muted", True)
-        dup = QHBoxLayout()
-        dup.addWidget(self.lbl_duplicado)
-        dup.addSpacing(12)
-        dup.addWidget(self.chk_seguir, 1)
-        card.body.addLayout(dup)
+        self.lbl_duplicado.setWordWrap(True)
+        card.body.addWidget(self.lbl_duplicado)
+        card.body.addWidget(self.chk_seguir)
         for w in (self.combo_formatura, self.combo_tipo, self.combo_curso, self.combo_turma,
                   self.spin_duracao, self.edit_local, self.edit_cidade, self.combo_canais):
             w.setMinimumHeight(30)
+        for c in (self.combo_formatura, self.combo_tipo, self.combo_curso, self.combo_turma,
+                  self.combo_canais):
+            # nome longo (ex.: curso) não estica a tela: a lista mostra o começo e "…"
+            c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            c.setMinimumContentsLength(8)
         self.layout().insertWidget(1, card)
         self.cards.append(card)
         self._clipe_ws = [self.lbl_tipo, self.combo_tipo, self.lbl_duracao, self.spin_duracao,
@@ -372,6 +395,9 @@ class FormularioFormatura(FormularioEvento):
             self._atualizar_iniciar()
             return False
         ok = super().set_event_folder(path)
+        self.lbl_caminho.setToolTip(str(path))
+        if hasattr(self, "rolagem"):
+            self.rolagem.updateGeometry()  # textos novos: a largura pedida é recalculada
         if hasattr(self, "combo_formatura"):
             self._recarregar_formaturas()  # a ficha pode ter sido criada/editada em outro lugar
         self._pastas = listar_pastas(path) if ok else []
