@@ -24,7 +24,7 @@ New-ItemProperty -Path $chave -Name "PlayerDebugMode" -Value "1" -PropertyType S
 # Copia o painel (substitui copia antiga)
 if (Test-Path $destino) { Remove-Item -Recurse -Force $destino }
 New-Item -ItemType Directory -Force -Path $destino | Out-Null
-foreach ($item in @("CSXS", "host", "index.html", "main.js")) {
+foreach ($item in @("CSXS", "host", "index.html", "main.js", "pedidos.js", "servico.html", "servico.js")) {
     Copy-Item -Recurse -Force (Join-Path $origem $item) $destino
 }
 
