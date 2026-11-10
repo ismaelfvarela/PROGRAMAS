@@ -106,11 +106,24 @@ def _fraco(a) -> bool:
             and not a.potencial_gancho and not a.som_ambiente_util)
 
 
-def build_catalog(db: ProjectDB, compact: bool = False) -> str:
+def _fraco_chat(a) -> bool:
+    """Catálogo enxuto do roteiro pelo chat: também sai o trecho de pouca emoção (≤ 3) sem
+    fala-chave, sem gancho, sem lembrança e sem som ambiente útil."""
+    return (a.emocao_intensidade <= 3 and not a.falas_chave and not a.potencial_gancho
+            and not a.som_ambiente_util and not a.sugestao_lembranca)
+
+
+ENXUTO_DESC_CHARS = 90
+
+
+def build_catalog(db: ProjectDB, compact: bool | str = False) -> str:
     """Uma linha por segmento analisado, com os dias em ordem cronológica (pela mídia mais antiga
     de cada dia; dias sem data vão ao fim) e cada dia na ordem da linha do tempo (mídias sem
     sincronia vão ao fim do seu dia). Tempos relativos ao arquivo. `compact` descarta trechos
-    fracos e encurta as descrições."""
+    fracos e encurta as descrições; compact="chat" (pedido para o chat do Claude/ChatGPT) corta
+    mais: trechos de pouca emoção sem nada que os salve, descrições de ENXUTO_DESC_CHARS e o som
+    ambiente só quando é útil."""
+    enxuto = compact == "chat"
     rows = []
     medias = {m.id: m for m in db.list_media()}
     syncs = {mid: db.get_sync(mid) for mid in medias}
@@ -127,7 +140,7 @@ def build_catalog(db: ProjectDB, compact: bool = False) -> str:
         m = medias.get(seg.media_id)
         if a is None or m is None:
             continue
-        if compact and _fraco(a):
+        if compact and (_fraco(a) or (enxuto and _fraco_chat(a))):
             continue
         sy = syncs.get(m.id)
         day = sy.day_label if sy else m.day_label
@@ -140,13 +153,13 @@ def build_catalog(db: ProjectDB, compact: bool = False) -> str:
         gancho = "sim" + (f" ({_clean(a.motivo_gancho)})" if a.motivo_gancho else "") \
             if a.potencial_gancho else "não"
         extras = " | lembrança: sim" if a.sugestao_lembranca else ""
-        if a.som_ambiente:
+        if a.som_ambiente and (a.som_ambiente_util or not enxuto):
             extras += f" | som: {_clean(a.som_ambiente)}" + (" ★" if a.som_ambiente_util else "")
         if m.kind != "video":
             extras += f" | {SO_AUDIO}"
         desc = _clean(a.descricao)
         if compact:
-            desc = desc[:COMPACT_DESC_CHARS]
+            desc = desc[:ENXUTO_DESC_CHARS if enxuto else COMPACT_DESC_CHARS]
         line = (f"{m.rel_path} | {seg.start_s:.1f}–{seg.end_s:.1f} s | dia {day} | "
                 f"momento {_clean(momento)} | emoção {a.emocao_intensidade} {_clean(a.emocao_tipo)} | "
                 f"qualidade {a.qualidade} | {desc} | falas: {falas} | "
@@ -448,6 +461,52 @@ def _context(db: ProjectDB, idx: MusicIndex, style: StyleProfile | None,
     return "\n".join(partes)
 
 
+def montar_pedido(db: ProjectDB, idx: MusicIndex, style: StyleProfile | None,
+                  n_episodios: int | None, derivados: set[str],
+                  pedido_ajuste: str | None = None,
+                  contexto: Callable[..., str] | None = None,
+                  observacoes: Observacoes | None = None,
+                  compact: bool = False) -> tuple[str, str]:
+    """(base, pedido): `base` = contexto + observações (vai também nas correções); `pedido` =
+    base, ou base + roteiro anterior + pedido de ajuste."""
+    obs_txt = texto_prompt(observacoes, len(getattr(idx, "preferidas", ()) or ()))
+    base = (contexto or _context)(db, idx, style, n_episodios, derivados, compact=compact)
+    if obs_txt:  # logo depois do contexto, valendo também nas correções e nos ajustes
+        base = f"{base}\n\n{obs_txt}"
+    if not pedido_ajuste:
+        return base, base
+    anterior = db.latest_roteiro()
+    if anterior is None:
+        raise ValueError("Não há roteiro anterior para ajustar.")
+    return base, "\n".join([
+        base, "", "ROTEIRO ANTERIOR (JSON):", anterior, "",
+        f"PEDIDO DE AJUSTE DO EDITOR: {pedido_ajuste}",
+        "Devolva o roteiro completo já ajustado, mantendo o que não foi pedido para mudar.",
+    ])
+
+
+def pedido_correcao(base: str, r: Roteiro, probs: list[str],
+                    pedido_ajuste: str | None = None) -> str:
+    return "\n".join([
+        base, "", "ROTEIRO ATUAL (JSON):", r.model_dump_json(), "",
+        "O roteiro acima tem estes problemas — corrija usando apenas mídias, intervalos e "
+        "trilhas que existem no catálogo e na lista de trilhas, e devolva o roteiro completo:",
+        *(f"- {p}" for p in probs),
+        *([f"Lembre-se do PEDIDO DE AJUSTE DO EDITOR: {pedido_ajuste}"] if pedido_ajuste else []),
+    ])
+
+
+def finalizar_roteiro(r: Roteiro, db: ProjectDB, idx: MusicIndex, probs: list[str],
+                      avisos: list[str] | None = None) -> Roteiro:
+    """Depois das correções: tira o que continua inválido (vira alerta), grava no banco."""
+    if probs:
+        r.alertas.extend(_prune(r, db, idx))
+        r.alertas.extend(f"Duração: {d}" for d in duracao_problems(r))
+    r.alertas.extend(avisos or [])
+    db.add_roteiro(r.model_dump_json())
+    return r
+
+
 def generate_roteiro(db: ProjectDB, c, idx: MusicIndex, style: StyleProfile | None, model: str,
                      n_episodios: int | None, derivados: set[str],
                      pedido_ajuste: str | None = None,
@@ -456,22 +515,9 @@ def generate_roteiro(db: ProjectDB, c, idx: MusicIndex, style: StyleProfile | No
     """Gera (ou ajusta) o pré-roteiro, valida as referências com até 2 rodadas de correção,
     remove o que sobrar inválido (listado em alertas) e grava no banco. `contexto` troca o texto
     base (mesma assinatura de `_context`); None = o do Casamento."""
-    obs_txt = texto_prompt(observacoes, len(getattr(idx, "preferidas", ()) or ()))
-
     def montar(compact: bool) -> tuple[str, str]:
-        base = (contexto or _context)(db, idx, style, n_episodios, derivados, compact=compact)
-        if obs_txt:  # logo depois do contexto, valendo também nas correções e nos ajustes
-            base = f"{base}\n\n{obs_txt}"
-        if not pedido_ajuste:
-            return base, base
-        anterior = db.latest_roteiro()
-        if anterior is None:
-            raise ValueError("Não há roteiro anterior para ajustar.")
-        return base, "\n".join([
-            base, "", "ROTEIRO ANTERIOR (JSON):", anterior, "",
-            f"PEDIDO DE AJUSTE DO EDITOR: {pedido_ajuste}",
-            "Devolva o roteiro completo já ajustado, mantendo o que não foi pedido para mudar.",
-        ])
+        return montar_pedido(db, idx, style, n_episodios, derivados, pedido_ajuste, contexto,
+                             observacoes, compact=compact)
 
     base, prompt = montar(False)
     avisos: list[str] = []
@@ -489,18 +535,6 @@ def generate_roteiro(db: ProjectDB, c, idx: MusicIndex, style: StyleProfile | No
     for _ in range(CORRECTION_ROUNDS):
         if not probs:
             break
-        fix = "\n".join([
-            base, "", "ROTEIRO ATUAL (JSON):", r.model_dump_json(), "",
-            "O roteiro acima tem estes problemas — corrija usando apenas mídias, intervalos e "
-            "trilhas que existem no catálogo e na lista de trilhas, e devolva o roteiro completo:",
-            *(f"- {p}" for p in probs),
-            *([f"Lembre-se do PEDIDO DE AJUSTE DO EDITOR: {pedido_ajuste}"] if pedido_ajuste else []),
-        ])
-        r = c.generate_json(model, [], Roteiro, fix)
+        r = c.generate_json(model, [], Roteiro, pedido_correcao(base, r, probs, pedido_ajuste))
         probs = validate_refs(r, db, idx)
-    if probs:
-        r.alertas.extend(_prune(r, db, idx))
-        r.alertas.extend(f"Duração: {d}" for d in duracao_problems(r))
-    r.alertas.extend(avisos)
-    db.add_roteiro(r.model_dump_json())
-    return r
+    return finalizar_roteiro(r, db, idx, probs, avisos)

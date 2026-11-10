@@ -766,3 +766,29 @@ def test_roteiro_indexa_as_musicas_baixadas_antes(tmp_path, sleeps, monkeypatch)
     pipe._st_roteiro()
     assert raizes == [mes]
     pipe.close()
+
+
+def test_roteiro_pelo_chat_usa_o_mesmo_pedido_e_gera_pdf_e_xml(tmp_path, sleeps, monkeypatch):
+    from roteiro_ia.observacoes import Observacoes
+    pipe, calls, _ = mk_pipe(tmp_path)
+    assert pipe.run() == "concluido"
+    req = ProjectRequest.load(pipe._project_file())
+    req.observacoes = Observacoes(obrigatorio="a avó na entrada")
+    req.save(pipe._project_file(), pipe.s)
+    s = pipe.sessao_roteiro_manual()
+    texto = s.texto_inicial()
+    assert "a avó na entrada" in texto and "PRIORIDADE MÁXIMA" in texto
+    assert "SOMENTE com um único JSON" in texto
+    calls.clear()
+    pipe.db.set_stage("roteiro", "pausado", "2026-11-10T05:00:00")
+    pipe.concluir_roteiro_manual()
+    assert calls == ["pdf", "premiere"]
+    assert pipe.db.stage_status("roteiro") == "feito" and pipe.db.stage_detail("roteiro") == "pelo chat"
+    pipe.close()
+
+
+def test_roteiro_pelo_chat_exige_a_analise_pronta(tmp_path, sleeps):
+    pipe, _calls, _ = mk_pipe(tmp_path)
+    with pytest.raises(pipeline.PipelineError, match="análise das cenas"):
+        pipe.sessao_roteiro_manual()
+    pipe.close()

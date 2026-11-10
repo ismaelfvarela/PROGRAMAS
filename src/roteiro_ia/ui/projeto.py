@@ -139,6 +139,8 @@ class ProjetoTab(QWidget):
         self.controles.continuar.connect(self.continuar)
         self.status.btn_cota_continuar.clicked.connect(self.continuar_agora)
         self.status.btn_cota_parar.clicked.connect(self.cancelar_retomada)
+        self.status.btn_cota_chat.clicked.connect(self.roteiro_pelo_chat)
+        self.status.btn_chat.clicked.connect(self.roteiro_pelo_chat)
         self.status.btn_tirar_fila.clicked.connect(self.tirar_da_fila)
 
     # atalhos usados pela janela e pelos testes
@@ -498,6 +500,34 @@ class ProjetoTab(QWidget):
             self.status.banner_erro.mostrar(msg_falta.format(pasta))
             return
         os.startfile(str(pasta))  # noqa: S606 - abre no Explorador
+
+    def roteiro_pelo_chat(self) -> None:
+        """Roteiro feito no chat do site (sem cota da API); aceito, gera o PDF e o XML."""
+        from roteiro_ia.ui.chat import RoteiroChatDialog
+        if self._req is None:
+            self.status.banner_erro.mostrar("Abra ou inicie um projeto primeiro.")
+            return
+        if self.rodando:
+            self.status.banner_erro.mostrar("Espere o processamento atual terminar (ou pause).")
+            return
+        try:
+            p = self._paths()
+            pipe = self._factory(self._req, self.s, lambda *a: None)
+        except Exception as e:  # noqa: BLE001
+            self.status.banner_erro.mostrar(f"Não consegui abrir o projeto: {e}")
+            return
+        try:
+            existe = pipe.db.latest_roteiro() is not None
+            dlg = RoteiroChatDialog(pipe, Path(p.analysis_dir), existe, self)
+            aceito = dlg.exec() == QDialog.Accepted
+        finally:
+            pipe.close()
+        if not aceito:
+            return
+        self.timer_retomar.stop()  # o roteiro já está feito: nada de retomada da cota
+        self.status.limpar_avisos()
+        self.status.log_line("Roteiro feito pelo chat: gerando PDF e XML.")
+        self._start("manual", aprovado=True)
 
     def salvar_observacoes(self) -> None:
         """Observações mudadas no formulário: valem no próximo roteiro deste projeto (o pipeline

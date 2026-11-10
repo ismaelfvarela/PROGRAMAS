@@ -53,8 +53,12 @@ class StatusPanel(QWidget):
         self.btn_cota_parar = QPushButton("Parar")
         self.btn_cota_parar.setIcon(icone_glifo("⏹", COR_PARAR))
         self.btn_cota_parar.setToolTip("Cancela a retomada automática (continue depois)")
+        self.btn_cota_chat = QPushButton("Fazer o roteiro pelo chat")
+        self.btn_cota_chat.setToolTip("Sem esperar a cota: manda o pedido no chat do Gemini, Claude "
+                                      "ou ChatGPT e cola a resposta")
         cota.addWidget(self.btn_cota_continuar)
         cota.addWidget(self.btn_cota_parar)
+        cota.addWidget(self.btn_cota_chat)
         cota.addStretch(1)
         self.acoes_cota.hide()
         lay.addWidget(self.acoes_cota)
@@ -71,7 +75,7 @@ class StatusPanel(QWidget):
 
         # Premiere: disponível desde o começo do trabalho (o projeto nasce com as pastas do
         # padrão da Fokuss; o roteiro é puxado para dentro dele quando fica pronto)
-        self.painel_premiere = Card("Premiere")
+        self.painel_premiere = Card("Roteiro e Premiere")
         acoes_pr = QHBoxLayout()
         acoes_pr.setSpacing(10)
         self.btn_premiere = QPushButton("Abrir no Premiere")
@@ -80,6 +84,10 @@ class StatusPanel(QWidget):
         self.btn_puxar = QPushButton("Puxar roteiro (XML)")
         self.btn_puxar.setToolTip("Leva para o projeto as timelines do roteiro e as mídias, "
                                   "organizadas nas pastas do padrão")
+        self.btn_chat = QPushButton("Roteiro pelo chat…")
+        self.btn_chat.setToolTip("Faz (ou ajusta) o roteiro no chat do Gemini, Claude ou ChatGPT, "
+                                 "sem usar a cota da API")
+        acoes_pr.addWidget(self.btn_chat)
         acoes_pr.addWidget(self.btn_premiere)
         acoes_pr.addWidget(self.btn_puxar)
         acoes_pr.addStretch(1)
