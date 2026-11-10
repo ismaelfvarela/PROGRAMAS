@@ -57,10 +57,11 @@ def test_mostra_buscas_do_artlist_e_sugestoes_populares(aba):
     tab.atualizar()
     textos = _botoes(tab.card_pecas)
     assert "Artlist: emotional piano build" in textos and "Ouvir: Perfect - Ed Sheeran" in textos
+    assert "Musicbed: uplifting wedding" in textos
     b = next(b for b in tab.card_pecas.findChildren(QPushButton)
              if b.text() == "Artlist: emotional piano build")
     b.click()
-    assert abertos and "artlist.io" in abertos[0] and "emotional+piano+build" in abertos[0]
+    assert abertos == ["https://artlist.io/royalty-free-music/search?terms=emotional+piano+build"]
 
 
 def test_traz_downloads_para_o_m_e_refaz_o_roteiro(aba, monkeypatch):

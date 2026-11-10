@@ -16,11 +16,9 @@ from urllib.parse import quote_plus
 MESES = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO",
          "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"]
 AUDIO_EXTS = {".mp3", ".wav", ".aif", ".aiff", ".m4a", ".aac", ".flac", ".ogg"}
-# Busca das músicas do Artlist ({q} = termos). O site não mostra o formato da busca por texto
-# (o filtro é ?includedIds=<categoria>): a busca vai pelo Google, só nas páginas de música do
-# Artlist (artlist.io/royalty-free-music/song/<nome>/<id>), e cai direto nas músicas.
-ARTLIST_BUSCA = "https://www.google.com/search?q={q}"
-ARTLIST_SITE = "site:artlist.io/royalty-free-music/song"
+# buscas por texto dos sites ({q} = termos, espaços como "+"), conforme links reais do editor
+ARTLIST_BUSCA = "https://artlist.io/royalty-free-music/search?terms={q}"
+MUSICBED_BUSCA = "https://www.musicbed.com/sounds?search={q}"
 YOUTUBE_BUSCA = "https://www.youtube.com/results?search_query={q}"
 DOWNLOADS_DIAS = 7  # downloads mais antigos que isso não aparecem na lista
 _NUM = re.compile(r"^\s*(\d{1,3})\s*-")
@@ -31,7 +29,11 @@ class DestinoInvalido(ValueError):
 
 
 def link_artlist(termos: str) -> str:
-    return ARTLIST_BUSCA.format(q=quote_plus(f"{ARTLIST_SITE} {termos.strip()}"))
+    return ARTLIST_BUSCA.format(q=quote_plus(termos.strip()))
+
+
+def link_musicbed(termos: str) -> str:
+    return MUSICBED_BUSCA.format(q=quote_plus(termos.strip()))
 
 
 def link_youtube(busca: str) -> str:

@@ -12,9 +12,9 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QListWidget, QListWidgetItem
                                QVBoxLayout, QWidget)
 
 from roteiro_ia.db import ProjectDB
-from roteiro_ia.downloads import (DOWNLOADS_DIAS, downloads_recentes, link_artlist, link_youtube,
-                                  pasta_do_mes, pasta_downloads, proximo_numero,
-                                  trazer_para_biblioteca)
+from roteiro_ia.downloads import (DOWNLOADS_DIAS, downloads_recentes, link_artlist,
+                                  link_musicbed, link_youtube, pasta_do_mes, pasta_downloads,
+                                  proximo_numero, trazer_para_biblioteca)
 from roteiro_ia.script.generate import Roteiro
 from roteiro_ia.ui.widgets import Banner, Card, RolagemVertical
 
@@ -37,7 +37,8 @@ class MusicasTab(QWidget):
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(12)
 
-        topo = QLabel("A IA não enxerga o catálogo do Artlist: para cada peça ela sugere buscas. "
+        topo = QLabel("A IA não enxerga o catálogo do Artlist nem do Musicbed: para cada peça ela "
+                      "sugere buscas. "
                       "Ouça, baixe as que quiser (vão para a pasta Downloads do Windows), traga para o "
                       "M: e refaça o roteiro com elas.")
         topo.setWordWrap(True)
@@ -178,13 +179,18 @@ class MusicasTab(QWidget):
             lb.setWordWrap(True)
             lb.setProperty("muted", True)
             v.addWidget(lb)
+        for site, link in (("Artlist", link_artlist), ("Musicbed", link_musicbed)):
+            linha = QHBoxLayout()
+            linha.setSpacing(8)
+            for termo in pc.termos_musicbed[:3]:
+                b = QPushButton(f"{site}: {termo}")
+                b.setToolTip(link(termo))
+                b.clicked.connect(lambda _=False, u=link(termo): _abrir_url(u))
+                linha.addWidget(b)
+            linha.addStretch(1)
+            v.addLayout(linha)
         botoes = QHBoxLayout()
         botoes.setSpacing(8)
-        for termo in pc.termos_musicbed[:3]:
-            b = QPushButton(f"Artlist: {termo}")
-            b.setToolTip(link_artlist(termo))
-            b.clicked.connect(lambda _=False, t=termo: _abrir_url(link_artlist(t)))
-            botoes.addWidget(b)
         for t in pc.trilhas:
             if t.origem == "popular":
                 b = QPushButton(f"Ouvir: {t.titulo}")

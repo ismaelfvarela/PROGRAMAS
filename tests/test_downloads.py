@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from roteiro_ia.downloads import (DestinoInvalido, downloads_recentes, link_artlist, link_youtube,
+from roteiro_ia.downloads import (DestinoInvalido, downloads_recentes, link_artlist, link_musicbed,
+                                  link_youtube,
                                   nome_destino, pasta_do_mes, proximo_numero,
                                   trazer_para_biblioteca)
 
@@ -74,8 +75,10 @@ def test_downloads_recentes(tmp_path):
 
 
 def test_links():
-    assert link_artlist("emotional piano build") == (
-        "https://www.google.com/search?q=site%3Aartlist.io%2Froyalty-free-music%2Fsong"
-        "+emotional+piano+build")
+    # formatos dos links reais mandados pelo editor
+    assert link_artlist("trilha piano wedding") == (
+        "https://artlist.io/royalty-free-music/search?terms=trilha+piano+wedding")
+    assert link_musicbed("trilha wedding instrumental") == (
+        "https://www.musicbed.com/sounds?search=trilha+wedding+instrumental")
     assert link_youtube("Perfect - Ed Sheeran") == (
         "https://www.youtube.com/results?search_query=Perfect+-+Ed+Sheeran")
