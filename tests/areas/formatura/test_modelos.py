@@ -84,8 +84,11 @@ def test_secao_de_modelos_na_janela(qtbot, tmp_path):
     qtbot.addWidget(d)
     d.definir_modelo("2026", pasta="C:\\MODELOS 2026", mogrt="C:\\cartela 2026.mogrt")
     d.definir_modelo("2027", pasta="C:\\MODELOS 2027")
+    d.definir_modelo("2026", fundo="C:\\fundo 2026.png")
+    assert d.tabela_modelos.columnCount() == 4
     assert d.tabela_modelos.rowCount() == 2
     assert modelos_do_ano(s, 2026).mogrt == "C:\\cartela 2026.mogrt"
+    assert modelos_do_ano(s, 2026).fundo_cartela == "C:\\fundo 2026.png"
     d.remover_modelo("2027")
     assert modelos_do_ano(s, 2027).pasta == "C:\\MODELOS 2026"
     assert carregar_ajustes(s).logo_produtora is None

@@ -367,3 +367,30 @@ def test_cota_no_estilo_continua_pausando(tmp_path, monkeypatch):
             pipe._st_estilo()
     finally:
         pipe.close()
+
+
+def test_cartela_na_cor_do_modelo_e_no_tamanho_da_timeline(tmp_path):
+    import json
+    import subprocess
+    import numpy as np
+    from roteiro_ia.areas.formatura.cartela_modelo import CartelaModelo
+    from roteiro_ia.media.tools import ffmpeg_bin
+    pipe, s, _ = _pipe(tmp_path)
+    arq = Path(s.system_dir) / "FORMATURAS" / "_cartela_2026.json"
+    arq.write_text(CartelaModelo(tem_cartela=True, inicio_s=1, fim_s=2, cor_fundo="#E87722",
+                                 cor_texto="#FFFFFF").model_dump_json(), encoding="utf-8")
+    ad = Path(pipe.p.analysis_dir)
+    ad.mkdir(parents=True, exist_ok=True)
+    xml = ad / f"{pipe.p.event_name} - PREMIERE.xml"
+    xml.write_text('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n<xmeml version="4"><sequence>'
+                   '<name>EP 01</name><rate><timebase>30</timebase><ntsc>TRUE</ntsc></rate><media><video>'
+                   '<format><samplecharacteristics><width>3840</width><height>2160</height>'
+                   '</samplecharacteristics></format><track/></video></media></sequence></xmeml>\n',
+                   encoding="utf-8")
+    pipe._aplicar_cartela(["EP 01"])
+    pipe.close()
+    r = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", str(ad / "cartela.png"), "-f", "rawvideo",
+                        "-pix_fmt", "rgba", "-"], capture_output=True, check=True)
+    px = np.frombuffer(r.stdout, dtype=np.uint8).reshape(2160, 3840, 4)[5, 5]
+    assert px[3] == 255 and abs(int(px[0]) - 0xE8) < 6 and abs(int(px[1]) - 0x77) < 6
+    assert "cartela.png" in xml.read_text(encoding="utf-8")

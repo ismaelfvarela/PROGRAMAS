@@ -147,8 +147,9 @@ class DialogoCadastro(QDialog):
         # modelos do ano: vídeos modelo (estilo) e cartela MOGRT; a versão pode mudar a cada ano
         lay.addWidget(QLabel("Modelos do ano (vídeos modelo e cartela MOGRT; cada formatura usa "
                              "os do seu ano ou, se faltar, os do ano anterior mais recente)"))
-        self.tabela_modelos = QTableWidget(0, 3)
-        self.tabela_modelos.setHorizontalHeaderLabels(["Ano", "Pasta dos vídeos modelo", "Cartela MOGRT"])
+        self.tabela_modelos = QTableWidget(0, 4)
+        self.tabela_modelos.setHorizontalHeaderLabels(["Ano", "Pasta dos vídeos modelo", "Cartela MOGRT",
+                                                      "Fundo da cartela"])
         self.tabela_modelos.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tabela_modelos.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.tabela_modelos.verticalHeader().hide()
@@ -158,7 +159,9 @@ class DialogoCadastro(QDialog):
         lay.addWidget(self.tabela_modelos)
         bm = QHBoxLayout()
         for texto, fn in (("Adicionar ano", self._adicionar_ano), ("Pasta dos vídeos…", self._escolher_pasta_modelo),
-                          ("Cartela MOGRT…", self._escolher_mogrt), ("Remover ano", self._remover_selecionado)):
+                          ("Cartela MOGRT…", self._escolher_mogrt),
+                          ("Fundo da cartela…", self._escolher_fundo),
+                          ("Remover ano", self._remover_selecionado)):
             b = QPushButton(texto)
             b.clicked.connect(fn)
             bm.addWidget(b)
@@ -205,13 +208,16 @@ class DialogoCadastro(QDialog):
             r = self.tabela_modelos.rowCount()
             self.tabela_modelos.insertRow(r)
             m = modelos[ano]
-            for col, v in enumerate((ano, m.pasta or "(sem pasta)", m.mogrt or "(cartela simples)")):
+            fundo = m.fundo_cartela or ("—" if m.mogrt else "(cor do vídeo modelo)")
+            for col, v in enumerate((ano, m.pasta or "(sem pasta)", m.mogrt or "(cartela gerada)", fundo)):
                 self.tabela_modelos.setItem(r, col, QTableWidgetItem(v))
 
-    def definir_modelo(self, ano: str, pasta: str | None = None, mogrt: str | None = None) -> None:
+    def definir_modelo(self, ano: str, pasta: str | None = None, mogrt: str | None = None,
+                       fundo: str | None = None) -> None:
         a = carregar_ajustes(self.s)
         m = a.modelos.get(ano, ModeloAno())
-        upd = {k: v for k, v in (("pasta", pasta), ("mogrt", mogrt)) if v is not None}
+        upd = {k: v for k, v in (("pasta", pasta), ("mogrt", mogrt), ("fundo_cartela", fundo))
+               if v is not None}
         a.modelos[ano] = m.model_copy(update=upd)
         salvar_ajustes(self.s, a)
         self._mostrar_modelos()
@@ -245,6 +251,14 @@ class DialogoCadastro(QDialog):
         v, _ = QFileDialog.getOpenFileName(self, f"Cartela de {ano}", "", "Modelo do Premiere (*.mogrt)")
         if v:
             self.definir_modelo(ano, mogrt=v)
+
+    def _escolher_fundo(self) -> None:
+        if (ano := self._ano_selecionado()) is None:
+            return
+        v, _ = QFileDialog.getOpenFileName(self, f"Fundo da cartela de {ano}", "",
+                                           "Imagens (*.png *.jpg *.jpeg *.tif *.tiff)")
+        if v:
+            self.definir_modelo(ano, fundo=v)
 
     def _remover_selecionado(self) -> None:
         if (ano := self._ano_selecionado()) is not None:

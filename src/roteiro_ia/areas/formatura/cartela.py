@@ -72,41 +72,64 @@ def _esc_caminho(p: Path) -> str:
     return str(p).replace("\\", "/").replace(":", "\\:")
 
 
-def gerar_cartela_png(campos: dict[str, str], logo_escola: str | None, saida: Path, s: Settings) -> Path:
-    """PNG 1920×1080 transparente: logo da escola no alto e as linhas centralizadas."""
+def _hex_ff(cor: str) -> str:
+    """'#E87722' → '0xE87722' (cor no formato do ffmpeg)."""
+    c = cor.strip().lstrip("#")
+    return "0x" + (c if len(c) == 6 else "FFFFFF")
+
+
+def gerar_cartela_png(campos: dict[str, str], logo_escola: str | None, saida: Path, s: Settings,
+                      tamanho: tuple[int, int] = (1920, 1080), cor_fundo: str | None = None,
+                      cor_texto: str | None = None, fundo: str | None = None) -> Path:
+    """PNG da cartela no tamanho da timeline: logo da escola no alto e as linhas centralizadas.
+
+    Fundo, nesta ordem: a imagem `fundo` (escolhida nos modelos do ano), a cor `cor_fundo`
+    (a da cartela do vídeo modelo) ou transparente com uma faixa escura atrás do texto."""
     saida = Path(saida)
     assert_writable(saida, s)
+    W, H = tamanho
+    k = H / 1080  # tudo foi desenhado para 1080 linhas: escala para 4K etc.
     linhas = linhas_cartela(campos) or [" "]
     logo = Path(logo_escola) if logo_escola and Path(logo_escola).is_file() else None
+    img_fundo = Path(fundo) if fundo and Path(fundo).is_file() else None
     negrito = next((f for f in FONTES if f.is_file()), None)
     normal = next((f for f in reversed(FONTES) if f.is_file()), None)
+    texto = _hex_ff(cor_texto) if cor_texto else "white"
     with tempfile.TemporaryDirectory() as tmp:
-        y = 470 if logo is not None else 360
-        altura = 110 + 66 * (len(linhas) - 1) + 60
-        topo = max(0, y - 40)
-        cmd = [ffmpeg_bin(), "-v", "error", "-y", "-f", "lavfi",
-               "-i", (f"color=c=black@0.35:s=1920x{altura}:d=1,format=rgba,"
-                      f"pad=1920:1080:0:{topo}:color=black@0.0")]
-        filtros = ["[0]format=rgba[b0]"]
+        y = int((470 if logo is not None else 360) * k)
+        cmd = [ffmpeg_bin(), "-v", "error", "-y"]
+        if img_fundo is not None:
+            cmd += ["-loop", "1", "-i", str(img_fundo)]
+            filtros = [f"[0]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+                       "format=rgba[b0]"]
+        elif cor_fundo:
+            cmd += ["-f", "lavfi", "-i", f"color=c={_hex_ff(cor_fundo)}:s={W}x{H}:d=1,format=rgba"]
+            filtros = ["[0]format=rgba[b0]"]
+        else:
+            altura = int((110 + 66 * (len(linhas) - 1) + 60) * k)
+            topo = max(0, y - int(40 * k))
+            cmd += ["-f", "lavfi", "-i", (f"color=c=black@0.35:s={W}x{altura}:d=1,format=rgba,"
+                                          f"pad={W}:{H}:0:{topo}:color=black@0.0")]
+            filtros = ["[0]format=rgba[b0]"]
         atual = "b0"
         if logo is not None:
             cmd += ["-i", str(logo)]
-            filtros.append("[1]scale=-1:300,format=rgba[lg]")
-            filtros.append(f"[{atual}][lg]overlay=(W-w)/2:110[b1]")
+            filtros.append(f"[1]scale=-1:{int(300 * k)},format=rgba[lg]")
+            filtros.append(f"[{atual}][lg]overlay=(W-w)/2:{int(110 * k)}[b1]")
             atual = "b1"
         for i, txt in enumerate(linhas):
             arq = Path(tmp) / f"l{i}.txt"
             arq.write_text(txt, encoding="utf-8")
             fonte = negrito if i == 0 else normal
-            tam = 78 if i == 0 else 48
+            tam = int((78 if i == 0 else 48) * k)
             partes = [f"textfile='{_esc_caminho(arq)}'", "expansion=none", f"fontsize={tam}",
-                      "fontcolor=white",
-                      "shadowcolor=black@0.7", "shadowx=3", "shadowy=3", "x=(w-text_w)/2", f"y={y}"]
+                      f"fontcolor={texto}", "shadowcolor=black@0.5", f"shadowx={max(1, int(3 * k))}",
+                      f"shadowy={max(1, int(3 * k))}", "x=(w-text_w)/2", f"y={y}"]
             if fonte is not None:
                 partes.insert(0, f"fontfile='{_esc_caminho(fonte)}'")
             filtros.append(f"[{atual}]drawtext=" + ":".join(partes) + f"[t{i}]")
             atual = f"t{i}"
-            y += 110 if i == 0 else 66
+            y += int((110 if i == 0 else 66) * k)
         cmd += ["-filter_complex", ";".join(filtros), "-map", f"[{atual}]", "-frames:v", "1",
                 "-update", "1", "-pix_fmt", "rgba", str(saida)]
         r = proc.run(cmd, timeout=120)
@@ -119,6 +142,17 @@ def gerar_cartela_png(campos: dict[str, str], logo_escola: str | None, saida: Pa
 def _rate(seq: ET.Element) -> tuple[int, int]:
     tb = int(seq.findtext("rate/timebase") or 30)
     return (tb * 1000, 1001) if seq.findtext("rate/ntsc") == "TRUE" else (tb, 1)
+
+
+def tamanho_da_sequencia(xml: str, nome: str) -> tuple[int, int]:
+    """Largura e altura da timeline `nome` no XML (padrão 1920×1080)."""
+    root = ET.fromstring(xml.split("\n", 2)[2])
+    for seq in root.iter("sequence"):
+        if seq.findtext("name") == nome:
+            sc = seq.find("media/video/format/samplecharacteristics")
+            if sc is not None and sc.findtext("width") and sc.findtext("height"):
+                return int(sc.findtext("width")), int(sc.findtext("height"))
+    return 1920, 1080
 
 
 def colocar_cartela(xml: str, nomes: list[str], png: str | None, dur_s: float = CARTELA_S) -> str:
@@ -136,7 +170,10 @@ def colocar_cartela(xml: str, nomes: list[str], png: str | None, dur_s: float = 
         video = seq.find("media/video")
         track = ET.Element("track")
         if png:
-            src = _Src("file-cartela", Path(png), dur_s, rate, (1920, 1080), 0)
+            sc = seq.find("media/video/format/samplecharacteristics")
+            tam = ((int(sc.findtext("width") or 1920), int(sc.findtext("height") or 1080))
+                   if sc is not None else (1920, 1080))
+            src = _Src("file-cartela", Path(png), dur_s, rate, tam, 0)
             ci = _clipitem(track, ctx, src, Path(png).name, 0, fim, 0.0, dur_s, rate)
             if not definido:
                 _define_file(ci.find("file"), src)

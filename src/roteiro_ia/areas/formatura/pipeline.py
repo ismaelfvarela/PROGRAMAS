@@ -10,7 +10,8 @@ from pathlib import Path
 from roteiro_ia.areas.formatura.analise import TEXTOS_POR_TIPO
 from roteiro_ia.areas.formatura.cadastro import carregar
 from roteiro_ia.areas.formatura.cartela import (campos_cartela, colocar_cartela, gerar_cartela_png,
-                                                job_cartela)
+                                                job_cartela, tamanho_da_sequencia)
+from roteiro_ia.areas.formatura.cartela_modelo import carregar_cartela_modelo, estudar_cartela
 from roteiro_ia.areas.formatura.acabamento import acabar_peca
 from roteiro_ia.areas.formatura.ajustes import carregar_ajustes, modelos_do_ano
 from roteiro_ia.areas.formatura.modelos import carregar_perfil_ano, estudar_modelos
@@ -108,6 +109,7 @@ class PipelineFormatura(Pipeline):
             ano, pasta = mod
             self._models()
             prof = estudar_modelos(self._client(), self.s, ano, pasta)
+            estudar_cartela(self._client(), self.s, ano, pasta)  # cor/tempo da cartela do modelo
         except (QuotaPaused, Interrompido):
             raise
         except Exception as e:  # noqa: BLE001 - o estilo ajuda, mas não é obrigatório
@@ -215,8 +217,22 @@ class PipelineFormatura(Pipeline):
             safe_write_text(xml_path, colocar_cartela(xml, nomes, None), self.s)
             job_cartela(ad / "job.json", self.s, mod.mogrt, nomes, campos)
             return
+        tamanho = tamanho_da_sequencia(xml, nomes[0])
+        cm = carregar_cartela_modelo(self.s, ficha.ano) if ficha else None
+        if cm is None and mod is not None and mod.pasta and ficha is not None:
+            # o "Pedir ajuste" não refaz a etapa de estilo: estuda a cartela do modelo agora
+            try:
+                self._models()
+                cm = estudar_cartela(self._client(), self.s, ficha.ano, mod.pasta)
+            except Exception as e:  # noqa: BLE001 - cota, rede…: sai a cartela simples
+                self._emit("premiere", f"Cartela do vídeo modelo não estudada agora ({e}); "
+                           "usei a cartela simples.", 1.0)
+        cor_fundo = cm.cor_fundo if cm is not None and cm.tem_cartela and cm.cor_fundo else None
+        cor_texto = cm.cor_texto if cm is not None and cm.tem_cartela else None
         try:
-            png = gerar_cartela_png(campos, ficha.logo_escola if ficha else None, ad / "cartela.png", self.s)
+            png = gerar_cartela_png(campos, ficha.logo_escola if ficha else None, ad / "cartela.png",
+                                    self.s, tamanho=tamanho, cor_fundo=cor_fundo, cor_texto=cor_texto,
+                                    fundo=mod.fundo_cartela if mod is not None else None)
         except RuntimeError as e:
             self._emit("premiere", f"Cartela não gerada: {e}", 1.0)
             return
