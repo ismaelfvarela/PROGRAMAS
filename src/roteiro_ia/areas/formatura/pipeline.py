@@ -41,7 +41,9 @@ from roteiro_ia.paths import EventNameError, build_event_paths, parse_event_name
 from roteiro_ia.gemini.client import QuotaPaused
 from roteiro_ia.controle import Interrompido
 from roteiro_ia.pipeline import FALHAS_PREFIX, Pipeline, PipelineError, music_paths
-from roteiro_ia.premiere.fcpxml import write_xml
+from roteiro_ia.areas.formatura.formato import formato_da_camera_principal
+from roteiro_ia.premiere.fcpxml import build_xml, write_xml
+from roteiro_ia.premiere.job import write_job
 from roteiro_ia.report.pdf import html_to_pdf
 from roteiro_ia.safety import safe_mkdir, safe_write_text
 from roteiro_ia.script.generate import Roteiro, SceneRef, generate_roteiro
@@ -196,8 +198,12 @@ class PipelineFormatura(Pipeline):
         html_to_pdf(html, self.p.pdf_path, self.s, html_path=Path(self.p.analysis_dir) / "integra.html")
 
     def _st_premiere(self) -> None:
+        formato = formato_da_camera_principal(self.db, self.source, self.projeto().funcoes)
         if not self._colacao():
-            super()._st_premiere()
+            r = self._roteiro()
+            xml = build_xml(r, self.db, self._index(), music_paths(r, self.p, self.s), self.source,
+                            formato=formato)
+            write_job(self.p, self.s, write_xml(xml, self.p, self.s), self.db, area=self.req.area)
             self._mixar({"episodio:1": "EP 01"})
             self._aplicar_cartela(["EP 01"])  # o clipe é a única peça ("EP 01" no XML)
             return
@@ -208,7 +214,8 @@ class PipelineFormatura(Pipeline):
         nome_ab, nome_enc = nomes_clipes(len(plano.partes))
         xml = build_xml_integra(plano, self.db, self.source, abertura=ab, encerramento=enc,
                                 idx=self._index(), musicas=music_paths(r, self.p, self.s) if r else {},
-                                logo=carregar_ajustes(self._base).logo_produtora)
+                                logo=carregar_ajustes(self._base).logo_produtora,
+                                formato=formato)
         xml_path = write_xml(xml, self.p, self.s)
         write_job_integra(self.p, self.s, xml_path, self.db, plano,
                           clipes=(nome_ab if ab else None, nome_enc if enc else None))
@@ -431,7 +438,6 @@ class PipelineFormatura(Pipeline):
         """Cortes no compasso, cenas limpas (troca as tremidas por vizinhas), falas inteiras com
         o aluno no começo e no fim e a voz por baixo; o roteiro acabado é gravado como o mais
         recente e as vozes em ANALISE/vozes.json."""
-        from roteiro_ia.premiere.fcpxml import _seq_rate
         medias = {m.rel_path: m for m in self.db.list_media()}
         usadas = {s.rel_path for p in r.pecas for s in [p.abertura, *p.desenvolvimento, p.gancho]
                   if s is not None and s.rel_path in medias}
@@ -439,7 +445,8 @@ class PipelineFormatura(Pipeline):
             return r
         medir_rel = self._medidor()
         duracoes = {rel: m.duration_s for rel, m in medias.items()}
-        rate = _seq_rate([m for m in medias.values() if m.kind == "video" and m.role != Role.ignorar])
+        rate = formato_da_camera_principal(self.db, self.source, self.projeto().funcoes,
+                                           sondar=lambda _p: None).rate  # o da timeline
 
         def palavras(rel: str):
             m = medias.get(rel)

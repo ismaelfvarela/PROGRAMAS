@@ -179,3 +179,43 @@ def test_cobertura_extra_quando_o_roteiro_nao_tem():
     assert nomes[1] == "A\\C0050.mp4" and nomes[-1] == "A\\C0050.mp4"
     meio = nomes[2:-1]
     assert meio and set(meio) <= {"A\\C0049.mp4", "A\\C0051.mp4"}  # vizinhos de gravação primeiro
+
+
+def test_fala_media_tambem_ganha_broll():
+    ws = [Word(text=f"p{i}", start_s=20 + i * 0.4, end_s=20.3 + i * 0.4) for i in range(12)]  # ~4.8 s
+    p = _peca([_ref("A/abre.mp4", 0, 2), _ref("A/aluno.mp4", 20.0, 25.0, fala="eu aprendi"),
+               _ref("A/b1.mp4", 0, 3), _ref("A/b2.mp4", 0, 3)])
+    dur = {r: 60.0 for r in ["A/abre.mp4", "A/aluno.mp4", "A/b1.mp4", "A/b2.mp4"]}
+    acabar_peca(p, _track(), 0.0, "1-3", {}.get, dur, rate=(30, 1),
+                palavras=lambda r: ws if r == "A/aluno.mp4" else [])
+    nomes = [c.rel_path for c in [p.abertura, *p.desenvolvimento]]
+    assert nomes[1:4] == ["A/aluno.mp4", "A/b1.mp4", "A/aluno.mp4"]  # aluno, B-roll, aluno
+    aluno = [c for c in [p.abertura, *p.desenvolvimento] if c.rel_path == "A/aluno.mp4"]
+    assert sum(c.end_s - c.start_s for c in aluno) <= 3.6  # o resto da fala fica por baixo
+
+
+def test_cobertura_pega_mais_cenas_do_roteiro_quando_faltam_extras():
+    ws = [Word(text=f"p{i}", start_s=20 + i * 0.4, end_s=20.3 + i * 0.4) for i in range(30)]  # ~12 s
+    fala = _ref("A/aluno.mp4", 20.0, 32.0, fala="eu aprendi")
+    outras = [_ref(f"A/b{i}.mp4", 0, 3) for i in range(6)]
+    p = _peca([_ref("A/abre.mp4", 0, 2), fala, outras[0], *[x for x in outras[1:]]])
+    dur = {r: 60.0 for r in ["A/abre.mp4", "A/aluno.mp4", *[x.rel_path for x in outras]]}
+    acabar_peca(p, _track(), 0.0, "1-3", {}.get, dur, rate=(30, 1),
+                palavras=lambda r: ws if r == "A/aluno.mp4" else [])
+    cenas = [p.abertura, *p.desenvolvimento]
+    nomes = [c.rel_path for c in cenas]
+    j = len(nomes) - 1 - nomes[::-1].index("A/aluno.mp4")
+    meio = cenas[2:j]
+    assert len(meio) >= 3
+    assert sum(c.end_s - c.start_s for c in meio) >= 12 - 3.6  # quase toda a fala coberta
+
+
+def test_mesmo_trecho_nao_se_repete():
+    p = _peca([_ref("A/x.mp4", 1.0, 3.6), _ref("A/x.mp4", 1.25, 3.85), _ref("A/x.mp4", 1.0, 3.64),
+               _ref("A/y.mp4", 0.0, 2.0)])
+    acabar_peca(p, _track(), 0.0, "1-3", {}.get, {"A/x.mp4": 8.0, "A/y.mp4": 10.0}, rate=(30, 1))
+    xs = sorted((c.start_s, c.end_s) for c in [p.abertura, *p.desenvolvimento]
+                if c.rel_path == "A/x.mp4")
+    for (a0, a1), (b0, b1) in zip(xs, xs[1:]):
+        assert b0 >= a1 - 0.2 - 1e-6, xs  # nenhuma imagem repetida
+    assert len(xs) >= 2  # 8 s de vídeo: cabem dois trechos diferentes, o terceiro sai

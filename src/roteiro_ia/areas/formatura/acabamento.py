@@ -38,9 +38,10 @@ MIN_VOZ_S = 1.0        # sobra de fala menor que isto (o resto já foi usado) sa
 SEG_COBERTURA_S = 3.5  # uma cena de cobertura a cada tantos segundos de fala coberta
 VOZ_ANTES_S = 0.15
 VOZ_DEPOIS_S = 0.3
-VOZ_COBERTA_S = 6.0    # fala a partir desta duração ganha cenas por cima no meio
-CABECA_S = 2.0         # aluno na tela no começo da fala
-RABO_S = 2.0           # e no fim
+VOZ_COBERTA_S = 4.0    # fala a partir desta duração ganha imagens por cima no meio (B-roll)
+CABECA_S = 1.5         # aluno na tela no começo da fala
+RABO_S = 1.5           # e no fim
+SOBREPOR_S = 0.2       # repetição de imagem tolerada entre duas cenas do mesmo vídeo
 PESO_DISTANCIA = 0.3   # preferir ficar perto do trecho que o roteiro escolheu
 PESO_RUIM = 50.0
 PESO_TREMOR = 10.0
@@ -202,6 +203,7 @@ class _Montagem:
         self.vizinhos = vizinhos
         self.usados = usados
         self.alertas: list[str] = []
+        self.trechos: dict[str, list[tuple[float, float]]] = {}  # já no clipe, por vídeo
 
     def q(self, x: float) -> float:
         return round(x * self.fps) / self.fps
@@ -235,16 +237,45 @@ class _Montagem:
             return abs(b - alvo) * 2 + custo_janela(m, _janela(m, s.start_s, d, dm), d)
         return self.q(min(perto, key=nota))
 
-    def limpar(self, s: SceneRef, dur: float) -> SceneRef:
-        """Põe a cena (sem fala) no trecho limpo; se o vídeo todo é ruim, usa um vizinho."""
+    def usar(self, rel: str, ini: float, fim: float) -> None:
+        self.trechos.setdefault(rel, []).append((ini, fim))
+
+    def livre(self, rel: str, ini: float, dur: float) -> bool:
+        """O trecho não repete imagem que já está no clipe (tolerância de SOBREPOR_S)."""
+        return all(min(b, ini + dur) - max(a, ini) <= SOBREPOR_S
+                   for a, b in self.trechos.get(rel, []))
+
+    def _janela_livre(self, rel: str, m: Medidas | None, ref: float, dur: float,
+                      dm: float) -> float | None:
+        """Melhor trecho do vídeo que ainda não foi usado; None se não sobra nenhum."""
+        ini = (_janela(m, ref, dur, dm) if m is not None
+               else min(max(0.0, ref), max(0.0, dm - dur)))
+        if self.livre(rel, ini, dur):
+            return ini
+        cands = [round(k * 0.25, 6) for k in range(int(max(0.0, dm - dur) / 0.25) + 1)]
+        cands = [c for c in cands if self.livre(rel, c, dur)]
+        if not cands:
+            return None
+        if m is None:
+            return min(cands, key=lambda c: abs(c - ref))
+        return min(cands, key=lambda c: custo_janela(m, c, dur) + PESO_DISTANCIA * abs(c - ref))
+
+    def limpar(self, s: SceneRef, dur: float) -> SceneRef | None:
+        """Põe a cena (sem fala) no trecho limpo e ainda não usado; se o vídeo todo é ruim, usa
+        um vizinho. None quando o vídeo já foi todo usado (a cena sai, para não repetir imagem)."""
         m = self.medir(s.rel_path)
         dm = self.duracoes.get(s.rel_path)
-        if m is None or not dm:
-            ini = min(max(0.0, s.start_s), max(0.0, (dm or s.start_s + dur) - dur))
+        if not dm:
+            ini = max(0.0, s.start_s)
+            self.usar(s.rel_path, ini, ini + dur)
             return s.model_copy(update={"start_s": ini, "end_s": ini + dur, "lembranca": False})
-        ini = _janela(m, s.start_s, dur, dm)
-        rel, custo = s.rel_path, custo_janela(m, ini, dur)
-        if not limpa(m, ini, dur):
+        ini = self._janela_livre(s.rel_path, m, s.start_s, dur, dm)
+        rel = s.rel_path
+        if m is None:
+            if ini is None:
+                return None
+        elif ini is None or not limpa(m, ini, dur):
+            custo = custo_janela(m, ini, dur) if ini is not None else float("inf")
             troca = None
             for v in self.vizinhos(s.rel_path):
                 if v in self.usados:
@@ -261,9 +292,12 @@ class _Montagem:
                                     f"vídeo vizinho {troca[0]} ({troca[1]:.1f} s).")
                 rel, ini = troca[0], troca[1]
                 self.usados.add(rel)
+            elif ini is None:
+                return None
             else:
                 self.alertas.append(f"{s.rel_path}: sem trecho totalmente limpo perto de "
                                     f"{s.start_s:.1f} s nem em vídeo vizinho; confira a cena.")
+        self.usar(rel, ini, ini + dur)
         return s.model_copy(update={"rel_path": rel, "start_s": ini, "end_s": ini + dur,
                                     "lembranca": False})
 
@@ -300,7 +334,11 @@ def acabar_peca(p: Piece, track: TrackInfo | None, inicio: float, padrao: str,
             fim = mt.fim_da_cena(s, t, None)
             if fim - t < 1 / fps_seq:
                 fim = mt.q(t + MIN_CENA_S)
-            saida.append(mt.limpar(s, fim - t))
+            c = mt.limpar(s, fim - t)
+            if c is None:
+                mt.alertas.append(f"{s.rel_path}: trecho já usado no clipe; cena tirada.")
+                continue
+            saida.append(c)
             t = fim
             continue
         # ---- fala do aluno
@@ -327,20 +365,30 @@ def acabar_peca(p: Piece, track: TrackInfo | None, inicio: float, padrao: str,
         c3 = max(c3, mt.q(t + MIN_CENA_S))
         cobre: list[SceneRef] = []
         if dur_voz >= VOZ_COBERTA_S:
-            c1 = mt.batida(t + CABECA_S, t + 1.5, t + 3.0)
-            c2 = mt.batida(c3 - RABO_S, c3 - 3.0, c3 - 1.5)
+            c1 = mt.batida(t + CABECA_S, t + 1.0, t + 2.5)
+            c2 = mt.batida(c3 - RABO_S, c3 - 2.5, c3 - 1.0)
             if c2 - c1 >= MIN_CENA_S - 1e-6:
-                precisa = max(1, int(np.ceil((c2 - c1) / SEG_COBERTURA_S)))
-                sem_fala = [x for x in fila if not x.fala]
-                falas_depois = sum(1 for x in fila if x.fala)
-                cota = len(sem_fala) // (falas_depois + 2)  # sobra montagem só com música
-                cobre = sem_fala[:min(cota, precisa)]
+                # sobram candidatas: uma cena curta ou repetida não deixa o aluno na tela
+                precisa = max(1, int(np.ceil((c2 - c1) / SEG_COBERTURA_S))) + 2
+                # 1º as cenas sem fala que o roteiro pôs logo depois desta fala (a cobertura dela)
+                for x in fila:
+                    if x.fala or len(cobre) >= precisa:
+                        break
+                    cobre.append(x)
+                # 2º imagens do material gravadas perto do aluno (fora do roteiro)
                 livres = [x for x in extras if x.rel_path not in mt.usados]
                 for x in _por_perto(livres, s.rel_path):
                     if len(cobre) >= precisa:
                         break
                     if x.rel_path not in {c.rel_path for c in cobre}:
                         cobre.append(x)
+                # 3º, se ainda falta, outras cenas sem fala do roteiro (deixa 2 por fala seguinte)
+                sem_fala = [x for x in fila if not x.fala and x not in cobre]
+                reserva = 2 * sum(1 for x in fila if x.fala)
+                for x in sem_fala[:max(0, len(sem_fala) - reserva)]:
+                    if len(cobre) >= precisa:
+                        break
+                    cobre.append(x)
         if cobre:
             saida.append(s.model_copy(update={"start_s": a0, "end_s": a0 + (c1 - t),
                                               "lembranca": False}))
@@ -354,7 +402,10 @@ def acabar_peca(p: Piece, track: TrackInfo | None, inicio: float, padrao: str,
                     continue  # extra que virou troca de outra cena: não repete o vídeo
                 mt.usados.add(prox.rel_path)
                 fim = mt.fim_da_cena(prox, x, c2)
-                saida.append(mt.limpar(prox, fim - x))
+                c = mt.limpar(prox, fim - x)
+                if c is None:
+                    continue
+                saida.append(c)
                 x = fim
             saida.append(s.model_copy(update={"start_s": a0 + (x - t), "end_s": a0 + (c3 - t),
                                               "lembranca": False}))
@@ -363,6 +414,7 @@ def acabar_peca(p: Piece, track: TrackInfo | None, inicio: float, padrao: str,
                                               "lembranca": False}))
         vozes.append(Voz(inicio_s=t, rel_path=s.rel_path, in_s=a0, dur_s=dur_voz))
         ja.append((a0, max(a1, a0 + (c3 - t))))  # fala e imagem do aluno já usadas
+        mt.usar(s.rel_path, a0, max(a1, a0 + (c3 - t)))  # o B-roll não mostra este pedaço
         t = c3
     p.abertura = saida[0]
     if p.gancho is not None and len(saida) > 1:
