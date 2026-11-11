@@ -53,7 +53,8 @@ def contexto_abertura_encerramento(pf: ProjetoFormatura, ficha: Formatura | None
 3. ENCERRAMENTO, 60–90 s, bem animado: comemoração, beca jogada, abraços, alegria; cortes no ritmo da música. Ele termina com o logo da produtora: deixe livres os últimos {LOGO_S} s (o logo entra na montagem).
 4. Qualidade de imagem: nada de chicote, imagem desfocada ou cena mal enquadrada. O assunto vale mais que a técnica: um momento importante que só existe numa imagem imperfeita entra pelo menor tempo possível, com alerta.
 5. Música comercial, popular e o mais moderna possível (público jovem): 2–3 opções da biblioteca para cada peça (só as da lista abaixo) e sugestões pelo nome com origem "popular". A abertura pode ser épica ou emocionante; o encerramento, animado.
-6. Mídias [só áudio] servem só como 'fala' sobre uma cena de vídeo do mesmo momento."""
+6. Mídias [só áudio] servem só como 'fala' sobre uma cena de vídeo do mesmo momento.
+7. Montagem profissional e lisa: cada cena entre 1,5 e 4 s (os cortes serão alinhados à batida da música automaticamente); use os pontos bons de entrada e saída do catálogo ('bons:'); nunca comece nem termine uma cena com a câmera ainda se movendo (o plano precisa terminar o enquadramento); nada de chicote, imagem desfocada ou tremida; lembranca sempre false (clipe não tem flashback)."""
         tl = "\n".join(f"[{_hms(p.inicio_s)}] {p.nome}" for p in partes) or "(sem partes)"
         out = [
             "Você é o roteirista da produtora Fokuss e vai escrever o PRÉ-ROTEIRO dos clipes de "

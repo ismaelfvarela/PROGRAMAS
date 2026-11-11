@@ -276,7 +276,9 @@ def test_clipes_usam_contexto_proprio(tmp_path, monkeypatch):
 
     def gen(db, c, idx, style, model, n, der, pedido_ajuste=None, contexto=None):
         visto.update(n=n, der=der, txt=contexto(db, idx, None, n, der))
-        db.add_roteiro(Roteiro(arco="a", pecas=[], alertas=[]).model_dump_json())
+        r = Roteiro(arco="a", pecas=[], alertas=[])
+        db.add_roteiro(r.model_dump_json())
+        return r
     monkeypatch.setattr(pf_pipeline, "generate_roteiro", gen)
     plano = PlanoIntegra(partes=[])
     Path(pipe.p.analysis_dir).mkdir(parents=True, exist_ok=True)

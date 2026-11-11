@@ -73,7 +73,8 @@ def contexto_clipe(pf: ProjetoFormatura, ficha: Formatura | None,
 4. Qualidade de imagem: nada de chicote, imagem desfocada ou cena mal enquadrada fotograficamente. O assunto vale mais que a técnica: se um momento importante só existe numa imagem imperfeita, ele entra pelo menor tempo possível e você registra um alerta.
 5. Música comercial, popular e o mais moderna possível (público jovem): dê 2–3 opções da biblioteca (só as da lista abaixo) e também sugestões pelo nome com origem "popular" (o editor confere se ainda estão em alta). Os cortes seguem o ritmo da trilha (padrao_corte).
 6. {_POR_TIPO.get(pf.tipo, "")}
-7. Áudio real: use as falas verdadeiras (veja 'falas' no catálogo) e coloque a fala usada em 'fala'. Mídias [só áudio] servem só como 'fala' sobre uma cena de vídeo do mesmo momento."""
+7. Áudio real: use as falas verdadeiras (veja 'falas' no catálogo) e coloque a fala usada em 'fala'. Mídias [só áudio] servem só como 'fala' sobre uma cena de vídeo do mesmo momento.
+8. Montagem profissional e lisa: cada cena entre 1,5 e 4 s (os cortes serão alinhados à batida da música automaticamente); use os pontos bons de entrada e saída do catálogo ('bons:'); nunca comece nem termine uma cena com a câmera ainda se movendo (o plano precisa terminar o enquadramento); nada de chicote, imagem desfocada ou tremida; lembranca sempre false (clipe não tem flashback)."""
         partes = [
             "Você é o roteirista da produtora Fokuss e vai escrever o PRÉ-ROTEIRO de um clipe de "
             f"formatura: {info.nome}.",

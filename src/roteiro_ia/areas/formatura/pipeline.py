@@ -4,12 +4,14 @@ frias, XML por parte e entregas no G)."""
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from roteiro_ia.areas.formatura.analise import TEXTOS_POR_TIPO
 from roteiro_ia.areas.formatura.cadastro import carregar
 from roteiro_ia.areas.formatura.cartela import (campos_cartela, colocar_cartela, gerar_cartela_png,
                                                 job_cartela)
+from roteiro_ia.areas.formatura.acabamento import acabar_peca
 from roteiro_ia.areas.formatura.ajustes import carregar_ajustes, modelos_do_ano
 from roteiro_ia.areas.formatura.modelos import carregar_perfil_ano, estudar_modelos
 from roteiro_ia.areas.formatura.colacao.clipes import contexto_abertura_encerramento, nomes_clipes
@@ -41,6 +43,7 @@ from roteiro_ia.report.pdf import html_to_pdf
 from roteiro_ia.safety import safe_mkdir, safe_write_text
 from roteiro_ia.script.generate import Roteiro, generate_roteiro
 
+_log = logging.getLogger(__name__)
 MSG_SEM_PGM = "Marque a pasta da mesa de corte (PGM, CORTE ou ATEM)."
 ARQ_INTEGRA = "integra.json"
 ARQ_MEDIDAS = "defeitos.json"
@@ -163,6 +166,7 @@ class PipelineFormatura(Pipeline):
         ctx = contexto_clipe(pf, carregar(self._base, pf.formatura_id), self._ideia(pf))
         r = generate_roteiro(self.db, self._client(), idx, self._perfil(), model, 1, set(),
                              pedido_ajuste=self._pedido, contexto=ctx)
+        r = self._acabar(r)
         musica = next((ms.path for p in r.pecas for ms in p.trilhas
                        if ms.origem == "biblioteca" and ms.path), None)
         self._gravar_projeto(pf.model_copy(update={"musica": musica}))
@@ -309,6 +313,68 @@ class PipelineFormatura(Pipeline):
         safe_write_text(Path(self.p.analysis_dir) / ARQ_INTEGRA, plano.model_dump_json(indent=1), self.s)
         return plano
 
+    # ------------------------------------------------------------ acabamento dos clipes
+    def _medidas_clipes(self, rels: set[str]) -> dict:
+        """Medidas de imagem (brilho, nitidez, movimento) de cada vídeo usado, pelo proxy;
+        guardadas em ANALISE/medidas_clipes.json para o próximo ajuste."""
+        import numpy as np
+
+        from roteiro_ia.areas.formatura.colacao.defeitos import Amostras
+        arq = Path(self.p.analysis_dir) / "medidas_clipes.json"
+        try:
+            cache = json.loads(arq.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+        mudou = False
+        out: dict = {}
+        for rel in sorted(rels):
+            if rel not in cache:
+                m = self.db.media_by_rel(rel)
+                proxy = self.db.proxy_for(m.id) if m is not None else None
+                if not proxy or not Path(proxy).is_file():
+                    continue
+                try:
+                    a = medir(Path(proxy))
+                except RuntimeError as e:
+                    _log.warning("Não consegui medir %s: %s", rel, e)
+                    continue
+                cache[rel] = {"brilho": [round(x, 2) for x in a.brilho.tolist()],
+                              "nitidez": [round(x, 2) for x in a.nitidez.tolist()],
+                              "diferenca": [round(x, 2) for x in a.diferenca.tolist()]}
+                mudou = True
+            d = cache[rel]
+            out[rel] = Amostras(np.array(d["brilho"]), np.array(d["nitidez"]), np.array(d["diferenca"]))
+        if mudou:
+            safe_write_text(arq, json.dumps(cache), self.s)
+        return out
+
+    def _acabar(self, r: Roteiro) -> Roteiro:
+        """Cortes na batida e cenas estáveis (sem chicote/desfoque, câmera parada nas bordas);
+        o roteiro acabado é gravado como o mais recente."""
+        from roteiro_ia.premiere.fcpxml import _seq_rate
+        medias = {m.rel_path: m for m in self.db.list_media()}
+        usadas = {s.rel_path for p in r.pecas for s in [p.abertura, *p.desenvolvimento, p.gancho]
+                  if s is not None and s.rel_path in medias}
+        if not usadas:
+            return r
+        medidas = self._medidas_clipes(usadas)
+        duracoes = {rel: medias[rel].duration_s for rel in usadas}
+        rate = _seq_rate([m for m in medias.values() if m.kind == "video" and m.role != Role.ignorar])
+        idx = self._index()
+        for p in r.pecas:
+            ms = next((t for t in p.trilhas if t.origem == "biblioteca" and t.path), None)
+            track = idx.get(ms.path) if ms is not None else None
+            if track is not None and not track.beats_s:
+                track = None
+            inicio = (ms.trecho_inicio_s or 0.0) if ms is not None else 0.0
+            padrao = ms.padrao_corte if ms is not None else "misto"
+            r.alertas.extend(acabar_peca(p, track, inicio, padrao, medidas, duracoes, rate))
+            if track is None:
+                r.alertas.append(f"{p.titulo}: sem batidas da música no índice; cortes sem "
+                                 "alinhamento ao ritmo.")
+        self.db.add_roteiro(r.model_dump_json())
+        return r
+
     def _roteiro_clipes(self, plano: PlanoIntegra) -> None:
         """Roteiro da abertura e do encerramento; uma falha comum não derruba a íntegra."""
         pf = self.projeto()
@@ -321,9 +387,10 @@ class PipelineFormatura(Pipeline):
         pasta = self.req.pasta_musicas or pasta_musicas_padrao(self._base, self.req.area)
         ctx = contexto_abertura_encerramento(pf, carregar(self._base, pf.formatura_id), partes, data)
         try:
-            generate_roteiro(self.db, self._client(), IndiceFiltrado(self._index(), Path(pasta)),
-                             self._perfil(), model, None, {"trailer", "teaser"},
-                             pedido_ajuste=self._pedido, contexto=ctx)
+            r = generate_roteiro(self.db, self._client(), IndiceFiltrado(self._index(), Path(pasta)),
+                                 self._perfil(), model, None, {"trailer", "teaser"},
+                                 pedido_ajuste=self._pedido, contexto=ctx)
+            self._acabar(r)
             plano.clipes = True
         except QuotaPaused:
             raise
