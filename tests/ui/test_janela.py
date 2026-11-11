@@ -56,7 +56,9 @@ def test_tema_carrega_do_pacote():
 
 def test_janela_abre_e_iniciar_espera_pasta_valida(janela, evento, tmp_path):
     pj = janela.projeto
-    assert janela.minimumWidth() == 1100 and janela.minimumHeight() == 720
+    tela = janela.screen().availableGeometry()  # o mínimo nunca passa da tela
+    assert janela.minimumWidth() == min(1100, tela.width())
+    assert janela.minimumHeight() == min(720, tela.height())
     assert not pj.btn_iniciar.isEnabled()
     ruim = tmp_path / "R" / "CASAMENTO SEM DATA"
     ruim.mkdir()

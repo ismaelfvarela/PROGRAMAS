@@ -2,8 +2,8 @@
 de pastas da Fokuss e, com o roteiro pronto, puxar o XML para dentro dele.
 
 Padrão de pastas do projeto (bins): COISAS, CREDITOS, <peças>, SEQUENCIA, TRILHA e VÍDEOS (uma
-subpasta por pasta de câmera/áudio do evento). <peças> é EPS no Casamento e PARTES DA COLAÇÃO na
-Formatura.
+subpasta por pasta de câmera/áudio do evento). <peças> é EPS no Casamento; na Formatura, CLIPES
+(oficina, feira…) ou PARTES DA COLAÇÃO (colação).
 
 O pedido ao painel (`pedido_premiere.json` na pasta do sistema) diz o que fazer: "abrir" (cria o
 projeto com as pastas, ou só abre) ou "puxar" (importa as mídias e as timelines do XML)."""
@@ -24,7 +24,9 @@ PASTAS_FIXAS = ("COISAS", "CREDITOS")
 PASTA_SEQUENCIA = "SEQUENCIA"
 PASTA_TRILHA = "TRILHA"
 PASTA_VIDEOS = "VÍDEOS"
-PASTA_PECAS = {"casamento": "EPS", "formatura": "PARTES DA COLAÇÃO"}
+PASTA_PECAS = {"casamento": "EPS", "formatura": "CLIPES"}
+# projeto vazio do Premiere 2024: o painel copia e abre quando o "criar projeto" do Premiere falha
+MODELO_VAZIO = Path(__file__).with_name("projeto_vazio.prproj")
 JOB = "job.json"
 ULTIMO_JOB = "ultimo_job.json"
 PEDIDO = "pedido_premiere.json"
@@ -79,7 +81,7 @@ def _gravar(p: EventPaths, s: Settings, job: dict) -> Path:
 
 
 def write_job(p: EventPaths, s: Settings, xml_path: Path | None, db: ProjectDB | None = None,
-              area: str = "casamento") -> Path:
+              area: str = "casamento", pecas: str | None = None) -> Path:
     """Grava ANALISE\\job.json e a cópia <system_dir>\\ultimo_job.json (UTF-8, caminhos
     absolutos). Sem `db`, abre o banco do evento (se existir) só para listar mídias e proxies.
     Campos que outras áreas acrescentam (ex.: entregas e cartela da Formatura) são mantidos;
@@ -100,11 +102,13 @@ def write_job(p: EventPaths, s: Settings, xml_path: Path | None, db: ProjectDB |
         "prproj": _abs(p.prproj_path),
         "backup_dir": _abs(p.backup_dir),
         "export_dir": _abs(p.export_dir),
-        "pastas": {"fixas": list(PASTAS_FIXAS), "pecas": pasta_pecas(area),
+        "pastas": {"fixas": list(PASTAS_FIXAS), "pecas": pecas or pasta_pecas(area),
                    "sequencia": PASTA_SEQUENCIA, "trilha": PASTA_TRILHA, "videos": PASTA_VIDEOS},
         "midias": _do_banco(p, s, db, _midias),
         "proxies": _do_banco(p, s, db, _proxies),
     })
+    if MODELO_VAZIO.is_file():
+        job["modelo_vazio"] = str(MODELO_VAZIO)
     return _gravar(p, s, job)
 
 

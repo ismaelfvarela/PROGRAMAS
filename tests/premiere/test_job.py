@@ -99,7 +99,7 @@ def test_job_da_formatura_e_campos_extras_mantidos(tmp_path):
          "cartela": {"mogrt": "c.mogrt"}}), encoding="utf-8")
     out = write_job(p, s, None, area="formatura")
     job = json.loads(out.read_text(encoding="utf-8"))
-    assert job["pastas"]["pecas"] == "PARTES DA COLAÇÃO" and job["area"] == "formatura"
+    assert job["pastas"]["pecas"] == "CLIPES" and job["area"] == "formatura"  # colação: entrega.py
     assert job["xml"] == str(xml)  # sem XML novo, mantém o que já havia
     assert job["entregas"] and job["cartela"] == {"mogrt": "c.mogrt"}
 

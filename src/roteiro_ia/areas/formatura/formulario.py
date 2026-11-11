@@ -430,6 +430,10 @@ class FormularioFormatura(FormularioEvento):
             cidade=self.edit_cidade.text().strip() or None if not clipe else None,
             turmas_colacao=[tuple(t) for t in turmas] if not clipe else [])
 
+    def pasta_pecas(self) -> str:
+        """Pasta das timelines no projeto do Premiere."""
+        return "PARTES DA COLAÇÃO" if self.grupo() == "colacao" else "CLIPES"
+
     def build_request(self) -> RequestFormatura:
         base = super().build_request()
         campos = {f.name: getattr(base, f.name) for f in dataclasses.fields(ProjectRequest)}
