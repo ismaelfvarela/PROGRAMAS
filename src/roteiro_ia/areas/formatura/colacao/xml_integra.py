@@ -13,7 +13,7 @@ from roteiro_ia.areas.formatura.colacao.plano import ParteIntegra, PlanoIntegra,
 from roteiro_ia.db import ProjectDB
 from roteiro_ia.models import MediaInfo, Role
 from roteiro_ia.areas.formatura.colacao.clipes import LOGO_S, nomes_clipes
-from roteiro_ia.premiere.fcpxml import (AUDIO_TRACKS, DEFAULT_RATE, _clipitem, _Ctx,
+from roteiro_ia.premiere.fcpxml import (Formato, formato_do_projeto, AUDIO_TRACKS, DEFAULT_RATE, _clipitem, _Ctx,
                                         _fill_files, _frames, _gain_level, _marker,
                                         _media_src, _place_audio, _rate_el, _seq_rate, _Src, _sub,
                                         build_sequence)
@@ -35,7 +35,9 @@ def nome_sequencia(p: ParteIntegra) -> str:
     return f"{p.numero:02d} - {p.nome}"
 
 
-def _nova_sequencia(nome: str, rate) -> tuple[ET.Element, ET.Element, ET.Element, ET.Element]:
+def _nova_sequencia(nome: str, rate, fmt: Formato | None = None
+                    ) -> tuple[ET.Element, ET.Element, ET.Element, ET.Element]:
+    fmt = fmt or Formato()
     seq = ET.Element("sequence", id="seq-" + nome.replace(" ", "_"))
     _sub(seq, "name", nome)
     dur = _sub(seq, "duration", 0)
@@ -49,19 +51,19 @@ def _nova_sequencia(nome: str, rate) -> tuple[ET.Element, ET.Element, ET.Element
     video = _sub(media, "video")
     sc = _sub(_sub(video, "format"), "samplecharacteristics")
     _rate_el(sc, rate)
-    for tag, val in (("width", 1920), ("height", 1080), ("anamorphic", "FALSE"),
+    for tag, val in (("width", fmt.width), ("height", fmt.height), ("anamorphic", "FALSE"),
                      ("pixelaspectratio", "square"), ("fielddominance", "none")):
         _sub(sc, tag, val)
     audio = _sub(media, "audio")
     _sub(audio, "numOutputChannels", 2)
     af = _sub(_sub(audio, "format"), "samplecharacteristics")
     _sub(af, "depth", 16)
-    _sub(af, "samplerate", 48000)
+    _sub(af, "samplerate", fmt.samplerate)
     return seq, video, audio, dur
 
 
 class _Montador:
-    def __init__(self, db: ProjectDB, source_root: Path):
+    def __init__(self, db: ProjectDB, source_root: Path, formato: Formato | None = None):
         self.db, self.root, self.ctx = db, Path(source_root), _Ctx()
         self.medias = db.list_media()
         self.syncs = {m.id: db.get_sync(m.id) for m in self.medias}
@@ -71,7 +73,8 @@ class _Montador:
                            key=lambda m: self.syncs[m.id].timeline_start_s)
         self.isos = [m for m in sinc if m.role == Role.camera and m.kind == "video"]
         self.gravadores = [m for m in sinc if m.role == Role.audio_ambiente]
-        self.rate = _seq_rate(self.pgms) if self.pgms else DEFAULT_RATE
+        self.formato = formato or Formato(rate=_seq_rate(self.pgms) if self.pgms else DEFAULT_RATE)
+        self.rate = self.formato.rate
 
     def midia(self, rel: str) -> MediaInfo | None:
         return self.por_rel.get(rel.casefold())
@@ -91,7 +94,7 @@ class _Montador:
 
     def parte(self, p: ParteIntegra) -> ET.Element:
         nome = nome_sequencia(p)
-        seq, video, audio, dur_el = _nova_sequencia(nome, self.rate)
+        seq, video, audio, dur_el = _nova_sequencia(nome, self.rate, self.formato)
         v_tracks = [ET.Element("track")]
         a_tracks = {t: ET.Element("track") for t in AUDIO_TRACKS}
         marcadores: list[tuple[str, str, int, int | None]] = []
@@ -215,7 +218,9 @@ def _logo_no_fim(seq: ET.Element, ctx: _Ctx, logo: str | None) -> _Src | None:
                 "Formaturas… e reprocesse, ou coloque o logo à mão.", fim)
         return None
     rate = _rate_da_sequencia(seq)
-    src = _Src("file-logo", Path(logo), LOGO_S, rate, (1920, 1080), 0)
+    sc = seq.find("media/video/format/samplecharacteristics")
+    tam = (int(sc.findtext("width") or 1920), int(sc.findtext("height") or 1080)) if sc is not None else (1920, 1080)
+    src = _Src("file-logo", Path(logo), LOGO_S, rate, tam, 0)
     track = seq.find("media/video/track")
     ci = _clipitem(track, ctx, src, Path(logo).name, fim, fim + _frames(LOGO_S, rate), 0.0,
                    LOGO_S, rate)
@@ -234,9 +239,10 @@ class _SemIndice:
 def build_xml_integra(plano: PlanoIntegra, db: ProjectDB, source_root: Path,
                       abertura: Piece | None = None, encerramento: Piece | None = None,
                       idx=None, musicas: dict[str, str] | None = None,
-                      logo: str | None = None) -> str:
+                      logo: str | None = None, formato: Formato | None = None) -> str:
     """Partes da íntegra; com `abertura`/`encerramento`, os clipes vêm antes e depois delas."""
-    mt = _Montador(db, source_root)
+    # timelines no formato da câmera (resolução, quadros e áudio da maioria dos vídeos)
+    mt = _Montador(db, source_root, formato or formato_do_projeto(db, source_root))
     root = ET.Element("xmeml", version="4")
     project = _sub(root, "project")
     _sub(project, "name", "ROTEIRO IA")
@@ -248,12 +254,13 @@ def build_xml_integra(plano: PlanoIntegra, db: ProjectDB, source_root: Path,
     idx = idx or _SemIndice()
     musicas = musicas or {}
     if abertura is not None:
-        integra.append(build_sequence(abertura, db, idx, musicas, mt.root, mt.ctx, nome_ab))
+        integra.append(build_sequence(abertura, db, idx, musicas, mt.root, mt.ctx, nome_ab,
+                                      mt.formato))
     for p in plano.partes:
         integra.append(mt.parte(p))
     logo_src = None
     if encerramento is not None:
-        seq = build_sequence(encerramento, db, idx, musicas, mt.root, mt.ctx, nome_enc)
+        seq = build_sequence(encerramento, db, idx, musicas, mt.root, mt.ctx, nome_enc, mt.formato)
         logo_src = _logo_no_fim(seq, mt.ctx, logo)
         integra.append(seq)
     _fill_files(root, mt.ctx)
