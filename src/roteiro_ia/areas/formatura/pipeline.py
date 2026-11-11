@@ -13,7 +13,10 @@ from roteiro_ia.areas.formatura.cartela import (campos_cartela, colocar_cartela,
                                                 job_cartela, tamanho_da_sequencia)
 from roteiro_ia.areas.formatura.cartela_modelo import carregar_cartela_modelo, estudar_cartela
 from roteiro_ia.areas.formatura.acabamento import Voz, acabar_peca
+from roteiro_ia.areas.formatura.costura import montar_narrativa
 from roteiro_ia.areas.formatura.mixagem import mixar
+from roteiro_ia.areas.formatura.narrativa import (MIN_PALAVRAS_VIDEO, MAX_FRASES, escolher_narrativa,
+                                                 frases_do_video)
 from roteiro_ia.areas.formatura.movimento import Medidas, medir_camera
 from roteiro_ia.areas.formatura.ajustes import carregar_ajustes, modelos_do_ano
 from roteiro_ia.areas.formatura.modelos import carregar_perfil_ano, estudar_modelos
@@ -42,7 +45,7 @@ from roteiro_ia.gemini.client import QuotaPaused
 from roteiro_ia.controle import Interrompido
 from roteiro_ia.pipeline import FALHAS_PREFIX, Pipeline, PipelineError, music_paths
 from roteiro_ia.areas.formatura.formato import formato_da_camera_principal
-from roteiro_ia.premiere.fcpxml import build_xml, write_xml
+from roteiro_ia.premiere.fcpxml import _Ctx, _media_src, build_xml, write_xml
 from roteiro_ia.premiere.job import write_job
 from roteiro_ia.report.pdf import html_to_pdf
 from roteiro_ia.safety import safe_mkdir, safe_write_text
@@ -419,6 +422,53 @@ class PipelineFormatura(Pipeline):
             return out
         return viz
 
+    def _alvo_s(self, p) -> float:
+        pf = self.projeto()
+        minutos = pf.duracao_min or INFO_TIPO[pf.tipo].duracao_min
+        if minutos:
+            return minutos * 60
+        return sum(s.end_s - s.start_s for s in [p.abertura, *p.desenvolvimento, p.gancho]
+                   if s is not None)
+
+    def _narrativa(self, p, medias: dict[str, MediaInfo], palavras) -> list:
+        """Fala costurada dos alunos (narrativa.py): todas as falas dos vídeos com depoimento
+        vão para o Gemini (texto), que escolhe, resume e ordena. Vazio: usa as falas do roteiro."""
+        por_id = {m.id: m for m in medias.values()}
+        com_fala: set[str] = {s.rel_path for s in [p.abertura, *p.desenvolvimento, p.gancho]
+                              if s is not None and s.fala}
+        quem: dict[str, list[str]] = {}
+        for seg in self.db.list_segments():
+            m = por_id.get(seg.media_id)
+            a = self.db.get_analysis(seg.id) if m is not None else None
+            if a is None:
+                continue
+            if a.falas_chave:
+                com_fala.add(m.rel_path)
+            quem.setdefault(m.rel_path, []).append(a.descricao)
+        frases = []
+        for rel in sorted(com_fala):
+            m = medias.get(rel)
+            if m is None or m.kind != "video" or m.role == Role.ignorar:
+                continue
+            ws = palavras(rel)
+            if len(ws) < MIN_PALAVRAS_VIDEO:
+                continue
+            frases += frases_do_video(rel, ws, len(frases) + 1)
+        if not frases:
+            return []
+        frases = frases[:MAX_FRASES]
+        pf = self.projeto()
+        contexto = " — ".join(x for x in (INFO_TIPO[pf.tipo].nome, pf.curso, pf.turma) if x)
+        descr = {rel: " / ".join(quem.get(rel, [])[:2])[:200]
+                 for rel in dict.fromkeys(f.rel_path for f in frases)}
+        _, model = self._models()
+        self._emit("roteiro", f"Compondo a fala dos alunos ({len(frases)} frases)…", 0.9)
+        blocos, alertas = escolher_narrativa(self._client(), model, frases, descr, contexto,
+                                             self._alvo_s(p), self._pedido)
+        for a in alertas:
+            self._emit("roteiro", a, 0.9)
+        return blocos
+
     def _extras(self, medias: dict[str, MediaInfo]) -> list[SceneRef]:
         """Trechos do material sem fala e de boa qualidade (análise do Gemini): cobertura extra
         para as falas quando as cenas do roteiro não bastam."""
@@ -462,9 +512,15 @@ class PipelineFormatura(Pipeline):
                 track = None
             inicio = (ms.trecho_inicio_s or 0.0) if ms is not None else 0.0
             padrao = ms.padrao_corte if ms is not None else "1-3"
-            alertas, vz = acabar_peca(p, track, inicio, padrao, medir_rel, duracoes, rate,
-                                      palavras=palavras, vizinhos=self._vizinhos(medias),
-                                      extras=extras)
+            blocos = [] if self._colacao() else self._narrativa(p, medias, palavras)
+            if blocos:
+                alertas, vz = montar_narrativa(p, track, inicio, padrao, medir_rel, duracoes, rate,
+                                               blocos, self._alvo_s(p),
+                                               vizinhos=self._vizinhos(medias), extras=extras)
+            else:
+                alertas, vz = acabar_peca(p, track, inicio, padrao, medir_rel, duracoes, rate,
+                                          palavras=palavras, vizinhos=self._vizinhos(medias),
+                                          extras=extras)
             r.alertas.extend(alertas)
             vozes[_chave(p)] = {"cenas": _assinatura(p), "vozes": [v.model_dump() for v in vz]}
             if track is None:
@@ -494,7 +550,15 @@ class PipelineFormatura(Pipeline):
             ok = p is not None and item.get("cenas") == _assinatura(p)
             por_seq[nome] = [Voz(**v) for v in item.get("vozes", [])] if ok else []
         xml_path = Path(self.p.analysis_dir) / f"{self.p.event_name} - PREMIERE.xml"
-        xml, alertas = mixar(xml_path.read_text(encoding="utf-8"), por_seq)
+        medias = {m.rel_path: m for m in self.db.list_media()}
+        rate = formato_da_camera_principal(self.db, self.source, self.projeto().funcoes,
+                                           sondar=lambda _p: None).rate
+        ctx = _Ctx()
+
+        def fonte(rel: str):
+            m = medias.get(rel)
+            return _media_src(m, ctx, self.source, rate) if m is not None else None
+        xml, alertas = mixar(xml_path.read_text(encoding="utf-8"), por_seq, fontes=fonte)
         safe_write_text(xml_path, xml, self.s)
         for a in alertas:
             self._emit("premiere", a, 1.0)
