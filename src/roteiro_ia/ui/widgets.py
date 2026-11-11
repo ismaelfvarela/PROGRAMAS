@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea, QTableWidget,
@@ -457,6 +457,13 @@ class RolagemVertical(QScrollArea):
         self.viewport().setAutoFillBackground(False)
         self.setObjectName('rolagem')
         self.setStyleSheet('QScrollArea#rolagem { background: transparent; }')
+        conteudo.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        # conteúdo mudou de tamanho (apareceu um aviso, um botão…): a coluna recalcula a largura
+        if obj is self.widget() and ev.type() == QEvent.LayoutRequest:
+            self.updateGeometry()
+        return super().eventFilter(obj, ev)
 
     def minimumSizeHint(self):
         base = super().minimumSizeHint()

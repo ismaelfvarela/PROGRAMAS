@@ -6,7 +6,7 @@ import dataclasses
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QScrollArea, QSizePolicy,
                                QVBoxLayout, QCheckBox, QComboBox, QDoubleSpinBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
@@ -43,6 +43,15 @@ class _RolagemVertical(QScrollArea):
     def __init__(self):
         super().__init__()
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def setWidget(self, w):
+        super().setWidget(w)
+        w.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if obj is self.widget() and ev.type() == QEvent.LayoutRequest:
+            self.updateGeometry()  # conteúdo mudou: a largura pedida é recalculada
+        return super().eventFilter(obj, ev)
 
     def minimumSizeHint(self):
         base = super().minimumSizeHint()
