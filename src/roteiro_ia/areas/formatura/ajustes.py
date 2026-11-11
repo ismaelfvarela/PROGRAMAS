@@ -17,6 +17,7 @@ ARQUIVO = "_ajustes.json"
 class ModeloAno(BaseModel):
     pasta: str | None = None   # vídeos modelo do ano (estudo de estilo)
     mogrt: str | None = None   # cartela editável do ano (o painel preenche os textos)
+    fundo_cartela: str | None = None  # imagem de fundo da cartela (sem MOGRT)
 
 
 class AjustesFormatura(BaseModel):

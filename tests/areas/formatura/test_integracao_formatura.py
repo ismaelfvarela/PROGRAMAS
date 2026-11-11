@@ -50,7 +50,8 @@ class FakeGemini:
                 sugestao_lembranca=False) for i in ids])
         if schema is Roteiro:
             def ref(rel, a, b):
-                return SceneRef(rel_path=rel, start_s=a, end_s=b, descricao="cena", fala=None, motivo=None)
+                return SceneRef(rel_path=rel, start_s=a, end_s=b, descricao="cena", fala=None, motivo=None,
+                                lembranca=True)
             ms = MusicSuggestion(origem="biblioteca", path=self.track, titulo="pop", bpm=None,
                                  clima="alegre", motivo="m", padrao_corte="2-4", exige_licenca=False)
             pc = Piece(tipo="episodio", numero=1, titulo="Oficina — Eletrônica T106", tema="oficina",
@@ -105,3 +106,9 @@ def test_oficina_completa(tmp_path, monkeypatch):
     assert "cartela.png" in texto and "<name>CARTELA</name>" in texto
     assert (p.analysis_dir / "cartela.png").is_file()
     assert carregar_projeto(p.analysis_dir).musica == track
+    from roteiro_ia.db import ProjectDB
+    with ProjectDB(p.db_path, s) as db:
+        final = Roteiro.model_validate_json(db.latest_roteiro())
+    cenas = [final.pecas[0].abertura, *final.pecas[0].desenvolvimento]
+    assert not any(c.lembranca for c in cenas)  # acabamento: clipe sem flashback
+    assert (p.analysis_dir / "medidas_clipes.json").is_file()  # cenas medidas pelo proxy

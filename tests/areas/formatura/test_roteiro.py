@@ -43,7 +43,8 @@ def test_contexto_clipe_oficina(env):
     for trecho in ("UMA peça", "240 s", "Escola X", "Eletrônica", "T106", "2026/2", "cartela",
                    "chicote", "desfocad", "mal enquadrad", "comercial", 'origem "popular"',
                    'numero 1', "gancho null", "Oficina — Eletrônica T106", "solda",
-                   "M:\\pop\\a.mp3", "depoimentos", "O assunto vale mais que a técnica"):
+                   "M:\\pop\\a.mp3", "depoimentos", "O assunto vale mais que a técnica",
+                   "batida", "terminar o enquadramento", "lembranca sempre false"):
         assert trecho in txt, trecho
     assert "em série" not in txt and "IDEIA DA ORIGINAL" not in txt
 

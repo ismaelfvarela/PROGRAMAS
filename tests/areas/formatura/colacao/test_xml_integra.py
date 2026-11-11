@@ -183,3 +183,14 @@ def test_entregas_com_clipes(tmp_path, db):
     job = json.loads(out.read_text(encoding="utf-8"))
     assert [e["sequencia"] for e in job["entregas"]] == [
         "00 - Abertura", "01 - Abertura do Mestre", "02 - Hino Nacional", "03 - Encerramento"]
+
+
+def test_integra_no_formato_da_camera(db, tmp_path):
+    from roteiro_ia.premiere.fcpxml import Formato
+    fmt = Formato(3840, 2160, (30000, 1001), 44100)
+    seqs = _seqs(build_xml_integra(PLANO, db, tmp_path, abertura=_peca("trailer"), idx=_Idx(),
+                                   musicas={}, formato=fmt))
+    for nome, seq in seqs.items():
+        sc = seq.find("media/video/format/samplecharacteristics")
+        assert (sc.findtext("width"), sc.findtext("height")) == ("3840", "2160"), nome
+        assert seq.findtext("media/audio/format/samplecharacteristics/samplerate") == "44100", nome
