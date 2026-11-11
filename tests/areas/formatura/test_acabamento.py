@@ -69,3 +69,26 @@ def test_acabar_peca_corta_na_batida_e_desliga_lembranca():
     assert not (1.0 < p.abertura.end_s and p.abertura.start_s < 3.5)  # fugiu do movimento
     assert all(0 <= c.start_s < c.end_s <= duracoes[c.rel_path] for c in cenas)
     assert isinstance(alertas, list)
+
+
+def test_plano_sem_fala_longo_e_encurtado_e_fala_pode_durar():
+    beats = [i * 0.5 for i in range(400)]
+    t = TrackInfo(path="m.mp3", bpm=120, beats_s=beats, downbeats_s=beats[::4], energy=[],
+                  duration_s=200, has_vocals=False, perfil="intensa", mtime=1.0)
+    longo = _ref("A\\a.mp4", 0.0, 15.0)
+    fala = _ref("A\\b.mp4", 0.0, 10.0)
+    fala.fala = "eu aprendi muito aqui"
+    p = Piece(tipo="episodio", numero=1, titulo="O", tema="t", abertura=longo, desenvolvimento=[fala],
+              gancho=None, gancho_resolve_em=None, curva_emocao=[5], duracao_estimada_s=25,
+              misturas=[], trilhas=[], termos_musicbed=[])
+    acabar_peca(p, t, 0.0, "misto", {}, {"A\\a.mp4": 60.0, "A\\b.mp4": 60.0}, rate=(30, 1))
+    assert p.abertura.end_s - p.abertura.start_s <= 5.0 + 1e-6
+    assert p.desenvolvimento[0].end_s - p.desenvolvimento[0].start_s >= 9.5
+
+
+def test_procura_mais_longe_quando_perto_esta_ruim():
+    a = _am(160, mexe=[(0, 50)])  # 0–12,5 s mexendo
+    ini = melhor_janela(a, FPS, 5.0, 2.0, 0.0, 40.0)
+    from roteiro_ia.areas.formatura.acabamento import _janela
+    longe = _janela(a, FPS, 5.0, 2.0, 40.0)
+    assert longe >= 12.5 and custo_janela(a, FPS, longe, 2.0) < custo_janela(a, FPS, ini, 2.0)

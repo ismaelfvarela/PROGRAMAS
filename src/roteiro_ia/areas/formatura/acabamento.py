@@ -18,6 +18,9 @@ from roteiro_ia.script.generate import Piece
 MIN_CENA_S = 1.0
 BORDA_S = 0.5          # começo e fim do plano: a câmera precisa estar parada
 BUSCA_S = 3.0          # até onde a cena pode deslizar dentro do vídeo
+BUSCA_LONGE_S = 8.0    # se perto não há trecho limpo, procura mais longe no mesmo vídeo
+MAX_SEM_FALA_S = 5.0   # plano sem fala: montagem dinâmica (os modelos cortam a cada ~2 s)
+MAX_COM_FALA_S = 14.0  # depoimento/fala pode durar mais
 PESO_DISTANCIA = 0.5   # preferir ficar perto do trecho que o roteiro escolheu
 PESO_RUIM = 50.0
 PESO_MOVIMENTO = 0.3
@@ -68,6 +71,16 @@ def melhor_janela(a: Amostras, fps: float, ref_ini: float, dur: float, lim0: flo
     return melhor
 
 
+def _janela(a: Amostras, fps: float, ref: float, dur: float, dur_midia: float) -> float:
+    """Melhor janela perto do trecho escolhido; se perto está tudo ruim, olha mais longe."""
+    ini = melhor_janela(a, fps, ref, dur, 0.0, dur_midia)
+    if custo_janela(a, fps, ini, dur) > PESO_RUIM / 2:
+        longe = melhor_janela(a, fps, ref, dur, 0.0, dur_midia, busca_s=BUSCA_LONGE_S)
+        if custo_janela(a, fps, longe, dur) < custo_janela(a, fps, ini, dur) * 0.6:
+            return longe
+    return ini
+
+
 def batidas_permitidas(track: TrackInfo, inicio: float, padrao: str) -> list[float]:
     """Batidas na linha do tempo (a música começa no segundo `inicio` dela). 1-3: 1º e 3º
     tempos do compasso; 2-4: 2º e 4º; senão, todas."""
@@ -103,7 +116,8 @@ def acabar_peca(p: Piece, track: TrackInfo | None, inicio: float, padrao: str,
         s.lembranca = False
         a = medidas.get(s.rel_path)
         dur_midia = duracoes.get(s.rel_path)
-        desejada = max(MIN_CENA_S, s.end_s - s.start_s)
+        teto = MAX_COM_FALA_S if s.fala else MAX_SEM_FALA_S
+        desejada = min(max(MIN_CENA_S, s.end_s - s.start_s), teto)
         maxima = dur_midia if dur_midia else desejada * 3
         alvo = t + desejada
         cands = [b for b in perm if b >= t + MIN_CENA_S - 1e-6 and b - t <= maxima + 1e-6]
@@ -114,7 +128,7 @@ def acabar_peca(p: Piece, track: TrackInfo | None, inicio: float, padrao: str,
                 d = b - t
                 if a is None or not dur_midia:
                     return abs(b - alvo)
-                ini = melhor_janela(a, fps_medida, s.start_s, d, 0.0, dur_midia)
+                ini = _janela(a, fps_medida, s.start_s, d, dur_midia)
                 return abs(b - alvo) * 2 + custo_janela(a, fps_medida, ini, d)
             fim = min(perto, key=nota)
         else:
@@ -124,7 +138,7 @@ def acabar_peca(p: Piece, track: TrackInfo | None, inicio: float, padrao: str,
             f1 = f0 + 1
         dur = (f1 - f0) / fps_seq
         if a is not None and dur_midia:
-            ini = melhor_janela(a, fps_medida, s.start_s, dur, 0.0, dur_midia)
+            ini = _janela(a, fps_medida, s.start_s, dur, dur_midia)
             if custo_janela(a, fps_medida, ini, dur) > PESO_RUIM / 2:
                 alertas.append(f"{s.rel_path}: sem trecho totalmente limpo perto de "
                                f"{s.start_s:.1f} s; confira a cena.")
