@@ -6,7 +6,7 @@ import dataclasses
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QScrollArea, QSizePolicy,
                                QVBoxLayout, QCheckBox, QComboBox, QDoubleSpinBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
@@ -43,6 +43,15 @@ class _RolagemVertical(QScrollArea):
     def __init__(self):
         super().__init__()
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def setWidget(self, w):
+        super().setWidget(w)
+        w.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if obj is self.widget() and ev.type() == QEvent.LayoutRequest:
+            self.updateGeometry()  # conteúdo mudou: a largura pedida é recalculada
+        return super().eventFilter(obj, ev)
 
     def minimumSizeHint(self):
         base = super().minimumSizeHint()
@@ -429,6 +438,10 @@ class FormularioFormatura(FormularioEvento):
             local=self.edit_local.text().strip() or None if not clipe else None,
             cidade=self.edit_cidade.text().strip() or None if not clipe else None,
             turmas_colacao=[tuple(t) for t in turmas] if not clipe else [])
+
+    def pasta_pecas(self) -> str:
+        """Pasta das timelines no projeto do Premiere."""
+        return "PARTES DA COLAÇÃO" if self.grupo() == "colacao" else "CLIPES"
 
     def build_request(self) -> RequestFormatura:
         base = super().build_request()

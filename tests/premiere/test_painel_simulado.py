@@ -115,3 +115,22 @@ def test_pedidos_um_so_pega_e_grava_o_resultado(tmp_path):
     assert out["chamadas"] == ["puxarRoteiro"]
     assert out["resultado"]["estado"] == "ok" and out["resultado"]["por"] == "servico"
     assert out["velho_ignorado"] and out["desconhecido_ignorado"] and out["lendo_sobrando"] == 0
+
+
+MODELO = r"Y:\AGENTES IA\PROGRAMAÇÃO\src\roteiro_ia\premiere\projeto_vazio.prproj"
+
+
+def test_criar_falhou_usa_o_projeto_vazio_modelo(tmp_path):
+    """O 'criar projeto' do Premiere pode falhar (Unknown error exception): copia o projeto vazio
+    modelo para o lugar e abre (abrir funciona)."""
+    out = rodar(tmp_path, ["abrirProjeto"], job=_job(modelo_vazio=MODELO), novo_falha=True,
+                arquivos=[XML, A1, A2, B1, H4, MODELO])
+    assert out["saidas"][0].startswith("ok|"), out["saidas"][0]
+    assert "a partir do projeto vazio" in out["saidas"][0]
+    assert out["projetos"] == 1 and "EPS/" in out["arvore"]
+
+
+def test_criar_falhou_sem_modelo_explica(tmp_path):
+    out = rodar(tmp_path, ["abrirProjeto"], novo_falha=True)
+    assert out["saidas"][0].startswith("erro|")
+    assert "Unknown error exception" in out["saidas"][0]

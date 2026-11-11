@@ -475,7 +475,9 @@ class ProjetoTab(QWidget):
             return
         agora = datetime.now().replace(microsecond=0)
         try:
-            job = write_job(p, self.s, xml if xml.is_file() else None, area=self.area)
+            # a área pode dizer o nome da pasta das peças (Formatura: CLIPES ou PARTES DA COLAÇÃO)
+            pecas = getattr(self.form, "pasta_pecas", lambda: None)()
+            job = write_job(p, self.s, xml if xml.is_file() else None, area=self.area, pecas=pecas)
             pedir_ao_premiere(self.s, acao, job, agora)
         except Exception as e:  # noqa: BLE001 - disco cheio, sem permissão…
             self.status.banner_erro.mostrar(f"Não consegui preparar o pedido ao Premiere: {e}")

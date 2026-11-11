@@ -92,8 +92,12 @@ class MainWindow(QMainWindow):
         self.s = s
         self.settings_path = Path(settings_path)
         self.setWindowTitle("Roteiro IA — Fokuss")
-        self.setMinimumSize(1100, 720)
-        self.resize(1280, 860)
+        # mínimo e tamanho inicial respeitam a área útil da tela (notebook com zoom do Windows:
+        # uma janela maior que a tela corta a lateral direita e a parte de baixo)
+        tela = self.screen().availableGeometry() if self.screen() is not None else None
+        larg, alt = (tela.width(), tela.height()) if tela is not None else (1280, 860)
+        self.setMinimumSize(min(1100, larg), min(720, alt))
+        self.resize(min(1280, larg), min(860, alt))
         self.runner = Runner(self)
         self.fila = FilaProjetos(self)  # um projeto por vez, de qualquer área
         # Trilhas e Configurações são únicas: mudam de abas junto com a área à vista

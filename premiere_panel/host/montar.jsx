@@ -102,11 +102,23 @@ function _ri_abrir(job, msgs) {
         }
         msgs.push("ok:Projeto aberto: " + job.prproj);
     } else {
-        if (app.newProject(job.prproj) === false) {
-            msgs.push("erro:O Premiere n\u00e3o conseguiu criar o projeto em " + job.prproj + ". Nada foi alterado.");
-            return null;
+        var criado = false, falha = "";
+        try { criado = app.newProject(job.prproj) !== false; } catch (eNovo) { falha = String(eNovo); }
+        if (criado) {
+            msgs.push("ok:Projeto criado: " + job.prproj);
+        } else {
+            // o "criar projeto" do Premiere falha em alguns casos (ex.: chamado pelo servico,
+            // "Unknown error exception"): copia o projeto vazio modelo para o lugar e abre
+            var modelo = job.modelo_vazio ? new File(job.modelo_vazio) : null;
+            if (modelo && modelo.exists && modelo.copy(job.prproj)
+                    && app.openDocument(job.prproj, true, true, true)) {
+                msgs.push("ok:Projeto criado a partir do projeto vazio modelo: " + job.prproj);
+            } else {
+                msgs.push("erro:O Premiere n\u00e3o conseguiu criar o projeto em " + job.prproj
+                    + (falha ? " (" + falha + ")" : "") + ". Nada foi alterado.");
+                return null;
+            }
         }
-        msgs.push("ok:Projeto criado: " + job.prproj);
     }
     proj = _ri_projetoAberto(job.prproj) || app.project;
     return proj;

@@ -54,7 +54,7 @@ Projeto.prototype.importFiles = function (lista, ui, bin) {
 
 var app = {
   projects: [], get project() { return this._ativo || null; },
-  newProject: function (p) { var pr = new Projeto(p); this.projects.push(pr); this._ativo = pr; return true; },
+  newProject: function (p) { if (cen.novo_falha) { throw new Error("Unknown error exception"); } var pr = new Projeto(p); this.projects.push(pr); this._ativo = pr; return true; },
   openDocument: function (p) { var pr = new Projeto(p); this.projects.push(pr); this._ativo = pr; return true; }
 };
 Object.defineProperty(app.projects, "numProjects", { get: function () { return this.length; } });
