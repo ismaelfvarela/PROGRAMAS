@@ -13,7 +13,10 @@ import xml.etree.ElementTree as ET
 from pathlib import PureWindowsPath
 
 from roteiro_ia.areas.formatura.acabamento import Voz
-from roteiro_ia.premiere.fcpxml import AUDIO_TRACKS, _levels, _link, _sub, timebase
+from typing import Callable
+
+from roteiro_ia.premiere.fcpxml import (AUDIO_TRACKS, _define_file, _frames, _levels, _link,
+                                        _master_id, _Src, _sub, timebase)
 
 DB_CAMERA = -25.0
 DB_VOZ = -3.0
@@ -123,8 +126,10 @@ def _abaixar_musica(seq: ET.Element, faixas: list[tuple[int, int]], tracks: dict
 
 
 def _colocar_vozes(root: ET.Element, seq: ET.Element, vozes: list[Voz],
-                   tracks: dict[str, ET.Element], audio: ET.Element) -> list[str]:
+                   tracks: dict[str, ET.Element], audio: ET.Element,
+                   fontes: Callable[[str], _Src | None] | None = None) -> list[str]:
     rate = _rate(seq)
+    definidos = {f.get("id") for f in root.iter("file") if len(f)}
     fps = _fps(rate)
     v1 = seq.find("media/video/track")
     alertas: list[str] = []
@@ -138,16 +143,25 @@ def _colocar_vozes(root: ET.Element, seq: ET.Element, vozes: list[Voz],
         arq = PureWindowsPath(v.rel_path).name
         ini = round(v.inicio_s * fps)
         fim = ini + max(1, round(v.dur_s * fps))
+        src = fontes(v.rel_path) if fontes is not None else None
         base = None
-        for ci in (v1.findall("clipitem") if v1 is not None else []):
-            if ci.findtext("name") == arq and int(ci.findtext("start")) == ini:
+        for ci in root.iter("clipitem"):
+            if ci.findtext("name") == arq and ci.find("file") is not None and (
+                    src is None or ci.find("file").get("id") == src.fid):
                 base = ci
                 break
-        if base is None:
-            alertas.append(f"Voz de {arq} não colocada: a cena do aluno não está mais no começo da fala.")
+        if base is None and src is None:
+            alertas.append(f"Voz de {arq} não colocada: o vídeo não está na timeline.")
             continue
-        fid = base.find("file").get("id")
-        crate = _rate(base)
+        if src is not None:
+            fid, crate = src.fid, src.rate
+            master, dur_txt = _master_id(fid), str(_frames(src.duration_s, src.rate))
+            tb, ntsc = timebase(*crate)
+            tb_txt, ntsc_txt = str(tb), "TRUE" if ntsc else "FALSE"
+        else:
+            fid, crate = base.find("file").get("id"), _rate(base)
+            master, dur_txt = base.findtext("masterclipid"), base.findtext("duration")
+            tb_txt, ntsc_txt = base.findtext("rate/timebase"), base.findtext("rate/ntsc")
         cin = round(v.in_s * _fps(crate))
         cout = cin + (fim - ini) if timebase(*crate) == timebase(*rate) else round(
             (v.in_s + v.dur_s) * _fps(crate))
@@ -155,18 +169,21 @@ def _colocar_vozes(root: ET.Element, seq: ET.Element, vozes: list[Voz],
         for ch in range(2 if _canais(root, fid) >= 2 else 1):
             tr = novas[ch]
             ci = _sub(tr, "clipitem", id=f"voz-{seq.findtext('name').replace(' ', '_')}-{n}-{ch + 1}")
-            _sub(ci, "masterclipid", base.findtext("masterclipid"))
+            _sub(ci, "masterclipid", master)
             _sub(ci, "name", arq)
             _sub(ci, "enabled", "TRUE")
-            _sub(ci, "duration", base.findtext("duration"))
+            _sub(ci, "duration", dur_txt)
             r = _sub(ci, "rate")
-            _sub(r, "timebase", base.findtext("rate/timebase"))
-            _sub(r, "ntsc", base.findtext("rate/ntsc"))
+            _sub(r, "timebase", tb_txt)
+            _sub(r, "ntsc", ntsc_txt)
             _sub(ci, "start", ini)
             _sub(ci, "end", fim)
             _sub(ci, "in", cin)
             _sub(ci, "out", cout)
-            _sub(ci, "file", id=fid)
+            fe = _sub(ci, "file", id=fid)
+            if src is not None and fid not in definidos:
+                _define_file(fe, src)  # o vídeo do aluno pode não estar na imagem: define aqui
+                definidos.add(fid)
             s = _sub(ci, "sourcetrack")
             _sub(s, "mediatype", "audio")
             _sub(s, "trackindex", ch + 1)
@@ -192,8 +209,10 @@ def _colocar_vozes(root: ET.Element, seq: ET.Element, vozes: list[Voz],
     return alertas
 
 
-def mixar(xml: str, vozes_por_seq: dict[str, list[Voz]]) -> tuple[str, list[str]]:
-    """Aplica a mixagem nas sequências de `vozes_por_seq` (nome → vozes, pode ser vazio)."""
+def mixar(xml: str, vozes_por_seq: dict[str, list[Voz]],
+          fontes: Callable[[str], _Src | None] | None = None) -> tuple[str, list[str]]:
+    """Aplica a mixagem nas sequências de `vozes_por_seq` (nome → vozes, pode ser vazio).
+    `fontes`: vídeo do aluno → arquivo, para a voz de um vídeo que não aparece na imagem."""
     cab, corpo = xml.split("\n", 2)[:2], xml.split("\n", 2)[2]
     root = ET.fromstring(corpo)
     alertas: list[str] = []
@@ -207,7 +226,7 @@ def mixar(xml: str, vozes_por_seq: dict[str, list[Voz]]) -> tuple[str, list[str]
             for ci in (tracks[t].findall("clipitem") if t in tracks else []):
                 ci.find("enabled").text = "TRUE"
                 _definir_nivel(ci, nivel(DB_CAMERA))
-        alertas += _colocar_vozes(root, seq, vozes_por_seq[nome], tracks, audio)
+        alertas += _colocar_vozes(root, seq, vozes_por_seq[nome], tracks, audio, fontes)
         _abaixar_musica(seq, _faixas_de_voz(seq), tracks)
         _refazer_links(seq)
     ET.indent(root, space="  ")

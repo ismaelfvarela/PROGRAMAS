@@ -104,7 +104,22 @@ def test_sem_vozes_so_volumes_e_outras_sequencias_intactas():
     assert "keyframe" not in igual and "0.05623" not in igual
 
 
-def test_voz_sem_a_cena_do_aluno_vira_aviso():
-    voz = Voz(inicio_s=3.0, rel_path="A\\aluno.mp4", in_s=10.0, dur_s=2.0)
+def test_voz_de_video_fora_da_timeline_vira_aviso():
+    voz = Voz(inicio_s=3.0, rel_path="A/outro.mp4", in_s=10.0, dur_s=2.0)
     _, alertas = mixar(_xml(), {"EP 01": [voz]})
-    assert alertas and "aluno.mp4" in alertas[0]
+    assert alertas and "outro.mp4" in alertas[0]
+
+
+def test_voz_sem_rosto_entra_com_o_arquivo_definido():
+    from pathlib import Path
+
+    from roteiro_ia.premiere.fcpxml import _Src
+    voz = Voz(inicio_s=3.0, rel_path="A/outro.mp4", in_s=10.0, dur_s=2.0)
+    src = _Src("file-9", Path("Y:/x/A/outro.mp4"), 60.0, (30, 1), (1920, 1080), 2)
+    xml, alertas = mixar(_xml(), {"EP 01": [voz]}, fontes=lambda r: src)
+    assert alertas == []
+    root = ET.fromstring(xml.split(chr(10), 2)[2])
+    vozes = [ci for ci in root.iter("clipitem") if ci.get("id", "").startswith("voz-")]
+    assert len(vozes) == 2 and all(int(ci.findtext("start")) == 90 for ci in vozes)
+    defs = [f for f in root.iter("file") if f.get("id") == "file-9" and len(f)]
+    assert len(defs) == 1 and defs[0].findtext("pathurl")
