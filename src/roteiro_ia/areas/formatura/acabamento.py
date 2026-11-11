@@ -1,89 +1,140 @@
 """Acabamento dos clipes da Formatura, depois do roteiro do Gemini e antes da montagem:
 
-- cada corte cai numa batida da música escolhida (padrão 1-3, 2-4 ou todas as batidas);
-- cada cena é deslizada, dentro do mesmo vídeo, para a janela mais estável: sem chicote,
-  escuro, desfoque ou tremido, e com a câmera parada no começo e no fim (plano que "termina o
-  enquadramento");
+- cada corte cai no compasso da música: tempos 1 e 3 (padrão "1-3", também usado no "misto"),
+  2 e 4 ("2-4") ou só o tempo 1 ("1") — nunca em qualquer batida;
+- cada cena é deslizada, dentro do mesmo vídeo, para o trecho mais limpo: sem tremor de câmera
+  na mão, chicote, escuro ou desfoque, e com a câmera parada no começo e no fim do plano. Se o
+  vídeo inteiro está ruim, a cena é trocada pelo trecho limpo de um vídeo VIZINHO (gravado logo
+  antes ou depois: mesmo assunto);
+- fala do aluno: a frase inteira (pelas palavras da transcrição, sem cortar no meio). O aluno
+  aparece falando no começo e no fim da fala; no meio, outras cenas cobrem a imagem e a voz
+  continua por baixo (a voz vai para a lista `vozes`, montada à parte no XML);
 - nada de "lembrança" (flashback) num clipe.
 
-As medidas de imagem vêm do proxy (colacao.defeitos.medir), no computador, sem Gemini."""
+As medidas de imagem vêm do proxy (movimento.medir_camera), no computador, sem Gemini."""
 from __future__ import annotations
 
-import numpy as np
+from collections import deque
+from typing import Callable
 
-from roteiro_ia.areas.formatura.colacao.defeitos import FPS, Amostras, classificar
-from roteiro_ia.models import TrackInfo
-from roteiro_ia.script.generate import Piece
+import numpy as np
+from pydantic import BaseModel
+
+from roteiro_ia.areas.formatura.movimento import Medidas
+from roteiro_ia.models import TrackInfo, Word
+from roteiro_ia.script.generate import Piece, SceneRef
 
 MIN_CENA_S = 1.0
 BORDA_S = 0.5          # começo e fim do plano: a câmera precisa estar parada
 BUSCA_S = 3.0          # até onde a cena pode deslizar dentro do vídeo
 BUSCA_LONGE_S = 8.0    # se perto não há trecho limpo, procura mais longe no mesmo vídeo
 MAX_SEM_FALA_S = 5.0   # plano sem fala: montagem dinâmica (os modelos cortam a cada ~2 s)
-MAX_COM_FALA_S = 14.0  # depoimento/fala pode durar mais
-PESO_DISTANCIA = 0.5   # preferir ficar perto do trecho que o roteiro escolheu
+MAX_COM_FALA_S = 14.0  # sem transcrição: quanto a fala pode durar
+MAX_VOZ_S = 20.0       # com transcrição: a frase pode crescer até aqui para não ser cortada
+PAUSA_S = 0.5          # silêncio entre palavras que separa uma frase da outra
+RECUAR_S = 2.5         # a frase pode começar até aqui antes do que o roteiro marcou
+AVANCAR_S = 4.0        # e terminar até aqui depois
+MIN_VOZ_S = 1.0        # sobra de fala menor que isto (o resto já foi usado) sai do clipe
+SEG_COBERTURA_S = 3.5  # uma cena de cobertura a cada tantos segundos de fala coberta
+VOZ_ANTES_S = 0.15
+VOZ_DEPOIS_S = 0.3
+VOZ_COBERTA_S = 6.0    # fala a partir desta duração ganha cenas por cima no meio
+CABECA_S = 2.0         # aluno na tela no começo da fala
+RABO_S = 2.0           # e no fim
+PESO_DISTANCIA = 0.3   # preferir ficar perto do trecho que o roteiro escolheu
 PESO_RUIM = 50.0
-PESO_MOVIMENTO = 0.3
-
-def _mascara(a: Amostras, fps: float) -> np.ndarray:
-    """Amostras com defeito (escuro, desfocado, chicote, tremido), calculadas uma vez por vídeo."""
-    m = getattr(a, "_mascara_defeitos", None)
-    if m is None:
-        m = np.zeros(len(a.brilho), dtype=bool)
-        for d in classificar(a, fps):
-            m[max(0, int(d.inicio_s * fps)):int(np.ceil(d.fim_s * fps))] = True
-        a._mascara_defeitos = m
-    return m
+PESO_TREMOR = 10.0
+PESO_BORDA = 3.0
+PESO_MOVIMENTO = 1.0
+BRILHO_ESCURO = 28.0
+NITIDEZ_DESFOCADO = 0.4
+CHICOTE_PX = 6.0       # deslocamento por amostra (160 px de largura, 10 por segundo)
+TREMOR_OK = 0.8
+BORDA_OK = 1.5
 
 
-def custo_janela(a: Amostras, fps: float, ini: float, dur: float) -> float:
-    n = len(a.brilho)
-    if n == 0:
+class Voz(BaseModel):
+    """Áudio de fala que corre por baixo das cenas: começa em `inicio_s` na linha do tempo e
+    toca `dur_s` segundos do arquivo a partir de `in_s`."""
+    inicio_s: float
+    rel_path: str
+    in_s: float
+    dur_s: float
+
+
+# ------------------------------------------------------------------ qualidade da janela
+
+def _idx(m: Medidas, ini: float, dur: float) -> tuple[int, int, int]:
+    n = len(m.brilho)
+    i0 = min(n - 1, max(0, int(round(ini * m.fps))))
+    i1 = min(n, max(i0 + 1, int(round((ini + dur) * m.fps))))
+    k = max(1, int(round(BORDA_S * m.fps)))
+    return i0, i1, k
+
+
+def _partes(m: Medidas, ini: float, dur: float) -> tuple[float, float, float, float, float]:
+    """(fração ruim, fração chicote, tremor médio, movimento nas bordas, movimento médio)."""
+    i0, i1, k = _idx(m, ini, dur)
+    med = float(np.median(m.nitidez)) if len(m.nitidez) else 1.0
+    b, nt = m.brilho[i0:i1], m.nitidez[i0:i1]
+    ruim = float(((b < BRILHO_ESCURO) | (nt < NITIDEZ_DESFOCADO * (med or 1.0))).mean())
+    d = m.desloc[i0:i1]
+    chicote = float((d > CHICOTE_PX).mean())
+    trem = float(m.tremor[i0:i1].mean())
+    bordas = (float(m.desloc[i0:min(i1, i0 + k)].mean())
+              + float(m.desloc[max(i0, i1 - k):i1].mean())) / 2
+    return ruim, chicote, trem, bordas, float(d.mean())
+
+
+def custo_janela(m: Medidas, ini: float, dur: float) -> float:
+    if len(m.brilho) == 0:
         return 0.0
-    i0 = min(n - 1, max(0, int(round(ini * fps))))
-    i1 = min(n, max(i0 + 1, int(round((ini + dur) * fps))))
-    k = max(1, int(round(BORDA_S * fps)))
-    dif = a.diferenca
-    ruim = float(_mascara(a, fps)[i0:i1].mean()) * PESO_RUIM
-    entrada = float(dif[i0:min(i1, i0 + k)].mean())
-    saida = float(dif[max(i0, i1 - k):i1].mean())
-    meio = float(dif[i0:i1].mean()) * PESO_MOVIMENTO
-    return ruim + entrada + saida + meio
+    ruim, chicote, trem, bordas, mov = _partes(m, ini, dur)
+    return ((ruim + chicote) * PESO_RUIM + PESO_TREMOR * trem + PESO_BORDA * bordas
+            + PESO_MOVIMENTO * mov)
 
 
-def melhor_janela(a: Amostras, fps: float, ref_ini: float, dur: float, lim0: float,
-                  lim1: float, busca_s: float = BUSCA_S) -> float:
-    """Início da janela de `dur` segundos mais estável perto de `ref_ini`, dentro de [lim0, lim1]."""
+def limpa(m: Medidas, ini: float, dur: float) -> bool:
+    if len(m.brilho) == 0:
+        return True
+    ruim, chicote, trem, bordas, _ = _partes(m, ini, dur)
+    return ruim == 0 and chicote == 0 and trem <= TREMOR_OK and bordas <= BORDA_OK
+
+
+def melhor_janela(m: Medidas, ref_ini: float, dur: float, lim0: float, lim1: float,
+                  busca_s: float = BUSCA_S, peso_distancia: float = PESO_DISTANCIA) -> float:
+    """Início da janela de `dur` segundos mais limpa perto de `ref_ini`, dentro de [lim0, lim1]."""
     hi = lim1 - dur
     if hi <= lim0:
         return max(0.0, lim0)
     a0, a1 = max(lim0, ref_ini - busca_s), min(hi, ref_ini + busca_s)
     if a1 < a0:
         return min(max(ref_ini, lim0), hi)
-    passo = 1.0 / fps
+    passo = 1.0 / m.fps
     melhor, custo_min = a0, float("inf")
-    c = a0
-    while c <= a1 + 1e-9:
-        custo = custo_janela(a, fps, c, dur) + PESO_DISTANCIA * abs(c - ref_ini)
+    for k in range(int((a1 - a0) / passo + 1e-6) + 1):
+        c = round(a0 + k * passo, 6)
+        custo = custo_janela(m, c, dur) + peso_distancia * abs(c - ref_ini)
         if custo < custo_min:
             melhor, custo_min = c, custo
-        c += passo
     return melhor
 
 
-def _janela(a: Amostras, fps: float, ref: float, dur: float, dur_midia: float) -> float:
-    """Melhor janela perto do trecho escolhido; se perto está tudo ruim, olha mais longe."""
-    ini = melhor_janela(a, fps, ref, dur, 0.0, dur_midia)
-    if custo_janela(a, fps, ini, dur) > PESO_RUIM / 2:
-        longe = melhor_janela(a, fps, ref, dur, 0.0, dur_midia, busca_s=BUSCA_LONGE_S)
-        if custo_janela(a, fps, longe, dur) < custo_janela(a, fps, ini, dur) * 0.6:
+def _janela(m: Medidas, ref: float, dur: float, dur_midia: float) -> float:
+    """Melhor janela perto do trecho escolhido; se perto não há trecho limpo, olha mais longe."""
+    ini = melhor_janela(m, ref, dur, 0.0, dur_midia)
+    if not limpa(m, ini, dur):
+        longe = melhor_janela(m, ref, dur, 0.0, dur_midia, busca_s=BUSCA_LONGE_S)
+        if custo_janela(m, longe, dur) < custo_janela(m, ini, dur):
             return longe
     return ini
 
 
+# ------------------------------------------------------------------ batidas
+
 def batidas_permitidas(track: TrackInfo, inicio: float, padrao: str) -> list[float]:
-    """Batidas na linha do tempo (a música começa no segundo `inicio` dela). 1-3: 1º e 3º
-    tempos do compasso; 2-4: 2º e 4º; senão, todas."""
+    """Batidas na linha do tempo (a música começa no segundo `inicio` dela), no compasso:
+    "1" = só o tempo 1; "2-4" = tempos 2 e 4; qualquer outro ("1-3", "misto") = tempos 1 e 3."""
     beats = sorted(track.beats_s)
     downs = sorted(track.downbeats_s)
     escolhidas = []
@@ -95,56 +146,227 @@ def batidas_permitidas(track: TrackInfo, inicio: float, padrao: str) -> list[flo
                 pos = -1
             j += 1
         pos += 1
-        if padrao in ("1-3", "2-4") and downs:
-            if (padrao == "1-3") != (pos % 2 == 0):
-                continue
-        if b >= inicio - 1e-6:
+        if padrao == "1":
+            ok = pos % 4 == 0
+        elif padrao == "2-4":
+            ok = pos % 2 == 1
+        else:
+            ok = pos % 2 == 0
+        if ok and b >= inicio - 1e-6:
             escolhidas.append(round(b - inicio, 4))
     return escolhidas
 
 
+# ------------------------------------------------------------------ fala
+
+def _fim_de_frase(w: Word) -> bool:
+    return w.text.rstrip().endswith((".", "!", "?", "…"))
+
+
+def trecho_da_fala(palavras: list[Word], a: float, b: float, dur_midia: float | None,
+                   ja_usado: list[tuple[float, float]] = ()) -> tuple[float, float] | None:
+    """Frase inteira que toca o trecho [a, b]: começa no início da frase (pontuação ou pausa,
+    até RECUAR_S antes) e termina no fim dela (até AVANCAR_S depois), sem cortar palavra.
+    Trechos `ja_usado` (falas já montadas do mesmo vídeo) não se repetem."""
+    ws = sorted((w for w in palavras
+                 if not any(u0 - 0.05 < w.start_s < u1 - 0.05 for u0, u1 in ja_usado)),
+                key=lambda w: w.start_s)
+    dentro = [i for i, w in enumerate(ws) if w.end_s > a and w.start_s < b]
+    if not dentro:
+        return None
+    i, j = dentro[0], dentro[-1]
+    while (i > 0 and not _fim_de_frase(ws[i - 1]) and ws[i].start_s - ws[i - 1].end_s < PAUSA_S
+           and a - ws[i - 1].start_s <= RECUAR_S):
+        i -= 1
+    while (j + 1 < len(ws) and not _fim_de_frase(ws[j]) and ws[j + 1].start_s - ws[j].end_s < PAUSA_S
+           and ws[j + 1].end_s - b <= AVANCAR_S):
+        j += 1
+    while ws[j].end_s - ws[i].start_s > MAX_VOZ_S and j > i:
+        j -= 1
+    a0 = max(0.0, ws[i].start_s - VOZ_ANTES_S)
+    a1 = ws[j].end_s + VOZ_DEPOIS_S
+    if dur_midia:
+        a1 = min(a1, dur_midia)
+    return (a0, a1) if a1 > a0 else None
+
+
+# ------------------------------------------------------------------ montagem
+
+class _Montagem:
+    def __init__(self, perm: list[float], fps_seq: float, medir: Callable[[str], Medidas | None],
+                 duracoes: dict[str, float], vizinhos: Callable[[str], list[str]], usados: set[str]):
+        self.perm = perm
+        self.fps = fps_seq
+        self.medir = medir
+        self.duracoes = duracoes
+        self.vizinhos = vizinhos
+        self.usados = usados
+        self.alertas: list[str] = []
+
+    def q(self, x: float) -> float:
+        return round(x * self.fps) / self.fps
+
+    def batida(self, alvo: float, lo: float, hi: float) -> float:
+        """Batida permitida mais perto de `alvo` dentro de [lo, hi]; sem nenhuma, o próprio alvo."""
+        cands = [b for b in self.perm if lo - 1e-6 <= b <= hi + 1e-6]
+        x = min(cands, key=lambda b: abs(b - alvo)) if cands else min(max(alvo, lo), hi)
+        return self.q(x)
+
+    def fim_da_cena(self, s: SceneRef, t: float, limite: float | None) -> float:
+        """Onde a cena sem fala que começa em `t` termina (numa batida)."""
+        m = self.medir(s.rel_path)
+        dm = self.duracoes.get(s.rel_path)
+        desejada = min(max(MIN_CENA_S, s.end_s - s.start_s), MAX_SEM_FALA_S)
+        maxima = min(dm or desejada * 3, MAX_SEM_FALA_S + 1.0)
+        hi = t + maxima if limite is None else min(t + maxima, limite)
+        alvo = t + desejada
+        if limite is not None and limite - t <= min(maxima, desejada + MIN_CENA_S) + 1e-6:
+            return self.q(limite)  # o que sobra cabe nesta cena: vai até o limite
+        cands = [b for b in self.perm if t + MIN_CENA_S - 1e-6 <= b <= hi + 1e-6
+                 and (limite is None or limite - b >= MIN_CENA_S - 1e-6)]
+        if not cands:
+            return self.q(min(alvo, hi))
+        perto = sorted(cands, key=lambda b: abs(b - alvo))[:3]
+
+        def nota(b: float) -> float:
+            d = b - t
+            if m is None or not dm:
+                return abs(b - alvo)
+            return abs(b - alvo) * 2 + custo_janela(m, _janela(m, s.start_s, d, dm), d)
+        return self.q(min(perto, key=nota))
+
+    def limpar(self, s: SceneRef, dur: float) -> SceneRef:
+        """Põe a cena (sem fala) no trecho limpo; se o vídeo todo é ruim, usa um vizinho."""
+        m = self.medir(s.rel_path)
+        dm = self.duracoes.get(s.rel_path)
+        if m is None or not dm:
+            ini = min(max(0.0, s.start_s), max(0.0, (dm or s.start_s + dur) - dur))
+            return s.model_copy(update={"start_s": ini, "end_s": ini + dur, "lembranca": False})
+        ini = _janela(m, s.start_s, dur, dm)
+        rel, custo = s.rel_path, custo_janela(m, ini, dur)
+        if not limpa(m, ini, dur):
+            troca = None
+            for v in self.vizinhos(s.rel_path):
+                if v in self.usados:
+                    continue
+                mv, dv = self.medir(v), self.duracoes.get(v)
+                if mv is None or not dv or dv < dur:
+                    continue
+                iv = melhor_janela(mv, dv / 2, dur, 0.0, dv, busca_s=dv, peso_distancia=0.0)
+                cv = custo_janela(mv, iv, dur)
+                if limpa(mv, iv, dur) and cv < custo and (troca is None or cv < troca[2]):
+                    troca = (v, iv, cv)
+            if troca is not None:
+                self.alertas.append(f"{s.rel_path}: imagem tremida/com movimento; troquei pelo "
+                                    f"vídeo vizinho {troca[0]} ({troca[1]:.1f} s).")
+                rel, ini = troca[0], troca[1]
+                self.usados.add(rel)
+            else:
+                self.alertas.append(f"{s.rel_path}: sem trecho totalmente limpo perto de "
+                                    f"{s.start_s:.1f} s nem em vídeo vizinho; confira a cena.")
+        return s.model_copy(update={"rel_path": rel, "start_s": ini, "end_s": ini + dur,
+                                    "lembranca": False})
+
+
+def _por_perto(lista: list[SceneRef], rel: str) -> list[SceneRef]:
+    """Cenas extras na ordem de gravação mais perto do vídeo `rel` (mesmo momento primeiro)."""
+    nomes = sorted({x.rel_path for x in lista} | {rel})
+    pos = {n: i for i, n in enumerate(nomes)}
+    return sorted(lista, key=lambda x: (abs(pos[x.rel_path] - pos[rel]), x.rel_path, x.start_s))
+
+
 def acabar_peca(p: Piece, track: TrackInfo | None, inicio: float, padrao: str,
-                medidas: dict[str, Amostras | None], duracoes: dict[str, float],
-                rate: tuple[int, int], fps_medida: float = FPS) -> list[str]:
-    """Ajusta as cenas da peça (no lugar). Devolve avisos para o editor."""
+                medir: Callable[[str], Medidas | None], duracoes: dict[str, float],
+                rate: tuple[int, int], palavras: Callable[[str], list[Word]] = lambda _r: [],
+                vizinhos: Callable[[str], list[str]] = lambda _r: [],
+                extras: list[SceneRef] = ()) -> tuple[list[str], list[Voz]]:
+    """Refaz as cenas da peça (no lugar). Devolve (avisos para o editor, vozes por baixo).
+    `extras`: cenas sem fala do material (fora do roteiro) para cobrir falas quando as do
+    roteiro não bastam."""
     fps_seq = rate[0] / rate[1]
     perm = batidas_permitidas(track, inicio, padrao) if track is not None else []
     cenas = [p.abertura, *p.desenvolvimento] + ([p.gancho] if p.gancho is not None else [])
-    alertas: list[str] = []
+    usados = {s.rel_path for s in cenas}
+    mt = _Montagem(perm, fps_seq, medir, duracoes, vizinhos, usados)
+    fila = deque(cenas)
+    saida: list[SceneRef] = []
+    vozes: list[Voz] = []
+    falado: dict[str, list[tuple[float, float]]] = {}
     t = 0.0
-    for s in cenas:
-        s.lembranca = False
-        a = medidas.get(s.rel_path)
-        dur_midia = duracoes.get(s.rel_path)
-        teto = MAX_COM_FALA_S if s.fala else MAX_SEM_FALA_S
-        desejada = min(max(MIN_CENA_S, s.end_s - s.start_s), teto)
-        maxima = dur_midia if dur_midia else desejada * 3
-        alvo = t + desejada
-        cands = [b for b in perm if b >= t + MIN_CENA_S - 1e-6 and b - t <= maxima + 1e-6]
-        if cands:
-            perto = sorted(cands, key=lambda b: abs(b - alvo))[:3]
-
-            def nota(b: float) -> float:
-                d = b - t
-                if a is None or not dur_midia:
-                    return abs(b - alvo)
-                ini = _janela(a, fps_medida, s.start_s, d, dur_midia)
-                return abs(b - alvo) * 2 + custo_janela(a, fps_medida, ini, d)
-            fim = min(perto, key=nota)
+    while fila:
+        s = fila.popleft()
+        dm = duracoes.get(s.rel_path)
+        if not s.fala:
+            fim = mt.fim_da_cena(s, t, None)
+            if fim - t < 1 / fps_seq:
+                fim = mt.q(t + MIN_CENA_S)
+            saida.append(mt.limpar(s, fim - t))
+            t = fim
+            continue
+        # ---- fala do aluno
+        ja = falado.setdefault(s.rel_path, [])
+        ws = palavras(s.rel_path)
+        tr = trecho_da_fala(ws, s.start_s, s.end_s, dm, ja)
+        if tr is None and ws and any(u0 < s.end_s and s.start_s < u1 for u0, u1 in ja):
+            mt.alertas.append(f"{s.rel_path}: fala repetida ({s.start_s:.1f} s) tirada do clipe.")
+            continue
+        if tr is None:
+            a0 = s.start_s
+            a1 = min(s.end_s, a0 + MAX_COM_FALA_S, dm or s.end_s)
         else:
-            fim = t + min(desejada, maxima)
-        f0, f1 = round(t * fps_seq), round(fim * fps_seq)
-        if f1 <= f0:
-            f1 = f0 + 1
-        dur = (f1 - f0) / fps_seq
-        if a is not None and dur_midia:
-            ini = _janela(a, fps_medida, s.start_s, dur, dur_midia)
-            if custo_janela(a, fps_medida, ini, dur) > PESO_RUIM / 2:
-                alertas.append(f"{s.rel_path}: sem trecho totalmente limpo perto de "
-                               f"{s.start_s:.1f} s; confira a cena.")
+            a0, a1 = tr
+        for u0, u1 in ja:  # nunca volta para um pedaço do aluno que já passou na tela
+            if u0 <= a0 < u1:
+                a0 = u1
+        if a1 - a0 < MIN_VOZ_S:
+            continue
+        dur_voz = a1 - a0
+        vend = t + dur_voz
+        teto = t + ((dm - a0) if dm else dur_voz + 1.5)  # o vídeo do aluno acaba aqui
+        c3 = mt.batida(vend, vend - 0.05, min(vend + 1.5, teto))
+        c3 = max(c3, mt.q(t + MIN_CENA_S))
+        cobre: list[SceneRef] = []
+        if dur_voz >= VOZ_COBERTA_S:
+            c1 = mt.batida(t + CABECA_S, t + 1.5, t + 3.0)
+            c2 = mt.batida(c3 - RABO_S, c3 - 3.0, c3 - 1.5)
+            if c2 - c1 >= MIN_CENA_S - 1e-6:
+                precisa = max(1, int(np.ceil((c2 - c1) / SEG_COBERTURA_S)))
+                sem_fala = [x for x in fila if not x.fala]
+                falas_depois = sum(1 for x in fila if x.fala)
+                cota = len(sem_fala) // (falas_depois + 2)  # sobra montagem só com música
+                cobre = sem_fala[:min(cota, precisa)]
+                livres = [x for x in extras if x.rel_path not in mt.usados]
+                for x in _por_perto(livres, s.rel_path):
+                    if len(cobre) >= precisa:
+                        break
+                    if x.rel_path not in {c.rel_path for c in cobre}:
+                        cobre.append(x)
+        if cobre:
+            saida.append(s.model_copy(update={"start_s": a0, "end_s": a0 + (c1 - t),
+                                              "lembranca": False}))
+            x = c1
+            for prox in cobre:
+                if c2 - x < MIN_CENA_S - 1e-6:
+                    break
+                if prox in fila:
+                    fila.remove(prox)
+                elif prox.rel_path in mt.usados:
+                    continue  # extra que virou troca de outra cena: não repete o vídeo
+                mt.usados.add(prox.rel_path)
+                fim = mt.fim_da_cena(prox, x, c2)
+                saida.append(mt.limpar(prox, fim - x))
+                x = fim
+            saida.append(s.model_copy(update={"start_s": a0 + (x - t), "end_s": a0 + (c3 - t),
+                                              "lembranca": False}))
         else:
-            ini = s.start_s if not dur_midia else min(max(0.0, s.start_s), max(0.0, dur_midia - dur))
-        s.start_s = ini
-        s.end_s = ini + dur
-        t = f1 / fps_seq
-    return alertas
+            saida.append(s.model_copy(update={"start_s": a0, "end_s": a0 + (c3 - t),
+                                              "lembranca": False}))
+        vozes.append(Voz(inicio_s=t, rel_path=s.rel_path, in_s=a0, dur_s=dur_voz))
+        ja.append((a0, max(a1, a0 + (c3 - t))))  # fala e imagem do aluno já usadas
+        t = c3
+    p.abertura = saida[0]
+    if p.gancho is not None and len(saida) > 1:
+        p.desenvolvimento, p.gancho = saida[1:-1], saida[-1]
+    else:
+        p.desenvolvimento = saida[1:]
+    return mt.alertas, vozes

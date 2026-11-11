@@ -12,7 +12,9 @@ from roteiro_ia.areas.formatura.cadastro import carregar
 from roteiro_ia.areas.formatura.cartela import (campos_cartela, colocar_cartela, gerar_cartela_png,
                                                 job_cartela, tamanho_da_sequencia)
 from roteiro_ia.areas.formatura.cartela_modelo import carregar_cartela_modelo, estudar_cartela
-from roteiro_ia.areas.formatura.acabamento import acabar_peca
+from roteiro_ia.areas.formatura.acabamento import Voz, acabar_peca
+from roteiro_ia.areas.formatura.mixagem import mixar
+from roteiro_ia.areas.formatura.movimento import Medidas, medir_camera
 from roteiro_ia.areas.formatura.ajustes import carregar_ajustes, modelos_do_ano
 from roteiro_ia.areas.formatura.modelos import carregar_perfil_ano, estudar_modelos
 from roteiro_ia.areas.formatura.colacao.clipes import contexto_abertura_encerramento, nomes_clipes
@@ -42,14 +44,26 @@ from roteiro_ia.pipeline import FALHAS_PREFIX, Pipeline, PipelineError, music_pa
 from roteiro_ia.premiere.fcpxml import write_xml
 from roteiro_ia.report.pdf import html_to_pdf
 from roteiro_ia.safety import safe_mkdir, safe_write_text
-from roteiro_ia.script.generate import Roteiro, generate_roteiro
+from roteiro_ia.script.generate import Roteiro, SceneRef, generate_roteiro
 
 _log = logging.getLogger(__name__)
 MSG_SEM_PGM = "Marque a pasta da mesa de corte (PGM, CORTE ou ATEM)."
 ARQ_INTEGRA = "integra.json"
 ARQ_MEDIDAS = "defeitos.json"
+ARQ_VOZES = "vozes.json"
+QUALIDADE_COBERTURA = 6  # nota mínima (0–10) de um trecho extra de cobertura
+VIZINHOS = 4  # vídeos antes e depois procurados quando a cena inteira está tremida
 SILENCIO_ABAIXO_DA_MEDIA_DB = 25.0
 SILENCIO_PADRAO_DB = -45.0
+
+
+def _chave(p) -> str:
+    return f"{p.tipo}:{p.numero or 0}"
+
+
+def _assinatura(p) -> list:
+    return [[s.rel_path, round(s.start_s, 3), round(s.end_s, 3)]
+            for s in [p.abertura, *p.desenvolvimento, p.gancho] if s is not None]
 
 
 class PipelineFormatura(Pipeline):
@@ -184,6 +198,7 @@ class PipelineFormatura(Pipeline):
     def _st_premiere(self) -> None:
         if not self._colacao():
             super()._st_premiere()
+            self._mixar({"episodio:1": "EP 01"})
             self._aplicar_cartela(["EP 01"])  # o clipe é a única peça ("EP 01" no XML)
             return
         plano = self._plano_salvo()
@@ -197,6 +212,13 @@ class PipelineFormatura(Pipeline):
         xml_path = write_xml(xml, self.p, self.s)
         write_job_integra(self.p, self.s, xml_path, self.db, plano,
                           clipes=(nome_ab if ab else None, nome_enc if enc else None))
+        nomes = {}
+        if ab is not None:
+            nomes["trailer:0"] = nome_ab
+        if enc is not None:
+            nomes["teaser:0"] = nome_enc
+        if nomes:
+            self._mixar(nomes)
         if ab is not None:
             self._aplicar_cartela([nome_ab])
 
@@ -330,66 +352,145 @@ class PipelineFormatura(Pipeline):
         return plano
 
     # ------------------------------------------------------------ acabamento dos clipes
-    def _medidas_clipes(self, rels: set[str]) -> dict:
-        """Medidas de imagem (brilho, nitidez, movimento) de cada vídeo usado, pelo proxy;
-        guardadas em ANALISE/medidas_clipes.json para o próximo ajuste."""
-        import numpy as np
-
-        from roteiro_ia.areas.formatura.colacao.defeitos import Amostras
+    def _medidor(self):
+        """Função rel_path → Medidas (movimento da câmera pelo proxy), medindo só quando pedida;
+        tudo fica em ANALISE/medidas_clipes.json para o próximo ajuste."""
         arq = Path(self.p.analysis_dir) / "medidas_clipes.json"
         try:
             cache = json.loads(arq.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             cache = {}
-        mudou = False
-        out: dict = {}
-        for rel in sorted(rels):
-            if rel not in cache:
+        prontas: dict[str, Medidas | None] = {}
+        estado = {"mudou": False, "n": 0}
+
+        def medir_rel(rel: str) -> Medidas | None:
+            if rel in prontas:
+                return prontas[rel]
+            med = Medidas.de_dict(cache.get(rel))
+            if med is None:
                 m = self.db.media_by_rel(rel)
-                proxy = self.db.proxy_for(m.id) if m is not None else None
-                if not proxy or not Path(proxy).is_file():
-                    continue
-                try:
-                    a = medir(Path(proxy))
-                except RuntimeError as e:
-                    _log.warning("Não consegui medir %s: %s", rel, e)
-                    continue
-                cache[rel] = {"brilho": [round(x, 2) for x in a.brilho.tolist()],
-                              "nitidez": [round(x, 2) for x in a.nitidez.tolist()],
-                              "diferenca": [round(x, 2) for x in a.diferenca.tolist()]}
-                mudou = True
-            d = cache[rel]
-            out[rel] = Amostras(np.array(d["brilho"]), np.array(d["nitidez"]), np.array(d["diferenca"]))
-        if mudou:
-            safe_write_text(arq, json.dumps(cache), self.s)
+                proxy = self.db.proxy_for(m.id) if m is not None and m.kind == "video" else None
+                if proxy and Path(proxy).is_file():
+                    estado["n"] += 1
+                    self._emit("roteiro", f"Medindo o movimento da câmera ({estado['n']}): "
+                               f"{Path(rel).name}", 0.5)
+                    try:
+                        med = medir_camera(Path(proxy))
+                        cache[rel] = med.para_dict()
+                        estado["mudou"] = True
+                    except RuntimeError as e:
+                        _log.warning("Não consegui medir %s: %s", rel, e)
+            prontas[rel] = med
+            return med
+
+        def gravar() -> None:
+            if estado["mudou"]:
+                safe_write_text(arq, json.dumps(cache), self.s)
+                estado["mudou"] = False
+        medir_rel.gravar = gravar
+        return medir_rel
+
+    def _vizinhos(self, medias: dict[str, MediaInfo]):
+        """Vídeos gravados logo antes e logo depois (mesma pasta, ordem do nome), mais perto
+        primeiro: mesmo assunto, para trocar uma cena tremida."""
+        pastas: dict[str, list[str]] = {}
+        for rel, m in medias.items():
+            if m.kind == "video" and m.role != Role.ignorar:
+                pastas.setdefault(m.folder, []).append(rel)
+        for v in pastas.values():
+            v.sort()
+
+        def viz(rel: str) -> list[str]:
+            m = medias.get(rel)
+            lista = pastas.get(m.folder, []) if m is not None else []
+            if rel not in lista:
+                return []
+            i = lista.index(rel)
+            out = []
+            for d in range(1, VIZINHOS + 1):
+                out += [lista[j] for j in (i - d, i + d) if 0 <= j < len(lista)]
+            return out
+        return viz
+
+    def _extras(self, medias: dict[str, MediaInfo]) -> list[SceneRef]:
+        """Trechos do material sem fala e de boa qualidade (análise do Gemini): cobertura extra
+        para as falas quando as cenas do roteiro não bastam."""
+        por_id = {m.id: m for m in medias.values()}
+        out = []
+        for seg in self.db.list_segments():
+            m = por_id.get(seg.media_id)
+            a = self.db.get_analysis(seg.id) if m is not None else None
+            if (a is None or m.kind != "video" or m.role == Role.ignorar or a.falas_chave
+                    or a.qualidade < QUALIDADE_COBERTURA):
+                continue
+            out.append(SceneRef(rel_path=m.rel_path, start_s=seg.start_s, end_s=seg.end_s,
+                                descricao=a.descricao, fala=None, motivo="cobertura da fala"))
         return out
 
     def _acabar(self, r: Roteiro) -> Roteiro:
-        """Cortes na batida e cenas estáveis (sem chicote/desfoque, câmera parada nas bordas);
-        o roteiro acabado é gravado como o mais recente."""
+        """Cortes no compasso, cenas limpas (troca as tremidas por vizinhas), falas inteiras com
+        o aluno no começo e no fim e a voz por baixo; o roteiro acabado é gravado como o mais
+        recente e as vozes em ANALISE/vozes.json."""
         from roteiro_ia.premiere.fcpxml import _seq_rate
         medias = {m.rel_path: m for m in self.db.list_media()}
         usadas = {s.rel_path for p in r.pecas for s in [p.abertura, *p.desenvolvimento, p.gancho]
                   if s is not None and s.rel_path in medias}
         if not usadas:
             return r
-        medidas = self._medidas_clipes(usadas)
-        duracoes = {rel: medias[rel].duration_s for rel in usadas}
+        medir_rel = self._medidor()
+        duracoes = {rel: m.duration_s for rel, m in medias.items()}
         rate = _seq_rate([m for m in medias.values() if m.kind == "video" and m.role != Role.ignorar])
+
+        def palavras(rel: str):
+            m = medias.get(rel)
+            tr = self.db.get_transcript(m.id) if m is not None else None
+            return tr.words if tr is not None else []
         idx = self._index()
+        extras = self._extras(medias)
+        vozes: dict[str, dict] = {}
         for p in r.pecas:
             ms = next((t for t in p.trilhas if t.origem == "biblioteca" and t.path), None)
             track = idx.get(ms.path) if ms is not None else None
             if track is not None and not track.beats_s:
                 track = None
             inicio = (ms.trecho_inicio_s or 0.0) if ms is not None else 0.0
-            padrao = ms.padrao_corte if ms is not None else "misto"
-            r.alertas.extend(acabar_peca(p, track, inicio, padrao, medidas, duracoes, rate))
+            padrao = ms.padrao_corte if ms is not None else "1-3"
+            alertas, vz = acabar_peca(p, track, inicio, padrao, medir_rel, duracoes, rate,
+                                      palavras=palavras, vizinhos=self._vizinhos(medias),
+                                      extras=extras)
+            r.alertas.extend(alertas)
+            vozes[_chave(p)] = {"cenas": _assinatura(p), "vozes": [v.model_dump() for v in vz]}
             if track is None:
                 r.alertas.append(f"{p.titulo}: sem batidas da música no índice; cortes sem "
                                  "alinhamento ao ritmo.")
+        medir_rel.gravar()
+        safe_write_text(Path(self.p.analysis_dir) / ARQ_VOZES,
+                        json.dumps(vozes, ensure_ascii=False, indent=1), self.s)
         self.db.add_roteiro(r.model_dump_json())
         return r
+
+    def _mixar(self, nomes: dict[str, str]) -> None:
+        """Volumes e voz por baixo nas sequências dos clipes (`nomes`: chave da peça → nome da
+        sequência no XML). Sem as vozes do acabamento, ou com o roteiro mudado depois, só os
+        volumes são aplicados."""
+        txt = self.db.latest_roteiro()
+        r = Roteiro.model_validate_json(txt) if txt else None
+        try:
+            salvas = json.loads((Path(self.p.analysis_dir) / ARQ_VOZES).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            salvas = {}
+        pecas = {_chave(p): p for p in r.pecas} if r else {}
+        por_seq: dict[str, list[Voz]] = {}
+        for chave, nome in nomes.items():
+            item = salvas.get(chave) or {}
+            p = pecas.get(chave)
+            ok = p is not None and item.get("cenas") == _assinatura(p)
+            por_seq[nome] = [Voz(**v) for v in item.get("vozes", [])] if ok else []
+        xml_path = Path(self.p.analysis_dir) / f"{self.p.event_name} - PREMIERE.xml"
+        xml, alertas = mixar(xml_path.read_text(encoding="utf-8"), por_seq)
+        safe_write_text(xml_path, xml, self.s)
+        for a in alertas:
+            self._emit("premiere", a, 1.0)
 
     def _roteiro_clipes(self, plano: PlanoIntegra) -> None:
         """Roteiro da abertura e do encerramento; uma falha comum não derruba a íntegra."""
